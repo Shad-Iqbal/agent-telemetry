@@ -20,7 +20,7 @@ import parser as P
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CACHE_PATH = os.path.join(HERE, ".usage_cache.json")
-CACHE_VERSION = 50
+CACHE_VERSION = 51
 
 # ---------------------------------------------------------------------------
 # In-memory store of per-file aggregates, refreshed on a background interval.
@@ -148,7 +148,11 @@ def _restart():
     except Exception as e:                      # never lose the restart over the cache
         sys.stderr.write(f"[update] cache save before restart failed: {e}\n")
     sys.stderr.write("[update] restarting on the new version\n")
-    os.execv(sys.executable, [sys.executable, *sys.argv])
+    # never carry --rebuild over: it deletes the cache just saved, archived history
+    # included (./run.sh --rebuild once, then Update, would wipe the ledger)
+    # (argparse also takes any prefix of it, down to --r)
+    argv = [a for a in sys.argv if not (len(a) > 2 and "--rebuild".startswith(a))]
+    os.execv(sys.executable, [sys.executable, *argv])
 
 _dirty = {"v": True}          # cache is only rewritten when a file actually changed
 # Only one refresh at a time: the background timer and the Rebuild button can now
@@ -328,7 +332,7 @@ def build_payload():
     mcp_calls = {}    # (date, server, project) -> calls
     reads = {}        # (date, source, project) -> [reads, re-reads, junk, re-read tok, junk tok]
     used_ext = {}     # (date, kind, name) -> uses of an installed skill / agent
-    cwds = set()      # (source family, cwd) — where instruction files are looked for
+    cwds = {}         # (source family, cwd) -> first day Claude Code there read AGENTS.md
     undecoded = 0     # OpenClaw events stored compressed that couldn't be read here
 
     with _lock:
@@ -414,7 +418,14 @@ def build_payload():
         if source == "openclaw":
             undecoded += int((agg.get("state") or {}).get("undecoded") or 0)
         if agg.get("cwd") and source in ("claude", "claude-desktop", "codex") and not agg.get("archived"):
-            cwds.add(("codex" if source == "codex" else "claude", agg["cwd"]))
+            ck = ("codex" if source == "codex" else "claude", agg["cwd"])
+            # when Claude Code started reading AGENTS.md here. A file keeps only its
+            # newest version, so take its LAST day: `since` can start late, never early
+            since = ((agg.get("last_ts") or "")[:10] or None
+                     if ck[0] == "claude" and _ver_tuple(agg.get("cliver")) >= CLAUDE_AGENTS_MD_SINCE
+                     else None)
+            prev = cwds.get(ck)
+            cwds[ck] = min(prev, since) if prev and since else (prev or since)
         for sk, v in agg.get("skills", {}).items():
             date, _, name = sk.partition("\t")
             if not name:
@@ -716,44 +727,124 @@ _mcp_cache = {"at": 0.0, "data": None}
 _ctxfile_cache = {"at": 0.0, "key": None, "data": None}
 
 
+# Claude Code reads a project's AGENTS.md itself from this version on
+CLAUDE_AGENTS_MD_SINCE = (2, 1, 277)
+CODEX_DOC_MAX_BYTES = 32 * 1024     # Codex's project_doc_max_bytes default
+
+
+def _ver_tuple(v):
+    return tuple(int(x) for x in re.findall(r"\d+", str(v or ""))[:3])
+
+
+def _size(path):
+    """Size of a regular file, or 0 when there is none."""
+    try:
+        return os.path.getsize(path) if os.path.isfile(path) else 0
+    except OSError as e:
+        sys.stderr.write(f"[context files] {path}: {e}\n")
+        return 0
+
+
+def _claude_instruction_mode():
+    """Claude Code's "Project instructions" setting (pluginConfigs → agents-md@builtin).
+    Only that one key is read from settings.json."""
+    try:
+        cfg = _read_claude_settings().get("pluginConfigs") or {}
+        mode = ((cfg.get("agents-md@builtin") or {}).get("options") or {}).get("instructionFiles")
+        return mode if isinstance(mode, str) else "claude-md-or-agents-md"
+    except (AttributeError, TypeError):
+        return "claude-md-or-agents-md"
+
+
 def _context_files(cwds):
-    """SIZES (never contents) of the instruction files each agent puts into every
-    request: CLAUDE.md for Claude Code (the project dir and each parent up to home,
-    plus ~/.claude/CLAUDE.md) and AGENTS.md for Codex (the same walk, plus
-    ~/.codex/AGENTS.md). `cwds` is {(source, cwd)} from the parsed sessions."""
-    key = tuple(sorted(cwds))
+    """SIZES (never contents) of the instruction files each agent loads at the start of
+    every session, following each agent's own documented rules:
+
+    Claude Code — ~/.claude/CLAUDE.md, then CLAUDE.md, CLAUDE.local.md and
+    .claude/CLAUDE.md in the working directory and EVERY directory above it. From
+    2.1.277 a project with none of those gets its AGENTS.md / .claude/AGENTS.md
+    instead (or as well, with the "claude-md-and-agents-md" setting).
+    Codex — ~/.codex/AGENTS.override.md, else ~/.codex/AGENTS.md; then from the git
+    root DOWN to the working directory, at most one file per directory (the override
+    wins), and it stops adding once those total project_doc_max_bytes (32 KiB).
+
+    `bytes` is a file's size, `sent` how much of it goes into the request. `since`
+    is the first day the file could have been loaded, when that isn't forever.
+    `cwds` is {(source family, cwd): first day with AGENTS.md support, or None}."""
+    key = tuple(sorted(cwds.items(), key=lambda kv: kv[0]))
     if (time.time() - _ctxfile_cache["at"] < 60 and _ctxfile_cache["key"] == key
             and _ctxfile_cache["data"] is not None):
         return _ctxfile_cache["data"]
-    names = {"claude": ("CLAUDE.md", "CLAUDE.local.md", os.path.join(".claude", "CLAUDE.md")),
-             "codex": ("AGENTS.md", "AGENTS.override.md")}
     out, seen = [], set()
-
-    def add(source, project, path):
-        if (source, project, path) in seen:
-            return
-        seen.add((source, project, path))
-        try:
-            if os.path.isfile(path):
-                out.append({"source": source, "project": project, "file": path,
-                            "bytes": os.path.getsize(path)})
-        except OSError as e:
-            sys.stderr.write(f"[context files] {path}: {e}\n")
-
-    add("claude", "*", os.path.join(P.HOME, ".claude", "CLAUDE.md"))
-    add("codex", "*", os.path.join(P.HOME, ".codex", "AGENTS.md"))
     home = os.path.normpath(P.HOME)
-    for source, cwd in list(key)[:300]:
+    user_claude = os.path.join(home, ".claude", "CLAUDE.md")
+
+    def add(source, project, path, size, sent=None, since=None):
+        if size and (source, project, path) not in seen:
+            seen.add((source, project, path))
+            out.append({"source": source, "project": project, "file": path, "bytes": size,
+                        "sent": size if sent is None else sent, "since": since})
+
+    add("claude", "*", user_claude, _size(user_claude))
+    codex_home = os.path.join(home, ".codex")
+    for n in ("AGENTS.override.md", "AGENTS.md"):      # the first non-empty one
+        p = os.path.join(codex_home, n)
+        if _size(p):
+            add("codex", "*", p, _size(p))
+            break
+    cfg = ""
+    try:
+        with open(os.path.join(codex_home, "config.toml"), encoding="utf-8") as f:
+            cfg = f.read()
+    except OSError:
+        pass
+    m = re.search(r"^\s*project_doc_max_bytes\s*=\s*(\d+)", cfg, re.M)
+    codex_cap = int(m.group(1)) if m else CODEX_DOC_MAX_BYTES
+    claude_mode = _claude_instruction_mode()
+
+    for (source, cwd), agents_since in list(key)[:300]:
         d = os.path.normpath(cwd)
         if not os.path.isdir(d):
             continue
         project = P._leaf(cwd) or cwd
-        for _ in range(8):                      # the dir, then its parents up to home
-            if d == home or os.path.dirname(d) == d:
-                break
-            for n in names.get(source, ()):
-                add(source, project, os.path.join(d, n))
-            d = os.path.dirname(d)
+        chain = [d]                                     # the dir, then every parent
+        while os.path.dirname(chain[-1]) != chain[-1] and len(chain) < 64:
+            chain.append(os.path.dirname(chain[-1]))
+        if source == "claude":
+            if claude_mode == "managed-only":
+                continue
+            claude_md, agents_md = [], []
+            for dd in chain:
+                # home and above load for every project under home: one row, "*"
+                pj = "*" if home == dd or home.startswith(dd.rstrip(os.sep) + os.sep) else project
+                for n in ("CLAUDE.md", "CLAUDE.local.md", os.path.join(".claude", "CLAUDE.md"),
+                          "AGENTS.md", os.path.join(".claude", "AGENTS.md")):
+                    p = os.path.join(dd, n)
+                    if p == user_claude:                # already counted as the user file
+                        continue
+                    s = _size(p)
+                    if s and "AGENTS" in n:             # loads per project, so never "*"
+                        agents_md.append((project, p, s))
+                    elif s:
+                        claude_md.append((pj, p, s))
+            for pj, p, s in claude_md:
+                add(source, pj, p, s)
+            if agents_since and (claude_mode == "claude-md-and-agents-md" or not claude_md):
+                for pj, p, s in agents_md:
+                    add(source, pj, p, s, since=agents_since)
+        elif source == "codex":
+            root = next((dd for dd in chain if os.path.exists(os.path.join(dd, ".git"))), d)
+            left = codex_cap
+            for dd in reversed(chain[:chain.index(root) + 1]):   # root down to cwd
+                if left <= 0:
+                    break
+                for n in ("AGENTS.override.md", "AGENTS.md"):
+                    p = os.path.join(dd, n)
+                    s = _size(p)
+                    if s:
+                        add(source, project, p, s, sent=min(s, left))
+                        left -= s
+                        break
     _ctxfile_cache.update(at=time.time(), key=key, data=out)
     return out
 

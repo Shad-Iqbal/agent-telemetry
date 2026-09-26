@@ -317,7 +317,12 @@ document.addEventListener("click", e=>{
 });
 document.addEventListener("keydown", e=>{
   if(e.key==="Escape"){ closeDD(); closeDrawer(); }
-  if(e.target.tagName==="INPUT"||e.target.tagName==="SELECT") return;
+  if(e.target.tagName==="INPUT"||e.target.tagName==="SELECT"||e.target.tagName==="TEXTAREA"
+     ||e.target.isContentEditable) return;
+  // the browser's own shortcuts (Cmd+A select all, Cmd+T new tab, Cmd+[ back, Cmd+Shift+T…)
+  // must not also switch the range, theme or measure behind them. Alt/AltGr stay allowed:
+  // some layouts type "[" with them (Option+5, AltGr+8 on German keyboards)
+  if((e.metaKey||e.ctrlKey) && !(e.getModifierState && e.getModifierState("AltGraph"))) return;
   const map={"1":"today","7":"7d","3":"30d","9":"90d","a":"all","m":"mtd"};
   if(map[e.key]){ S.preset=map[e.key]; syncRangeUI(); renderAll(); }
   if(e.key==="t") cycleTheme();

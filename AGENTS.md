@@ -369,10 +369,23 @@ Codex server looks unused. Configured servers come from `~/.claude.json` and the
 `[mcp_servers.*]` blocks of `~/.codex/config.toml` (parsed by regex, not tomllib,
 which is 3.11+).
 
-**Setup checks** (payload fields in brackets): instruction files over 8 KB — CLAUDE.md up
-the directory tree and ~/.claude, AGENTS.md for Codex — priced as their size × the
-requests that carried them at the cache-read rate (`context_files`, sizes only, never
-contents); sessions that open heavier than the user's own leanest 10% (`open_ctx` on each
+**Setup checks** (payload fields in brackets): instruction files over 8 KB, priced as the
+bytes actually sent × the requests that carried them at the cache-read rate
+(`context_files`, sizes only, never contents). `_context_files` follows each agent's own
+loading rules, which differ:
+- **Claude Code** reads ~/.claude/CLAUDE.md, then `CLAUDE.md`, `CLAUDE.local.md` and
+  `.claude/CLAUDE.md` in the cwd and *every* directory above it, home included. From
+  2.1.277 a project with none of those gets its `AGENTS.md` instead (both with the
+  `agents-md@builtin` "claude-md-and-agents-md" setting). That entry carries `since`, so
+  older requests aren't priced. A file records only its newest version (`cliver`), so
+  `since` is the earliest *last* day among the sessions there that ran 2.1.277+: it can
+  start late, never early. Before this, this repo's own 37 KB AGENTS.md was never counted.
+- **Codex** reads `~/.codex/AGENTS.override.md`, else `AGENTS.md`, then walks from the
+  git root DOWN to the cwd. It takes at most one file per directory (the override wins)
+  and stops at `project_doc_max_bytes` (32 KiB) in total, so `sent` can be less than
+  `bytes`. Walking up past the git root counted files Codex never reads.
+
+The other setup checks: sessions that open heavier than the user's own leanest 10% (`open_ctx` on each
 session: the first request's full input); re-reads of unchanged files and reads inside
 build / dependency folders, with the tokens they returned (`reads`, Claude Code — note it
 already answers an unchanged re-read with a short stub, so this rarely fires); installed
@@ -411,7 +424,11 @@ costed per row by `_cost()`.
 - **A turn is one typed prompt plus everything until the next one.** It opens at the same
   places prompts are counted (`_turn_open`), so the prompt filters above decide what a turn
   is. A queued steer does NOT open a turn — it redirects the running one. A subagent's file
-  never opens one: its work is the parent's delegation turn.
+  never opens one: its work is the parent's delegation turn. A Claude session that replies
+  before its first counted prompt (it opened with a slash command, `isMeta` text or a task
+  notification) gets an *implicit* turn (`imp`): its tokens are classified and costed, but
+  it adds nothing to turn, edit, one-shot or retry counts, since nobody typed a prompt.
+  Without it that work reached no Activity row at all.
 - **The prompt's text never reaches the cache.** `_prompt_intents()` scores it on arrival
   and keeps only small per-intent numbers; the running turn persists in `state.turn` (incremental parsing).
   `activity_of()` adds the still-open last turn read-only, since nothing will close it.
@@ -424,7 +441,11 @@ costed per row by `_cost()`.
 - **Codex edits come from `patch_apply_end` / `item_completed:FileChange`**, the one place
   every build records each file a patch touched — Codex Desktop applies patches from inside
   its `exec` JS tool, which never shows as `apply_patch`. Once a rollout shows either event,
-  `apply_patch` calls stop counting for activity so an edit isn't counted twice. `exec`
+  `apply_patch` calls stop counting for activity so an edit isn't counted twice. The very
+  first event follows the `apply_patch` call that was already counted, under the name the
+  patch text used (usually relative, the event's is absolute), so `_codex_edit_event`
+  re-keys that file instead of counting it again. Otherwise 10 of 37 rollouts here held the
+  same file under two names. `exec`
   programs are scanned for their `cmd:` strings so their commands can be judged; one whose
   commands can't be read is neither a check nor a lookup.
 - Turns are attributed to the model that answered most; tokens split by the model that
@@ -486,6 +507,8 @@ timer, which would break "nothing leaves this machine". `POST /api/update` (thro
 fast-forwards only — it refuses local edits to tracked files and commits the upstream
 doesn't have — then saves the cache and re-execs the process (`_restart`), and the page
 reloads once the new commit answers. A copy that isn't a git checkout shows no button.
+The re-exec drops `--rebuild` (and any prefix argparse would accept for it) from the
+arguments: it would delete the cache that was just saved, archived history included.
 
 `load()` keeps a fetch failure ("cannot reach /api/data") apart from a render failure: the
 second sets `data-js-error` — it used to be reported as the server being down, which hid a

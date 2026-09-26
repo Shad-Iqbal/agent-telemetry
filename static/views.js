@@ -284,7 +284,7 @@ function viewOverview(d){
     d: pd && pctx && ctx ? deltaHTML(t.cr/ctx, pt.cr/pctx) : "", s: ctx ? "" : "no cached context"});
   document.getElementById("kpis").innerHTML = tilesHTML(tiles.slice(0,6));
 
-  // by tool
+  // tool mix
   document.getElementById("toolShareSub").textContent = "share of " + metricNoun();
   const sBy = {}; for(const x of d.sessions) sBy[x.source]=(sBy[x.source]||0)+1;
   const uBy = {}; for(const r of d.recs) uBy[r.source]=(uBy[r.source]||0)+(r.user||0);
@@ -292,7 +292,8 @@ function viewOverview(d){
       sub:`${fmtNum(sBy[s]||0)} session${sBy[s]===1?"":"s"} · ${fmtNum(uBy[s]||0)} prompts`}))
     .sort((a,b)=>b.value-a.value), {fmt});
 
-  // top models
+  // model mix
+  document.getElementById("modelMixSub").textContent = `share of ${metricNoun()}, and the tools that ran each`;
   const bm = {};
   for(const r of d.recs){ if(r.model==="(user)") continue;
     const e = bm[r.model] || (bm[r.model] = {model:r.model, v:0, cost:0, tok:0, src:{}});
@@ -307,7 +308,8 @@ function viewOverview(d){
         <td class="r">${fmtUSD(e.cost)}</td><td class="r">${fmtTok(e.tok)}</td><td class="r dim">${fmtPct(e.v/mTot)}</td></tr>`).join("") + "</tbody>"
     : `<tbody><tr><td class="empty">Nothing in range.</td></tr></tbody>`;
 
-  // top projects
+  // project mix
+  document.getElementById("projectMixSub").textContent = `ranked by ${metricNoun()} · click one for its sessions`;
   const bp = {};
   for(const r of d.recs){ const p = r.project || "(unknown)";
     const e = bp[p] || (bp[p] = {project:p, v:0, cost:0, tok:0, src:{}});
@@ -1609,20 +1611,36 @@ function perTokenCost(d, fn, useReq){
   return {n, per};           // per = $ for one extra token on every one of those requests
 }
 const famOf = src => src==="codex" ? "codex" : (src==="claude"||src==="claude-desktop") ? "claude" : null;
+/* $ per token written to cache across these records, weighted by the writes they made
+   (a model with no write rate writes at its input rate, as _cost() bills it) */
+function cacheWriteRate(recs){
+  let tok = 0, usd = 0;
+  for(const r of recs){
+    const p = (RAW.prices && RAW.prices[r.model]) || priceOf(r.model, r.date);
+    const c5 = r.cc5||0, c1 = r.cc1||0, flat = (c5||c1) ? 0 : (r.cc||0);
+    const w5 = p[2] || p[0], w1 = p[3] || w5;
+    tok += c5 + c1 + flat; usd += (c5 + flat) * w5 + c1 * w1;
+  }
+  return tok ? usd / tok / 1e6 : 0;
+}
 
 /* CLAUDE.md / AGENTS.md ride along on every request (cached, so at the cache-read
    rate). Priced from this user's own request count and rates in range. */
 function findInstructionFiles(d){
-  const files = (RAW.context_files||[]).filter(f => f.bytes > 8192);
+  // `sent` is what the agent actually includes (Codex stops at 32 KiB); `since` is the
+  // first day it could have (Claude Code reads AGENTS.md only from 2.1.277)
+  const files = (RAW.context_files||[]).filter(f => (f.sent ?? f.bytes) > 8192);
   if(!files.length) return null;
   const rows = []; let impact = 0; const tools = new Set();
   for(const f of files){
-    const tok = f.bytes/4;
-    const {n, per} = perTokenCost(d, r => famOf(r.source)===f.source && (f.project==="*" || r.project===f.project), f.source==="codex");
+    const sent = f.sent ?? f.bytes, tok = sent/4;
+    const {n, per} = perTokenCost(d, r => famOf(r.source)===f.source && (f.project==="*" || r.project===f.project)
+      && (!f.since || r.date >= f.since), f.source==="codex");
     if(!n) continue;
-    const cost = tok * per, save = cost * (f.bytes-4096)/f.bytes;
+    const cost = tok * per, save = cost * (sent-4096)/sent;
     impact += save; tools.add(f.source==="codex" ? "codex" : "claude");
-    rows.push([f.file.replace(RAW.home||"~","~"), `${fmtBytes(f.bytes)} · ~${fmtTok(tok)} tokens`,
+    rows.push([f.file.replace(RAW.home||"~","~"),
+      `${fmtBytes(f.bytes)}${sent<f.bytes ? ` (first ${fmtBytes(sent)} sent)` : ""} · ~${fmtTok(tok)} tokens`,
       `${fmtNum(n)} requests`, fmtUSD(cost)]);
   }
   if(!rows.length || impact < 0.5) return null;
@@ -1677,10 +1695,15 @@ function findReadWaste(d){
   const t = rs.reduce((a,x)=>({rr:a.rr+x.rereads, j:a.j+x.junk, rt:a.rt+x.reread_tok, jt:a.jt+x.junk_tok, n:a.n+x.reads}), {rr:0,j:0,rt:0,jt:0,n:0});
   const tok = t.rt + t.jt;
   if(tok < 20000) return null;
+  // each day × project's wasted tokens at the cache-write rate that day's own requests
+  // there paid (its models, its 5-minute / 1-hour mix), not one model's rate for all
   const recs = d.recs.filter(r => famOf(r.source)==="claude" && r.model!=="(user)");
-  const top = recs.sort((a,b)=>(b.cost||0)-(a.cost||0))[0];
-  const cw = top ? ((RAW.prices && RAW.prices[top.model]) || priceOf(top.model))[2] : 0;
-  const impact = tok * cw / 1e6;
+  const at = {};
+  for(const r of recs){ const k = r.date+"\t"+r.project; (at[k] = at[k] || []).push(r); }
+  const anyRate = cacheWriteRate(recs);
+  const impact = rs.reduce((a,x) => a + (x.reread_tok + x.junk_tok)
+    * (at[x.date+"\t"+x.project] ? cacheWriteRate(at[x.date+"\t"+x.project]) : anyRate), 0);
+  if(impact < 0.5) return null;
   return {
     id:"read-waste", impact, sev:"low", tools:["claude"],
     title:`${fmtTok(tok)} tokens of reads that added nothing new`,

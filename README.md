@@ -31,6 +31,10 @@ Then open **http://127.0.0.1:7878**. That's it — no `pip install`, no setup.
 Options: `python3 dashboard.py --port 9000` · `--rebuild` (ignore cache, full re-parse) ·
 `--interval 20` (background refresh seconds). Or `./run.sh [flags]`.
 
+> `--rebuild` deletes the cache, and with it every session whose log has since been deleted
+> from disk (see [Storage](#storage--what-these-logs-cost-you-in-disk)). Copy
+> `.usage_cache.json` somewhere safe first if you've cleaned up old logs.
+
 **Requirements:** Python 3.8+ on **macOS, Linux or Windows**. On Windows run
 `python dashboard.py` (or `run.cmd`); on macOS/Linux `python3 dashboard.py` (or `./run.sh`).
 
@@ -86,9 +90,9 @@ Active filters show as removable chips. Every figure is compared with the equal-
 period just before it, and every chart has a **table view** (the grid icon) so nothing is
 readable only by hovering.
 
-**Overview** — one hero number with its change vs the previous period · per-day chart
-stacked by tool · tiles for spend, tokens, active time, prompts, replies, sessions and cache
-hit rate, each with a sparkline · spend by tool · top models · top projects · highlights ·
+**Overview** — one hero number (the chosen measure, tokens by default) with its change vs
+the previous period · per-day chart stacked by tool · tiles for the rest — spend, tokens,
+active time, prompts, replies, sessions and cache hit rate — each with a sparkline · **tool, model and project mix** (each one's share of the chosen measure) · highlights ·
 **hour × weekday heatmap** · token mix per tool · 12-month activity calendar (click a day).
 
 **Cost** — total with per-active-day, 30-day run rate, per session and per prompt ·
@@ -132,7 +136,8 @@ search, `t` theme, `r` refresh.
 
 **Version and updates** — the sidebar footer shows the running version. *Check for updates*
 asks GitHub (the only time the dashboard goes online, and only when you click); *Update*
-fast-forwards your checkout and restarts the server. It refuses if you have local edits.
+fast-forwards your checkout and restarts the server. It refuses if you have local edits or
+commits that aren't on GitHub. A copy that isn't a git clone has no update button.
 
 ---
 
@@ -184,7 +189,7 @@ Some tools delete old logs. **Claude Code** prunes transcripts after `cleanupPer
 its cache even after a tool deletes the on-disk log, so totals don't silently shrink once seen.
 
 You can change Claude Code's retention window from the dashboard itself — the **⚙** button
-in the header edits `cleanupPeriodDays` in your own `~/.claude/settings.json` (leave it blank
+at the foot of the sidebar edits `cleanupPeriodDays` in your own `~/.claude/settings.json` (leave it blank
 to fall back to the tool's default). The write is atomic and keeps a `.bak`; every other
 setting in the file is preserved untouched. It's the only file outside its own cache that the
 dashboard ever writes.

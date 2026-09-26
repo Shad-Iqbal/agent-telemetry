@@ -778,13 +778,18 @@ def _classify_turn(tr):
     return "plan" if intent == "plan" else "chat"
 
 
-def _turn_open(agg, dt, text):
-    """A typed prompt: close the running turn and start a new one."""
+def _turn_open(agg, dt, text, implicit=False):
+    """A typed prompt: close the running turn and start a new one. `implicit` is the
+    work a session does before its first counted prompt (it opened with a slash
+    command or a task notification): its tokens are classified like any turn's, but
+    it isn't a prompt, so it adds nothing to turn, edit or one-shot counts."""
     if agg.get("subagent"):      # a subagent's whole file is one delegated task
         return
     _turn_close(agg)
     agg["state"]["turn"] = {"d": _buckets(dt)[0], "iv": _prompt_intents(text), "n": {},
                             "cmd": {}, "fk": {}, "ed": {}, "rw": 0, "tok": {}}
+    if implicit:
+        agg["state"]["turn"]["imp"] = 1
 
 
 def _turn_tool(agg, name, file=None, cmd=None):
@@ -829,14 +834,15 @@ def _turn_rows(tr):
     if not tok:                  # no reply yet, or interrupted before one
         return {}
     cat = _classify_turn(tr) if "n" in tr else "chat"   # a pre-v48 open turn
-    edits = bool((tr.get("n") or {}).get("edit"))
+    # an implicit turn (see _turn_open) counts its tokens only: it was no prompt
+    edits = bool((tr.get("n") or {}).get("edit")) and not tr.get("imp")
     rt = tr.get("rw", 0)
     dom = max(tok, key=lambda m: (tok[m][6], tok[m][0] + tok[m][1]))
     out = {}
     for m, t in tok.items():
         row = {k: t[j] for j, k in enumerate(_ACT_FIELDS)}
         row.update(turns=0, edits=0, oneshot=0, retries=0)
-        if m == dom:
+        if m == dom and not tr.get("imp"):
             row.update(turns=1, edits=int(edits), oneshot=int(edits and not rt), retries=rt)
         if edits:                # every editing turn, so a retried one can be compared to the rest
             row.update({"e" + k: t[j] for j, k in enumerate(_ACT_FIELDS)})
@@ -1066,6 +1072,8 @@ def parse_claude(agg, lines):
                 if ws:
                     r["ws"] = r.get("ws", 0) + ws
                     agg["totals"]["ws"] = agg["totals"].get("ws", 0) + ws
+                if "turn" not in agg["state"]:          # replying before any counted prompt
+                    _turn_open(agg, dt, None, implicit=True)
                 _turn_usage(agg, model, inp, out, cr, cc5, cc1, ws)
                 r["asst"] += int(first)
                 # count tool_use blocks
@@ -1281,9 +1289,19 @@ _PATCH_FILE = re.compile(r"^\*\*\* (?:Update|Add|Delete) File: (.+)$", re.M)
 def _codex_edit_event(agg, changes):
     """An applied patch, however it was applied (apply_patch, or from inside exec):
     the one place every Codex build records each file an edit touched."""
+    first = not agg["state"].get("edit_events")
     agg["state"]["edit_events"] = True
     files = list(changes)[:16] if isinstance(changes, dict) else []
+    ed = (agg["state"].get("turn") or {}).get("ed")
     for f in files or [None]:
+        if first and f and ed is not None:
+            # the rollout's first patch was already counted from its apply_patch call,
+            # under the name the patch text used (usually relative): re-key, don't recount
+            n = f.replace("\\", "/")
+            same = f if f in ed else next((k for k in ed if n.endswith("/" + k.replace("\\", "/"))), None)
+            if same is not None:
+                ed[f] = ed.pop(same)
+                continue
         _turn_tool(agg, "apply_patch", file=f)
 
 
