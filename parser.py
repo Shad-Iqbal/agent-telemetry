@@ -223,6 +223,10 @@ PRICING = {
     "GPT-5.1": (1.25, 10, 0, 0, 0.125),
     "GPT-5": (1.25, 10, 0, 0, 0.125),
     "GPT-5 Mini": (0.25, 2, 0, 0, 0.025),
+    # Microsoft, via Copilot — docs.github.com/en/copilot/reference/copilot-billing/
+    # models-and-pricing (2026-09-27): the per-token rate Copilot bills past a plan's
+    # included allowance. No cache-write column is listed.
+    "MAI-Code-1.1-Flash": (0.20, 1.20, 0, 0, 0.02),
     # OpenAI legacy (estimates)
     "GPT-4.1": (2, 8, 0, 0, 0.5),
     "GPT-4.1 Mini": (0.40, 1.6, 0, 0, 0.10),
