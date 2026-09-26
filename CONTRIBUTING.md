@@ -7,8 +7,8 @@ a PR.
 ## Get it running
 
 ```bash
-git clone https://github.com/uttamdeb/coding-agent-usage.git
-cd coding-agent-usage
+git clone https://github.com/uttamdeb/agent-telemetry.git
+cd agent-telemetry
 python3 dashboard.py          # http://127.0.0.1:7878
 ```
 
