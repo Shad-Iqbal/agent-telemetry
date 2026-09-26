@@ -1,23 +1,24 @@
-# AI Usage Dashboard
+# AgentTelemetry
 
-A **live, local** analytics dashboard for your AI coding-assistant usage. It reads the
-interaction logs your tools already write to your own machine and serves an interactive
-dashboard — tokens, estimated cost, cache efficiency, an **Anthropic vs OpenAI vs Copilot**
-provider comparison, a GitHub-style activity calendar, and breakdowns by **model, provider,
-day, hour, weekday, tool, project and session** — plus how much **disk** all these logs eat.
+**Live, local telemetry for your AI coding agents.** AgentTelemetry reads the interaction
+logs your tools already write to your own machine and serves a clean, interactive
+dashboard — estimated spend, tokens, active time, cache efficiency, an **Anthropic vs OpenAI
+vs Google** provider comparison, an activity calendar, and breakdowns by **model, provider,
+day, hour, weekday, tool, IDE, project and session** — plus how much **disk** all these logs
+eat, and suggestions for spending less, drawn from your own numbers.
 
 **Your data never leaves your machine.** No account, no API key, no telemetry, no
 dependencies — just Python's standard library and a vendored copy of Chart.js.
 
-Covers **Claude Code · Claude Desktop · Codex · GitHub Copilot · Cursor · opencode · Hermes Agent**.
+Covers **Claude Code · Claude Desktop · Codex · GitHub Copilot · Cursor · opencode · Hermes Agent · OpenClaw**.
 
 ---
 
 ## Quick start
 
 ```bash
-git clone https://github.com/uttamdeb/coding-agent-usage.git
-cd coding-agent-usage
+git clone https://github.com/uttamdeb/agent-telemetry.git
+cd agent-telemetry
 python3 dashboard.py
 ```
 
@@ -29,6 +30,10 @@ Then open **http://127.0.0.1:7878**. That's it — no `pip install`, no setup.
 
 Options: `python3 dashboard.py --port 9000` · `--rebuild` (ignore cache, full re-parse) ·
 `--interval 20` (background refresh seconds). Or `./run.sh [flags]`.
+
+> `--rebuild` deletes the cache, and with it every session whose log has since been deleted
+> from disk (see [Storage](#storage--what-these-logs-cost-you-in-disk)). Copy
+> `.usage_cache.json` somewhere safe first if you've cleaned up old logs.
 
 **Requirements:** Python 3.8+ on **macOS, Linux or Windows**. On Windows run
 `python dashboard.py` (or `run.cmd`); on macOS/Linux `python3 dashboard.py` (or `./run.sh`).
@@ -58,64 +63,81 @@ instead of cloning, delete `.usage_cache.json` first — that file is your perso
 | **Claude Code** | `~/.claude/projects/**/*.jsonl` | exact (in/out/cache read+write, 5m/1h tiers) |
 | **Claude Desktop** (agent mode) | `Claude/local-agent-mode-sessions/**` under App Support / `%APPDATA%` / `~/.config` | exact |
 | **Codex** | `~/.codex/sessions/**`, `~/.codex/archived_sessions/**` | exact (in/cached/out/reasoning); subagents are identified and labelled |
-| **GitHub Copilot** | VS Code / Insiders / Cursor `workspaceStorage/*/chatSessions/*.{json,jsonl}` | estimated from message text (Copilot logs no token counts) |
+| **GitHub Copilot** | VS Code / Insiders / Cursor `workspaceStorage/*/chatSessions/*.{json,jsonl}` | exact where Copilot recorded them (`promptTokens`/`completionTokens` on finished requests in current builds); estimated from message text for older chats · premium-request multiplier read separately |
 | **Cursor** (native AI) | `Cursor/User/globalStorage/state.vscdb` under App Support / `%APPDATA%` / `~/.config` | partial — model, mode, timestamps, tool calls and AI-line stats are exact; tokens are on only ~2% of messages |
 | **opencode** | `~/.local/share/opencode/opencode.db`, `%LOCALAPPDATA%\opencode\opencode.db`, `~/.opencode/opencode.db` (or `$OPENCODE_DATA_DIR`) | exact (in/out/reasoning/cache); cost is read from opencode's own per-message value |
 | **Hermes Agent** | `~/.hermes/state.db` (or `$HERMES_HOME`, `%LOCALAPPDATA%\hermes`) | exact (in/out/cache/reasoning, per model) |
+| **OpenClaw** | `~/.openclaw/agents/<agent>/agent/openclaw-agent.sqlite` (or `$OPENCLAW_STATE_DIR`; also the older `~/.clawdbot`, `~/.moltbot`) and the older per-session `sessions/*.jsonl` | exact (in/out/cache read/cache write/reasoning, per response); its own logged cost is used only for a model with no verified price. Large events are stored zstd-compressed: read with the `zstd` command or Python 3.14+ |
 
 A tool you don't use simply contributes nothing. **Attribution is by tool, not by model** —
-a Claude or GPT model used *inside* Copilot/Cursor/opencode/Hermes counts under that tool, and the
+a Claude or GPT model used *inside* Copilot/Cursor/opencode/Hermes/OpenClaw counts under that tool, and the
 Models table lists each `model × tool` row separately.
 
 ---
 
 ## What you get
 
-Seven tabs, light + dark theme, everything date-filterable.
+Eight views in a left-hand sidebar, light + dark theme, everything date-filterable, and the
+**name of this machine** at the top — so a screenshot always says which computer it came from.
 
-**Overview** — KPI cards with sparklines and period-over-period deltas · Highlights (biggest
-day, priciest session, longest streak, busiest hour) · GitHub-style activity calendar (click a
-day to zoom to it) · daily activity stacked by tool · share by tool · **hour × weekday
-heatmap** · token composition.
+The controls read as a sentence above every view — "**Tokens** from **all tools** over
+**the last 30 days** ‹ ›" — click a bold phrase to change it; the arrows step back and
+forward a period at a time. Inside them: the **measure** (**Tokens · Cost · Messages · Time**
+— tokens by default; every chart and ranking switches together), the **period** (today, the
+last 7–365 days, this week / month / quarter / year, last month, all time, or a custom
+range), and a single **Filters** panel (tool, provider, model, project, IDE / surface, and *exact tokens only*).
+Active filters show as removable chips. Every figure is compared with the equal-length
+period just before it, and every chart has a **table view** (the grid icon) so nothing is
+readable only by hovering.
 
-**Cost** — total / per active day / 30-day run rate / per session / per prompt ·
-**cache hit rate and what caching saved you** · blended rate by model, toggleable between
-*all tokens* (cost ÷ every token, cache reads included — a low bar means heavily cached)
-and *per output* (cost ÷ generated tokens, the one that's comparable across providers) ·
-cumulative and daily cost by tool.
+**Overview** — one hero number (the chosen measure, tokens by default) with its change vs
+the previous period · per-day chart stacked by tool · tiles for the rest — spend, tokens,
+active time, prompts, replies, sessions and cache hit rate — each with a sparkline · **tool, model and project mix** (each one's share of the chosen measure) · highlights ·
+**hour × weekday heatmap** · token mix per tool · 12-month activity calendar (click a day).
 
-**Models & Providers** — **Anthropic vs OpenAI vs Google head-to-head** (independent of which
-tool ran the model) · concentric provider→model doughnut · provider share over time ·
-model-adoption timeline · **provider × tool matrix** · sortable `model × tool` table with a
-⚠ on any model missing a price row.
+**Cost** — total with per-active-day, 30-day run rate, per session and per prompt ·
+cumulative spend by tool against the previous period · **cache hit rate and what caching
+saved you** · spend by model, by project and by **token type** (what cache reads vs writes vs
+output actually cost you) · effective rate by model, as *all tokens* or *per output* (the one
+that's comparable across providers) · daily spend.
 
-**Tools & Agents** — tool calls per prompt / per message, context amplification, subagent
-token share · top tool calls · calls by category (read / edit / execute / web / agents / MCP)
-· **MCP server usage** · full sortable tool list.
+**Models** — provider cards (who made the model, independent of the tool that ran it) ·
+sortable `model × tool` table with a ⚠ on any model missing a price · model timeline ·
+provider share over time · **provider × tool matrix** · **model efficiency** (how often each
+model's edits land first time, retries per edit, tokens and cost per prompt).
 
-**Projects** — by tokens / cost / messages, concentration stats, and a table where clicking a
-row filters everything to that project.
+**Tools & agents** — active time, tool calls per prompt, context amplification, subagent
+share, MCP and web calls, Copilot premium requests, Cursor's AI lines kept · top tool calls
+· calls by category · **what your prompts were for** (building, fixing, refactoring,
+testing, exploring, git, deploys… — each prompt classified by what the agent did: the files
+it edited and the commands it ran; Claude Code & Codex) · **edits that landed first time** (one-shot rate per tool, retries,
+and what the retried prompts cost) · **where you work** (IDE × tool) · MCP servers, with the
+tools used out of those each server offered · **Skills** · the full tool list.
 
-**Sessions** — real session titles (not hashes), tool, project, model, tokens, cost, prompts,
-messages, tool calls, cache % — click any row for a detail panel with git branch, entrypoint,
-tool version, token breakdown and log size.
+**Projects** — ranked by the chosen measure, concentration stats, and a searchable table
+where clicking a row opens that project's sessions.
 
-**Optimize** — suggestions derived from your own logs, ranked by what they'd save:
-MCP servers you've connected but never call (their tool definitions ride in every
-request), sessions running at huge context, cache you paid to write and never read,
-a top-tier model doing trivial work, what each **Skill** costs you, and how much
-spend runs inside subagents. Nothing is shown unless your data supports it.
+**Sessions** — real session titles, tool, project, model, tokens, cost, prompts, replies,
+tool calls, active time, cache % — search, sort, and click any row for a detail panel.
+
+**Optimize** — suggestions derived from your own logs, ranked by what they'd save: sessions
+re-reading a very large context, thinking share, tool-heavy sessions that never delegated,
+cache written but never read, a costly model doing light work, what each **Skill** costs,
+edits that needed a retry, oversized **CLAUDE.md / AGENTS.md**, sessions that open heavier
+than your leanest ones, wasted file reads, installed skills and agents you never use, and
+MCP servers you never call, barely use, or load everywhere but use in one project. Nothing is shown unless
+your data supports it, and because the estimates overlap they are never summed.
 
 **Storage** — see below.
 
-**Filters** — an **IDE / surface** filter (VS Code, Insiders, Cursor, Codex Desktop,
-Claude Desktop, CLI…) alongside tool, provider, project and model, plus a *Where you work*
-matrix on Tools & Agents · flexible date range (14 presets incl. this week / month / quarter / year, plus a
-custom start–end picker), **compare vs. previous period**, multi-select dropdowns for tool,
-provider, project and model, search, and an "exact tokens only" toggle that drops the sources
-whose token counts are estimated. Filter state shows as removable pills.
+**Keyboard** — `1`/`7`/`3`/`9`/`a` ranges, `m` month-to-date, `,` / `.` previous / next
+period, `Shift`+`T`/`C`/`M`/`A` tokens / cost / messages / active time, `[` sidebar, `/`
+search, `t` theme, `r` refresh.
 
-**Keyboard** — `1`/`7`/`3`/`9`/`a` ranges, `m` month-to-date, `/` search, `t` theme, `r` refresh.
+**Version and updates** — the sidebar footer shows the running version. *Check for updates*
+asks GitHub (the only time the dashboard goes online, and only when you click); *Update*
+fast-forwards your checkout and restarts the server. It refuses if you have local edits or
+commits that aren't on GitHub. A copy that isn't a git clone has no update button.
 
 ---
 
@@ -124,12 +146,12 @@ whose token counts are estimated. Filter state shows as removable pills.
 The tools you use write a *lot* to disk, and nothing else tells you how much. The **Storage**
 tab shows total footprint and per-tool bytes, a free-space gauge that warns when the drive is
 nearly full, storage accumulation over time, the largest individual log files, **bytes per 1M
-tokens** (which tool stores its history most expensively), AI data on disk the dashboard does
+tokens** (which tool stores its history most expensively), AI data on disk AgentTelemetry does
 *not* analyse, and copy-paste cleanup commands **generated for your own paths and your own
-shell** (`find` on macOS/Linux, PowerShell on Windows). The dashboard never deletes anything
+shell** (`find` on macOS/Linux, PowerShell on Windows). AgentTelemetry never deletes anything
 itself.
 
-Deleting old logs does **not** shrink your analytics — the dashboard keeps every session it has
+Deleting old logs does **not** shrink your analytics — AgentTelemetry keeps every session it has
 already parsed, so the cleanup is safe.
 
 ---
@@ -150,9 +172,14 @@ dollars**, so cost is always derived. Rates live in `parser.py → PRICING` as
   see `parser.py → PRICE_HISTORY`.
 - **These are API-equivalent values.** If you're on a subscription (Claude Max/Pro, Codex,
   Copilot), you don't pay per token — the $ is "what this would cost at API rates."
-- **Copilot / Cursor** don't log real token counts, so their tokens (and thus $) are rough.
+- **Cursor** rarely logs token counts, and **older Copilot chats** have none, so their tokens
+  (and thus $) are rough. Current Copilot builds log real per-request tokens, which are used.
   Copilot's honest metric is **request count** and its **premium-request** total (both shown);
   Cursor's is **messages, tool calls and AI lines kept** (also shown).
+- **Billing details that change the price are applied**: prompt-cache writes at their own
+  rate (Claude and GPT-5.6/GPT-6), Claude fast mode, US-only inference (1.1x) and web
+  searches ($10/1K). A forked or subagent Codex thread's replay of its parent is skipped,
+  so it isn't billed twice.
 - A model with no price row reads as **$0** — add it to `PRICING` (see below).
 
 ## Note on log retention
@@ -162,7 +189,7 @@ Some tools delete old logs. **Claude Code** prunes transcripts after `cleanupPer
 its cache even after a tool deletes the on-disk log, so totals don't silently shrink once seen.
 
 You can change Claude Code's retention window from the dashboard itself — the **⚙** button
-in the header edits `cleanupPeriodDays` in your own `~/.claude/settings.json` (leave it blank
+at the foot of the sidebar edits `cleanupPeriodDays` in your own `~/.claude/settings.json` (leave it blank
 to fall back to the tool's default). The write is atomic and keeps a `.bak`; every other
 setting in the file is preserved untouched. It's the only file outside its own cache that the
 dashboard ever writes.

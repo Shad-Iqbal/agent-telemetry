@@ -2,7 +2,7 @@
 
 ## What this project is, security-wise
 
-AI Usage Dashboard reads the interaction logs your AI coding tools already write to
+AgentTelemetry reads the interaction logs your AI coding tools already write to
 your own machine and serves them back to you as a local web page. That makes it a
 **local web server with access to some of the most sensitive text on your disk** —
 your prompts, session titles, project names and file paths.

@@ -13,8 +13,11 @@ const SRC = {
   "claude-desktop": {label:"Claude Desktop", v:"--t-claude-desktop",  exact:true },
   opencode:         {label:"opencode",       v:"--t-opencode",        exact:true },
   hermes:           {label:"Hermes Agent",   v:"--t-hermes",          exact:true },
+  openclaw:         {label:"OpenClaw",       v:"--t-openclaw",        exact:true },
 };
-const ORDER = ["claude","codex","copilot","cursor","claude-desktop","opencode","hermes"];
+// adjacency is what the palette validator checks — openclaw's red sits between amber
+// and blue, never beside hermes's olive (red/green fails deutan CVD in dark mode)
+const ORDER = ["claude","codex","copilot","cursor","claude-desktop","openclaw","opencode","hermes"];
 const PROVIDERS = ["Anthropic","OpenAI","Google","Other"];
 const PROV_VAR = {Anthropic:"--p-anthropic",OpenAI:"--p-openai",Google:"--p-google",Other:"--p-other"};
 const DOW = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
@@ -57,9 +60,15 @@ const fmtTok = n => { n=n||0;
   if(n>=1e3) return (n/1e3).toFixed(1)+"K";
   return ""+Math.round(n); };
 const fmtUSD = n => { n=n||0;
-  if(n>=1000) return "$"+(n/1000).toFixed(1)+"k";
-  if(n>=10)   return "$"+n.toFixed(0);
+  if(n>=100) return "$"+Math.round(n).toLocaleString();
+  if(n>0 && n<0.01) return "<$0.01";
   return "$"+n.toFixed(2); };
+/* Axis ticks only — a tick has no room for "$1,752", and the tooltip carries the exact figure. */
+const fmtUSDk = n => { n=n||0;
+  if(n>=1e6) return "$"+(n/1e6).toFixed(1)+"M";
+  if(n>=1000) return "$"+(n/1000).toFixed(n>=1e4?0:1)+"k";
+  if(n>=10) return "$"+n.toFixed(0);
+  return "$"+(+n.toFixed(2)); };
 const fmtUSD2 = n => "$"+(n||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
 const fmtNum = n => (n||0).toLocaleString();
 const fmtPct = n => (n*100).toFixed(n<0.1?1:0)+"%";
@@ -95,11 +104,12 @@ const S = {
   ides:new Set(),        // which IDE / surface the work ran in
   search:"",
   exactOnly:false,
-  metric:"tokens", projMetric:"tokens", provMetric:"cost", rateMetric:"all", ideMetric:"tokens",
+  metric:"tokens", rateMetric:"all",   // tokens lead; cost is an estimate
+  tableView:new Set(),   // chart ids currently shown as their table twin
   live:true,
   muted:{},             // chartId -> Set of muted series labels
   sessSort:{key:"end",dir:-1}, modelSort:{key:"cost",dir:-1},
-  toolSort:{key:"count",dir:-1}, projSort:{key:"tokens",dir:-1},
+  toolSort:{key:"count",dir:-1}, effSort:{key:"turns",dir:-1}, projSort:{key:"tokens",dir:-1},
   fileSort:{key:"bytes",dir:-1},
   modelExpanded:new Set(),  // model names expanded to show their per-tool breakdown
 };
@@ -196,7 +206,8 @@ function clipSession(s, r){
     asst+=v[5]; user+=v[6]; tools+=v[7]; prem+=v[8]||0; active+=v[9]||0;
   }
   return Object.assign({}, s, {cost, in:i, out:o, cr, cc, asst, user, tools, prem, active,
-    req:asst, span:allN, clipped:inN<allN});
+    // model calls aren't split per day, so they're only exact when the whole session is in range
+    req: inN<allN ? asst : s.req, span:allN, clipped:inN<allN});
 }
 
 /* Tool-call rows carry a date + source but no project/model dimension, so the
@@ -254,12 +265,15 @@ function sparkline(vals, color, w, h){
     <path d="${d}" fill="none" stroke="${color}" stroke-width="1.5"
       stroke-linejoin="round" stroke-linecap="round"/></svg>`;
 }
+/* Change vs the equal-length period just before this one. `invert` = up is bad
+   (spend). An arrow always rides with the colour so direction is never hue-alone. */
 function deltaHTML(cur, prev, invert){
-  if(prev==null || !isFinite(prev) || prev===0) return `<span class="delta flat">—</span>`;
+  if(prev==null || !isFinite(prev) || prev===0) return `<span class="delta flat">new</span>`;
   const d=(cur-prev)/Math.abs(prev);
   if(Math.abs(d)<0.005) return `<span class="delta flat">no change</span>`;
   const up=d>0, good = invert ? !up : up;
-  return `<span class="delta ${good?"up":"down"}">${up?"▲":"▼"} ${Math.abs(d*100).toFixed(0)}%</span>`;
+  const pct = Math.abs(d)>=10 ? Math.round(Math.abs(d))+"×" : Math.abs(d*100).toFixed(0)+"%";
+  return `<span class="delta ${good?"up":"down"}">${up?"▲":"▼"} ${pct}</span>`;
 }
 
 /* ---------- tooltip ---------- */
@@ -282,13 +296,12 @@ function applyTheme(mode){
   const dark = mode==="dark" || (mode==="auto" &&
     matchMedia("(prefers-color-scheme: dark)").matches);
   root.dataset.resolved = dark?"dark":"light";
-  localStorage.setItem("aiu.theme", mode);
-  document.getElementById("themeBtn").textContent = mode==="auto"?"◐":(dark?"☾":"☀");
+  try{ localStorage.setItem("aiu.theme", mode); }catch(e){}
   document.getElementById("themeBtn").title = "Theme: "+mode+" (t)";
   if(RAW) renderAll();
 }
 function cycleTheme(){
-  const cur = localStorage.getItem("aiu.theme")||"auto";
+  let cur="auto"; try{ cur = localStorage.getItem("aiu.theme")||"auto"; }catch(e){}
   applyTheme(cur==="auto"?"light":cur==="light"?"dark":"auto");
 }
 
@@ -304,12 +317,44 @@ document.addEventListener("click", e=>{
 });
 document.addEventListener("keydown", e=>{
   if(e.key==="Escape"){ closeDD(); closeDrawer(); }
-  if(e.target.tagName==="INPUT"||e.target.tagName==="SELECT") return;
+  if(e.target.tagName==="INPUT"||e.target.tagName==="SELECT"||e.target.tagName==="TEXTAREA"
+     ||e.target.isContentEditable) return;
+  // the browser's own shortcuts (Cmd+A select all, Cmd+T new tab, Cmd+[ back, Cmd+Shift+T…)
+  // must not also switch the range, theme or measure behind them. Alt/AltGr stay allowed:
+  // some layouts type "[" with them (Option+5, AltGr+8 on German keyboards)
+  if((e.metaKey||e.ctrlKey) && !(e.getModifierState && e.getModifierState("AltGraph"))) return;
   const map={"1":"today","7":"7d","3":"30d","9":"90d","a":"all","m":"mtd"};
   if(map[e.key]){ S.preset=map[e.key]; syncRangeUI(); renderAll(); }
   if(e.key==="t") cycleTheme();
   if(e.key==="r") document.getElementById("refreshBtn").click();
-  if(e.key==="/"){ e.preventDefault(); document.getElementById("search").focus(); }
+  if(e.key==="[") toggleSide();
+  if(e.key===",") stepPeriod(-1);
+  if(e.key===".") stepPeriod(1);
+  const mk={"T":"tokens","C":"cost","M":"messages","A":"time"}[e.key];   // shift+letter
+  if(mk){ S.metric=mk; renderAll(); }
+  if(e.key==="/"){ const box=document.querySelector(".view.on .search-in");
+    if(box){ e.preventDefault(); box.focus(); } }
+});
+
+/* ---------- collapsible sidebar (remembered per browser) ---------- */
+function setSide(collapsed){
+  document.getElementById("app").classList.toggle("side-collapsed", collapsed);
+  const b = document.getElementById("sideToggle");
+  if(b){ const l = collapsed ? "Expand sidebar ([)" : "Collapse sidebar ([)";
+    b.title = l; b.setAttribute("aria-label", l.replace(" ([)","")); b.setAttribute("aria-expanded", String(!collapsed)); }
+  try{ localStorage.setItem("aiu.side", collapsed ? "collapsed" : "open"); }catch(e){}
+}
+function toggleSide(){ setSide(!document.getElementById("app").classList.contains("side-collapsed")); }
+document.addEventListener("DOMContentLoaded", () => {
+  // each nav item's label doubles as its tooltip when the rail hides the text
+  for(const b of document.querySelectorAll("#tabs button"))
+    if(!b.title) b.title = (b.querySelector("span")||{}).textContent || "";
+  const t = document.getElementById("sideToggle");
+  if(t) t.addEventListener("click", toggleSide);
+  let saved = null; try{ saved = localStorage.getItem("aiu.side"); }catch(e){}
+  const qs = new URLSearchParams(location.search).get("side");   // ?side= presets it (screenshots)
+  if(qs === "collapsed" || qs === "open") setSide(qs === "collapsed");
+  else if(saved === "collapsed") setSide(true);
 });
 
 /* ---------- drawer ---------- */

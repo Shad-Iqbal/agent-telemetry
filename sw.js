@@ -1,4 +1,4 @@
-/* Service worker for the AI Usage Analytics PWA.
+/* Service worker for the AgentTelemetry PWA.
  *
  * NETWORK-FIRST on purpose. The obvious choice for a PWA is cache-first, but the
  * server here is on the same machine — the network IS localhost, so there is no
@@ -10,7 +10,7 @@
  * The cache is therefore a safety net, not a speed-up: you always get what the
  * server currently has, and the copy on disk is only used when the server is down.
  */
-const CACHE = "ai-usage-shell-v2";
+const CACHE = "agenttelemetry-shell-v3";
 const SHELL = [
   "/",
   "/static/app.css",

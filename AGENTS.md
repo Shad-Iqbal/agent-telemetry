@@ -1,6 +1,6 @@
 # AGENTS.md
 
-A local, **stdlib-only** dashboard that reads the logs your AI coding tools already write
+**AgentTelemetry** — a local, **stdlib-only** dashboard that reads the logs your AI coding tools already write
 to this machine and shows tokens, estimated cost, and breakdowns by model / day / tool /
 project / hour. Nothing leaves the machine. Nothing to install.
 
@@ -20,12 +20,26 @@ first — it may already be up.
 | `parser.py` | `discover()` lists log files; `update_file()` routes each to a `parse_*`. Holds `PRICING` and the model-name normalizers. |
 | `static/core.js` | `SRC`/`ORDER`, state `S`, formatting, date ranges, filtering. |
 | `static/charts.js` | Chart.js theming, `mk()`/`hbar()`/`areaDS()`, calendar + heatmap SVG. |
-| `static/views.js` | The seven views, controls, events, boot. |
-| `index.html` | Shell only: header, tabs, filter bar, card markup. |
+| `static/views.js` | The eight views, controls, events, boot. |
+| `index.html` | Shell only: sidebar (device name, tabs, live/refresh/theme/settings), page header (period, range, metric, filters), card markup, an SVG icon sprite. |
 
-Eight tabs: Overview · Cost · Models & Providers · Tools & Agents · Projects · Sessions ·
-**Optimize** · Storage. Tab lives in `location.hash`; `?theme=` and `?range=` preset the UI (handy for
-headless screenshots).
+Eight tabs in the sidebar: Overview · Cost · Models · Tools · Projects · Sessions ·
+**Optimize** · Storage. Tab lives in `location.hash`; `?theme=`, `?range=`, `?metric=`
+(`tokens|cost|messages|time`) and `?side=collapsed|open` preset the UI (handy for headless
+screenshots). The sidebar collapses to an icon rail (`[`, remembered as `aiu.side`); below
+900px it becomes a top bar instead.
+
+**The controls are a sentence**, not a toolbar: "**Tokens** from **all tools** over **the last
+30 days** ‹ ›". Each bold phrase is a `.dd` that opens its menu (`#metricPanel`,
+`#filtersPanel`, `#rangePanel`); `periodPhrase()` supplies the connecting word ("over",
+"in", "across", or none for "today" / "this month"); ‹ › (`stepPeriod`, keys `,` `.`) move
+the window back or forward by its own length as a custom range, stopping at today. Tokens
+are the default measure — the Overview hero follows it, and cost is one of its tiles. Every chart has a table twin (`.tv[data-tv]`, `chartTable()`), and each view
+leads with one hero figure — keep it that way rather than adding a second.
+
+The device name at the top of the sidebar is `DEVICE` in `dashboard.py`: the OS's own name
+for the machine (`scutil --get ComputerName` on macOS, `%COMPUTERNAME%`, `/etc/machine-info`
+`PRETTY_HOSTNAME`), falling back to the bare hostname. It's in the payload as `device`.
 
 Aggregates are keyed `records["date\tmodel"]`, `tools["date\tname"]`,
 `hourly["date\thour"]` — **every dimension carries a date** so the UI can filter by range.
@@ -122,6 +136,13 @@ so that file stops being a cache and becomes the sole record. Two consequences:
   them — where they exist, the transcript matches them exactly *except* for those calls,
   typically a few percent of cost. Don't estimate them from `compactMetadata` token sizes.
 - **`codex-auto-review` has no public price**, so its tokens are counted but cost $0.
+- **OpenAI long-context rates are not billed.** The pricing page lists a higher rate for
+  long prompts on GPT-5.4+ but states no threshold, so there is nothing to apply it to
+  without guessing. 35 Codex requests here passed 272K input tokens; they bill at the
+  standard rate.
+- **Claude's advisor iterations** (`usage.iterations[].type == "advisor_message"`) are not
+  priced separately — none exist in any log seen, so their shape can't be verified. Every
+  iteration here is a plain `message`, already covered by the response's own `usage`.
 
 ## Field conventions that differ by source (do not "fix" these)
 
@@ -164,6 +185,17 @@ so that file stops being a cache and becomes the sole record. Two consequences:
   occasionally logs `cache_creation_input_tokens: 0` alongside a non-zero
   `cache_creation.ephemeral_1h_input_tokens`. Both are recorded as-is; cost uses the
   tiered fields. Seen once in 813 rows, worth ~$0.003 — upstream, not ours.
+- **Claude request options become model rows.** `usage.speed == "fast"` appends
+  `FAST_SUFFIX` (" (fast)") and `usage.inference_geo == "us"` appends `US_SUFFIX` (" (US)").
+  `price_of()` strips them: fast mode reads `FAST_PRICING` (a model with no published fast
+  rate prices at zero, not at a guess) and US-only multiplies every rate by 1.1. Web
+  searches (`server_tool_use.web_search_requests`) land in `ws` and `_cost()` adds
+  $10 per 1,000. None of the three occur on this machine yet — they are for other users.
+- **Cache writes with no published write rate bill at the input rate**, never $0 — `_cost()`
+  falls back to it. Most OpenAI rows have cw5 = 0; GPT-5.6 and GPT-6 list 1.25x input.
+- **`req` is one billed model call**, `asst` one visible reply. Codex, Copilot and Hermes
+  fill `req`; for Codex both are non-zero and differ (a reply can take many calls), so the
+  Sessions drawer shows "Model calls" separately rather than through the `asst||req` fallback.
 - **`side` vs `subagents`**: Claude folds subagent tokens into the parent's stream
   (`side`); Codex spawns wholly separate sessions and only the parent's spawn COUNT
   (`subagents`) is knowable. Check both when asking "did this session delegate".
@@ -193,6 +225,17 @@ so that file stops being a cache and becomes the sole record. Two consequences:
   `threads.tokens_used` in `state_5.sqlite` (it resets, and omits compactions) nor a
   `guardian_review` rollout's total (forked from the session it reviews, it starts with
   that session's total on the clock) can be compared directly.
+- **A forked Codex thread opens by replaying its parent.** `/fork` and every subagent
+  (Codex forks subagents from the parent) write `session_meta.forked_from_id`, then rewrite
+  the parent's whole history into the new file within ~0.2s: token_counts, replies,
+  prompts, tool calls, even spawn markers. `parse_codex` skips that burst — it ends at the
+  first gap over 1s (`state.replay_last`) — keeping only `turn_context` for the inherited
+  model. One `/fork` here replayed 73 usage events, matching its parent's running total to
+  the token. Don't use a fixed window: real work resumed 3.5–4.8s after `session_meta` in
+  every fork seen, so a fixed 5s cutoff would also clip the fork's own first turn.
+- **Codex cache writes are carved out of input.** `cache_write_input_tokens` is a subset of
+  `input_tokens`, disjoint from `cached_input_tokens` (in >= cached + written in all 35,736
+  events checked), so it moves from `in` to `cc`/`cc5` and bills at the write rate.
 - **Codex's built-in tools are `response_item`s of their own type** —
   `web_search_call`, `tool_search_call`, `image_generation_call` — not function calls and
   never an `event_msg`. Web searches were uncounted until they were read from there.
@@ -217,13 +260,36 @@ so that file stops being a cache and becomes the sole record. Two consequences:
   `createdAt` — use it, not the session's, or a months-long session lands on day one.
   `ItemTable` holds `aiCodeTracking.dailyStats.*` (AI lines suggested vs accepted). Only
   ~2% of bubbles carry tokens; that's Cursor, not a parsing gap.
-- **Copilot** logs no tokens at all. It does log a premium-request multiplier in
-  `result.details` ("… • 1x") — that's its real billing unit.
+- **Copilot** logs real `promptTokens`/`completionTokens` on finished requests in current
+  VS Code builds; older chats have none, so their tokens are estimated from message text
+  (chars/4). It also logs a premium-request multiplier in `result.details` ("… • 1x") —
+  that's its real billing unit. Not read yet (none exist on this machine): the Copilot CLI's
+  `~/.copilot/session-state/*/events.jsonl`, JetBrains, and `GitHub.copilot-chat/transcripts/`
+  (turns only, no tokens).
 - **opencode**: current versions use one SQLite `opencode.db`; older ones use
   `storage/message/<session>/msg_*.json`. Both are read. Only the DB records a real
   per-message cost, so cost routing keys on whether the aggregate's path ends `.db`.
 - **Gemini CLI** is deliberately not parsed — its `chats/*.jsonl` hold only session
   bookkeeping, no prompts/tokens/model.
+- **OpenClaw** (`$OPENCLAW_STATE_DIR`, default `~/.openclaw`; the former names `~/.clawdbot`
+  and `~/.moltbot` too): one aggregate per AGENT directory, `agents/<id>/`, fully reparsed
+  when its signature (DB, `-wal`, every transcript) changes. Current builds keep every session
+  in `agent/openclaw-agent.sqlite` — `transcript_events(session_id, seq, event_json,
+  event_zstd, ...)`, titles from `session_nodes.label` / `display_name`, the model from
+  `session_windows`. Events of 1 KB or more are stored zstd-compressed with `event_json`
+  NULL; `_zstd_decode_many` uses Python 3.14's `compression.zstd` or one batched run of the
+  `zstd` command, and what can't be decoded is COUNTED and shown ("N OpenClaw events
+  unread"), never estimated. Older builds wrote `sessions/<sessionId>.jsonl` (plus the
+  `.jsonl.deleted.<ts>` archives the SQLite migration leaves behind) — read only for a
+  session id the database doesn't have, or a migrated install counts twice.
+  Event shape either way: a `session` header (`cwd`), then `message` entries; an assistant
+  message's `usage` is `{input, output, cacheRead, cacheWrite, cacheWrite1h?, reasoning?,
+  cost.total}` where `input` EXCLUDES cache reads and writes (OpenClaw's model layer
+  subtracts them from the provider's prompt count) and `reasoning` is a subset of `output`.
+  A fork copies its parent's messages, so a response is counted once per agent, keyed by
+  (message timestamp, model, token counts) — and the check runs before any day/start
+  bookkeeping, or the copy gives the fork its parent's start date. `usage.cost.total` is
+  OpenClaw's own estimate: `_cost()` uses it only for a model with no `PRICING` row.
 - **Hermes Agent** (`~/.hermes/state.db`, `$HERMES_HOME`, or `%LOCALAPPDATA%\hermes`): one
   SQLite store for all sessions. Unlike Cursor it logs a real per-model in/out/cache/
   reasoning breakdown in `session_model_usage` (hence `exact:true`), one row per model a
@@ -240,7 +306,8 @@ so that file stops being a cache and becomes the sole record. Two consequences:
 
 **A model shows $0 / an unknown name** → in `parser.py`, add
 `PRICING["<Display Name>"] = (input, output, cache_write_5m, cache_write_1h, cache_read)`
-(USD per 1M; OpenAI rows use `0, 0` for the write tiers and put the cached rate last), and
+(USD per 1M; OpenAI rows put the cache-write rate in cw5 — 1.25x input where the pricing
+page lists one, else 0, which bills at the input rate — 0 in cw1, and the cached rate last), and
 make the normalizer map the raw id to that name. Pricing applies at request time — no
 re-parse needed; a normalizer change needs `--rebuild` + a `CACHE_VERSION` bump.
 
@@ -302,6 +369,30 @@ Codex server looks unused. Configured servers come from `~/.claude.json` and the
 `[mcp_servers.*]` blocks of `~/.codex/config.toml` (parsed by regex, not tomllib,
 which is 3.11+).
 
+**Setup checks** (payload fields in brackets): instruction files over 8 KB, priced as the
+bytes actually sent × the requests that carried them at the cache-read rate
+(`context_files`, sizes only, never contents). `_context_files` follows each agent's own
+loading rules, which differ:
+- **Claude Code** reads ~/.claude/CLAUDE.md, then `CLAUDE.md`, `CLAUDE.local.md` and
+  `.claude/CLAUDE.md` in the cwd and *every* directory above it, home included. From
+  2.1.277 a project with none of those gets its `AGENTS.md` instead (both with the
+  `agents-md@builtin` "claude-md-and-agents-md" setting). That entry carries `since`, so
+  older requests aren't priced. A file records only its newest version (`cliver`), so
+  `since` is the earliest *last* day among the sessions there that ran 2.1.277+: it can
+  start late, never early. Before this, this repo's own 37 KB AGENTS.md was never counted.
+- **Codex** reads `~/.codex/AGENTS.override.md`, else `AGENTS.md`, then walks from the
+  git root DOWN to the cwd. It takes at most one file per directory (the override wins)
+  and stops at `project_doc_max_bytes` (32 KiB) in total, so `sent` can be less than
+  `bytes`. Walking up past the git root counted files Codex never reads.
+
+The other setup checks: sessions that open heavier than the user's own leanest 10% (`open_ctx` on each
+session: the first request's full input); re-reads of unchanged files and reads inside
+build / dependency folders, with the tokens they returned (`reads`, Claude Code — note it
+already answers an unchanged re-read with a short stub, so this rarely fires); installed
+skills and subagents unused over ≥ 14 days (`installed`, description lengths only); MCP
+servers used for ≤ 10% of the tools they offer, or used in one project while loaded in
+several (`mcp_inventory.loaded/calls`, now per project).
+
 It leans on three signals the other tabs don't use: `attributionSkill` (which Skill
 drove a request — this is how "/dataviz cost you $20" is possible), a per-request
 context-size histogram (`agg["ctx"]`, bucketed 0-50k / 50-150k / 150-400k / 400k+),
@@ -309,6 +400,61 @@ and the MCP servers configured in `~/.claude.json` (`_mcp_servers()`) compared a
 `mcp__<server>__*` tool calls. Server names are matched loosely — the same server
 appears as `claude-in-chrome` and `Claude_in_Chrome` across versions, and
 `google-workspace` shows up in tool names as `workspace`.
+
+## Activity — what each prompt was for, and whether its edits landed
+
+`agg["activity"]` (`"date\tmodel\tcategory"` → turns, edits, oneshot, retries and token
+fields) comes from the ACTIVITY block in `parser.py`; the payload ships it as `activity`,
+costed per row by `_cost()`.
+
+- **Classified by what the agent did, not by guessing from words.** `_classify_turn` looks
+  first at the evidence: an edit makes it a build/fix/refactor turn — or `docs`/`test` when
+  every edited file is documentation or a test (`_file_kind`); a spawned agent is `delegate`;
+  otherwise the shell commands it ran decide (`_cmd_kinds`: a test runner → `test`, a
+  writing `git`/`gh pr` → `vcs`, an installer/builder/deployer → `ops`), then the tool mix
+  (`mcp` → `data`, web → `research`, reads/shell → `explore`). The prompt's wording only
+  settles what an edit was FOR and what a tool-free turn was: `_prompt_intents` scores
+  weighted word lists and the highest total wins, ties by declaration order.
+  Categories: build · fix · refactor · test · docs · review · explore · research · data ·
+  plan · delegate · vcs · ops · chat. `_LEGACY_CATEGORY` maps ids older caches used.
+- **Tool kinds come from the names each agent actually logs** (`_TOOL_KIND`). Codex's
+  `exec`/`exec_command`/`write_stdin` are shell, `apply_patch` edit, `update_plan` plan,
+  `view_image` read; a Codex subagent spawn is its `SubAgentActivity` "started" marker.
+
+- **A turn is one typed prompt plus everything until the next one.** It opens at the same
+  places prompts are counted (`_turn_open`), so the prompt filters above decide what a turn
+  is. A queued steer does NOT open a turn — it redirects the running one. A subagent's file
+  never opens one: its work is the parent's delegation turn. A Claude session that replies
+  before its first counted prompt (it opened with a slash command, `isMeta` text or a task
+  notification) gets an *implicit* turn (`imp`): its tokens are classified and costed, but
+  it adds nothing to turn, edit, one-shot or retry counts, since nobody typed a prompt.
+  Without it that work reached no Activity row at all.
+- **The prompt's text never reaches the cache.** `_prompt_intents()` scores it on arrival
+  and keeps only small per-intent numbers; the running turn persists in `state.turn` (incremental parsing).
+  `activity_of()` adds the still-open last turn read-only, since nothing will close it.
+- **Retry (rework)** = a file edited again after a *check* ran — a command that tests,
+  builds, lints or runs the project (`_cmd_kinds` → "check"; a lookup like `rg`/`cat`/`git
+  log` never is). Each check marks every file edited so far; editing a marked file counts
+  one and re-arms it. `oneshot` = an editing turn with none. `retry_cost` is the whole turn's cost, not the
+  redo alone — the Optimize finder compares it with `edit_cost` (all editing turns) to get
+  an excess from the user's own averages rather than a guessed fraction.
+- **Codex edits come from `patch_apply_end` / `item_completed:FileChange`**, the one place
+  every build records each file a patch touched — Codex Desktop applies patches from inside
+  its `exec` JS tool, which never shows as `apply_patch`. Once a rollout shows either event,
+  `apply_patch` calls stop counting for activity so an edit isn't counted twice. The very
+  first event follows the `apply_patch` call that was already counted, under the name the
+  patch text used (usually relative, the event's is absolute), so `_codex_edit_event`
+  re-keys that file instead of counting it again. Otherwise 10 of 37 rollouts here held the
+  same file under two names. `exec`
+  programs are scanned for their `cmd:` strings so their commands can be judged; one whose
+  commands can't be read is neither a check nor a lookup.
+- Turns are attributed to the model that answered most; tokens split by the model that
+  actually produced them.
+
+**MCP inventory** (`mcp_inventory` in the payload): Claude Code announces the tools each
+session is offered as `type:"attachment"` / `deferred_tools_delta` records (names only —
+full definitions load when searched for). `agg["mcp_offered"]` keeps {server → first date,
+tool names}; the Tools tab's MCP table reads used / offered and sessions loaded from it.
 
 ## Active time — a gap-capped estimate, not wall-clock length
 
@@ -350,6 +496,28 @@ must not report three days of "active" time. Formatted client-side by `fmtDur()`
   `[cost,in,out,cr,cc,asst,user,tools,prem,active]` — specifically so nothing that reads
   it by index elsewhere needs to change. `static/core.js`'s `clipSession()` is the one
   place that unpacks it.
+
+## Version and self-update
+
+The sidebar footer shows the running version from this checkout's git metadata
+(`VERSION` in `dashboard.py`: `git describe --tags`, commit, branch). **Checking for an
+update is the only thing that touches the network, and only on a click** — never on a
+timer, which would break "nothing leaves this machine". `POST /api/update` (through
+`_csrf_ok()`): `check` fetches the upstream and reports how far behind; `apply`
+fast-forwards only — it refuses local edits to tracked files and commits the upstream
+doesn't have — then saves the cache and re-execs the process (`_restart`), and the page
+reloads once the new commit answers. A copy that isn't a git checkout shows no button.
+The re-exec drops `--rebuild` (and any prefix argparse would accept for it) from the
+arguments: it would delete the cache that was just saved, archived history included.
+
+`_upstream()` asks the remote (`ls-remote`) whether the branch's upstream still exists, and
+falls back to the remote's default branch when it doesn't. A feature branch that was merged
+and deleted keeps its local tracking ref, because a plain `fetch` never prunes. Comparing
+against that stale ref reported "Up to date" forever, while `main` had moved on.
+
+`load()` keeps a fetch failure ("cannot reach /api/data") apart from a render failure: the
+second sets `data-js-error` — it used to be reported as the server being down, which hid a
+render bug from the headless sweep.
 
 ## Gotchas
 

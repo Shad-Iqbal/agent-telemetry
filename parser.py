@@ -12,7 +12,7 @@ Mac/Linux install of the same tools.
 
 No third-party dependencies — stdlib only.
 """
-import os, sys, json, glob, re, time
+import os, sys, json, glob, re, time, shutil, subprocess
 from datetime import datetime, timezone
 
 HOME = os.path.expanduser("~")
@@ -134,6 +134,23 @@ def _hermes_home():
 
 HERMES_DB = os.path.join(_hermes_home(), "state.db")
 
+# OpenClaw (formerly Clawdbot / Moltbot) — $OPENCLAW_STATE_DIR, default ~/.openclaw,
+# with one directory per agent under agents/. Current builds keep every session of an
+# agent in agents/<id>/agent/openclaw-agent.sqlite; older ones wrote one JSONL
+# transcript per session under agents/<id>/sessions/ (the SQLite migration leaves
+# those behind as <id>.jsonl.deleted.<ts> archives).
+def _openclaw_roots():
+    override = os.environ.get("OPENCLAW_STATE_DIR", "").strip()
+    roots = [override] if override else []
+    roots += [os.path.join(HOME, d) for d in (".openclaw", ".clawdbot", ".moltbot")]
+    seen, out = set(), []
+    for r in roots:
+        r = os.path.normpath(os.path.expanduser(r))
+        if r not in seen:
+            seen.add(r); out.append(r)
+    return out
+
+
 EDITOR_LABEL = {
     "Code": "VS Code",
     "Code - Insiders": "VS Code Insiders",
@@ -152,8 +169,8 @@ EDITOR_LABEL = {
 # NOT the old $15/$75 — Opus pricing dropped with 4.5). Cache write = 1.25x input
 # (5-min TTL) / 2x input (1-hour TTL); cache read = 0.1x input, EXCEPT Opus 5.5
 # (0.05x) and Fable/Mythos 5.1 (0.025x) — so the cache_read slot is written out per
-# row, never derived from input. OpenAI rows have no cache-write tier
-# (cw5/cw1 = 0); cached input goes in the cache_read slot.
+# row, never derived from input. Most OpenAI rows have no cache-write tier
+# (cw5/cw1 = 0, billed at the input rate); cached input goes in the cache_read slot.
 # Codex/Copilot/Cursor are subscription-billed, so their $ is an API-equivalent
 # estimate, not an actual charge. Costs are computed at request time — edit
 # freely, no re-parse needed.
@@ -192,23 +209,22 @@ PRICING = {
     # OpenAI GPT-5.6 series (Sol/Terra/Luna) — CURRENT rates, verified against
     # developers.openai.com/api/docs/pricing (2026-09-23). All three are cuts from
     # the launch prices, which PRICE_HISTORY keeps for usage dated before them.
-    # cache read = 0.1x input; a >272K-input surcharge (2x in/1.5x out) is not modeled.
+    # cache read = 0.1x input; cache write = 1.25x input (the pricing page lists it
+    # for GPT-5.6 and GPT-6 only — older rows keep 0, which _cost() bills at the
+    # plain input rate). The page lists long-context rates but states no threshold,
+    # so they are not modeled; see AGENTS.md "What the logs cannot show".
     # Sol's $4/$20 is a promo "at least through November 21, 2026" — if it reverts,
     # move this tuple into PRICE_HISTORY and restore $5/$30 here.
-    "GPT-5.6 Sol": (4, 20, 0, 0, 0.40),
-    "GPT-5.6 Terra": (2, 12, 0, 0, 0.20),
-    "GPT-5.6 Luna": (0.20, 1.20, 0, 0, 0.02),
+    "GPT-5.6 Sol": (4, 20, 5.00, 0, 0.40),
+    "GPT-5.6 Terra": (2, 12, 2.50, 0, 0.20),
+    "GPT-5.6 Luna": (0.20, 1.20, 0.25, 0, 0.02),
     # GPT-6 — verified directly against developers.openai.com/api/docs/models/
     # gpt-6-{astra,sol,luna} and the pricing page (2026-09-23); Sol and Luna launched
-    # 2026-09-22 at half GPT-5.6's promo price. Cache-write tiers are 0 like the
-    # other OpenAI rows: newer Codex builds DO log cache_write_input_tokens, but as
-    # a subset of input_tokens, and parse_codex leaves them inside "in" — so they
-    # bill at 1x input instead of OpenAI's 1.25x write rate, a small undercount.
-    # Same >272K-input surcharge caveat as GPT-5.6/5.5 (2x in+cache, 1.5x out) is
-    # not modeled — no source currently threads context length into _cost().
-    "GPT-6 Astra": (10, 50, 0, 0, 1),
-    "GPT-6 Sol": (2, 10, 0, 0, 0.20),
-    "GPT-6 Luna": (0.10, 0.50, 0, 0, 0.01),
+    # 2026-09-22 at half GPT-5.6's promo price. Cache write 1.25x input, as above —
+    # parse_codex carves cache_write_input_tokens out of input into cc5.
+    "GPT-6 Astra": (10, 50, 12.50, 0, 1),
+    "GPT-6 Sol": (2, 10, 2.50, 0, 0.20),
+    "GPT-6 Luna": (0.10, 0.50, 0.125, 0, 0.01),
     # OpenAI GPT-5.4 / 5.5 — verified from OpenAI API pricing docs (2026-07).
     # NOTE: GPT-5.5 has a >272K-input surcharge (2x in / 1.5x out for the session)
     # not modeled here, so heavy-context Codex sessions may cost somewhat more.
@@ -224,6 +240,10 @@ PRICING = {
     "GPT-5.1": (1.25, 10, 0, 0, 0.125),
     "GPT-5": (1.25, 10, 0, 0, 0.125),
     "GPT-5 Mini": (0.25, 2, 0, 0, 0.025),
+    # Microsoft, via Copilot — docs.github.com/en/copilot/reference/copilot-billing/
+    # models-and-pricing (2026-09-27): the per-token rate Copilot bills past a plan's
+    # included allowance. No cache-write column is listed.
+    "MAI-Code-1.1-Flash": (0.20, 1.20, 0, 0, 0.02),
     # OpenAI legacy (estimates)
     "GPT-4.1": (2, 8, 0, 0, 0.5),
     "GPT-4.1 Mini": (0.40, 1.6, 0, 0, 0.10),
@@ -249,9 +269,30 @@ PRICE_HISTORY = {
 }
 
 
+# Claude request options that reprice a whole response, carried as a suffix on the
+# model name so they show as their own row and price without a new record field.
+FAST_SUFFIX = " (fast)"
+US_SUFFIX = " (US)"
+# Fast mode's own rate card (platform.claude.com pricing, 2026-09): the cache
+# multipliers apply on top of the fast input rate, same as standard speed.
+FAST_PRICING = {
+    "Claude Opus 5.5": (8, 40, 10, 16, 0.40),
+    "Claude Opus 5": (10, 50, 12.5, 20, 1.0),
+    "Claude Opus 4.8": (10, 50, 12.5, 20, 1.0),
+}
+US_MULTIPLIER = 1.1          # inference_geo "us", every token category
+WEB_SEARCH_USD = 10 / 1000   # Anthropic web search: $10 per 1,000 searches
+
+
 def price_of(display, date=None):
     """(in, out, cw5, cw1, cr) for a model as of `date` ("YYYY-MM-DD"), else today.
     Unknown models price at zero."""
+    if display.endswith(US_SUFFIX):
+        return tuple(round(x * US_MULTIPLIER, 6)
+                     for x in price_of(display[:-len(US_SUFFIX)], date))
+    if display.endswith(FAST_SUFFIX):
+        # a model with no published fast rate prices at zero rather than at a guess
+        return FAST_PRICING.get(display[:-len(FAST_SUFFIX)], (0, 0, 0, 0, 0))
     if date:
         for until, p in PRICE_HISTORY.get(display, ()):
             if date <= until:
@@ -552,6 +593,356 @@ def _first_text(content):
 
 
 # ===========================================================================
+# ACTIVITY — what each turn was for, and whether its edits landed first time
+# ===========================================================================
+# A turn is one typed prompt plus all the agent work until the next typed prompt.
+# It is classified mostly from what the agent DID — which kinds of files it edited,
+# which shell commands it ran (a test runner, git, an installer) — because that is
+# harder to get wrong than guessing from words. The prompt's wording only settles
+# what an edit was for (a fix, a refactor, a feature) and what a tool-free turn was.
+# The prompt is scored when it arrives and dropped; the cache keeps a few small
+# per-intent counts (_prompt_intents), never its text.
+CATEGORIES = ("build", "fix", "refactor", "test", "docs", "review", "explore",
+              "research", "data", "plan", "delegate", "vcs", "ops", "chat")
+# Older cache entries used different ids; map them so archived rows still land.
+_LEGACY_CATEGORY = {"coding": "build", "feature": "build", "debugging": "fix",
+                    "refactoring": "refactor", "testing": "test", "exploration": "explore",
+                    "planning": "plan", "delegation": "delegate", "git": "vcs",
+                    "build/deploy": "ops", "brainstorming": "plan", "conversation": "chat",
+                    "general": "chat"}
+
+# What a tool call is, by the names each agent actually logs (seen in local logs:
+# Claude Code's Bash/Read/Edit/Write/WebFetch/..., Codex's exec/exec_command/
+# write_stdin/apply_patch/update_plan/view_image).
+_TOOL_KIND = {
+    "Edit": "edit", "Write": "edit", "MultiEdit": "edit", "NotebookEdit": "edit",
+    "apply_patch": "edit",
+    "Read": "read", "Grep": "read", "Glob": "read", "LS": "read", "NotebookRead": "read",
+    "view_image": "read",
+    "Bash": "shell", "PowerShell": "shell", "exec": "shell", "exec_command": "shell",
+    "write_stdin": "shell", "shell": "shell", "local_shell": "shell",
+    "WebFetch": "web", "WebSearch": "web", "web_search": "web",
+    "Agent": "agent", "Task": "agent", "Workflow": "agent",
+    "TodoWrite": "plan", "EnterPlanMode": "plan", "ExitPlanMode": "plan",
+    "TaskCreate": "plan", "TaskUpdate": "plan", "update_plan": "plan",
+    "Skill": "skill",
+    "AskUserQuestion": "ask", "request_user_input": "ask", "request_user_input_async": "ask",
+}
+
+
+def _tool_kind(name):
+    if name.startswith("mcp__"):
+        return "mcp"
+    return _TOOL_KIND.get(name, "other")
+
+
+# --- shell commands: what a run was, judged from the program it starts ---------
+_CMD_SPLIT = re.compile(r"\|\||&&|[;|\n]")
+_WRAPPERS = {"sudo", "env", "time", "nohup", "exec", "command", "timeout", "caffeinate"}
+_LAUNCHERS = {"npx", "bunx", "uvx", "pipx"}          # the NEXT word is the program
+_TEST_PROGS = {"pytest", "jest", "vitest", "mocha", "rspec", "phpunit", "ctest", "tox",
+               "nox", "ava", "karma", "playwright", "cypress"}
+_LINT_PROGS = {"tsc", "eslint", "ruff", "mypy", "pyright", "flake8", "pylint", "black",
+               "prettier", "golangci-lint", "shellcheck", "stylelint", "biome", "rubocop"}
+_OPS_PROGS = {"docker", "docker-compose", "kubectl", "helm", "terraform", "brew", "apt",
+              "apt-get", "pip", "pip3", "uv", "poetry", "systemctl", "vercel", "flyctl",
+              "netlify", "wrangler", "pm2", "make", "cmake", "gradle", "mvn", "xcodebuild"}
+_RUNTIMES = {"python", "python3", "node", "deno", "bun", "ruby", "php", "perl", "java",
+             "bash", "sh", "zsh", "swift", "go", "cargo", "dotnet", "npm", "yarn", "pnpm"}
+_PKG = {"npm", "yarn", "pnpm", "bun"}
+_GIT_WRITE = {"commit", "push", "pull", "merge", "rebase", "checkout", "switch", "cherry-pick",
+              "tag", "stash", "reset", "revert", "add", "restore", "am", "apply", "fetch", "clone"}
+
+
+def _cmd_kinds(cmd):
+    """{"test", "vcs", "ops", "check"} for one shell command line — "check" meaning
+    it ran, built, linted or tested something, i.e. it could tell an edit didn't work."""
+    kinds = set()
+    for seg in _CMD_SPLIT.split(re.sub(r"'[^']*'|\"[^\"]*\"", "''", cmd or "")):
+        w = [x for x in seg.split() if not re.match(r"^[A-Za-z_]\w*=", x)]
+        while w and _leaf(w[0]) in _WRAPPERS:
+            w = w[1:]
+        if w and _leaf(w[0]) in _LAUNCHERS:
+            w = w[1:]
+        if not w:
+            continue
+        prog, args = _leaf(w[0]).lower(), [a.lower() for a in w[1:4]]
+        a0 = args[0] if args else ""
+        if (prog in _TEST_PROGS
+                or (prog in _PKG and a0 in ("test", "t"))
+                or (prog in ("go", "cargo", "dotnet", "swift", "deno", "mvn", "gradle") and "test" in args[:2])
+                or (prog.startswith("python") and ("pytest" in args or "unittest" in args))
+                or (prog == "node" and "--test" in args) or (prog == "make" and a0 == "test")):
+            kinds.update(("test", "check"))
+        elif prog == "git":
+            if a0 in _GIT_WRITE:
+                kinds.add("vcs")
+        elif prog == "gh":
+            if a0 in ("pr", "release"):
+                kinds.add("vcs")
+        elif (prog in _OPS_PROGS
+              or (prog in _PKG and a0 in ("install", "i", "ci", "add", "publish", "build"))
+              or (prog in ("cargo", "go") and a0 in ("build", "install"))):
+            kinds.update(("ops", "check"))
+        elif prog in _LINT_PROGS or (prog in ("cargo", "go") and a0 in ("check", "vet", "clippy")):
+            kinds.add("check")
+        elif prog in _RUNTIMES or prog.startswith("./") or w[0].startswith("./"):
+            # running the project: a script, `node -e`, `npm run dev`, `go run`...
+            if args or prog in ("npm", "yarn", "pnpm"):
+                kinds.add("check")
+        elif prog in ("curl", "wget", "http") and re.search(r"localhost|127\.0\.0\.1|0\.0\.0\.0", seg):
+            kinds.add("check")
+    return kinds
+
+
+# --- files: an edit to docs or tests says what the turn was for ------------------
+_DOC_EXT = (".md", ".mdx", ".txt", ".rst", ".adoc")
+_TEST_PATH = re.compile(r"(^|[/\\])(tests?|__tests__|specs?)[/\\]|(^|[/\\])test_[^/\\]*$"
+                        r"|_test\.\w+$|\.(test|spec)\.\w+$", re.I)
+
+
+def _file_kind(path):
+    p = str(path or "")
+    if not p:
+        return "code"
+    if _TEST_PATH.search(p):
+        return "test"
+    return "doc" if p.lower().endswith(_DOC_EXT) else "code"
+
+
+# --- the prompt's intent: weighted word lists, highest total wins ----------------
+_INTENTS = (   # (intent, weight, pattern) — order breaks ties
+    ("fix", 3, r"\b(fix(e[sd]|ing)?|bugs?|buggy|broken|breaks?|crash\w*|errors?|fail(s|ed|ing|ure)?|"
+               r"regress\w*|not working|doesn'?t work|isn'?t working|wrong|incorrect|traceback|"
+               r"exception|stack ?trace|flaky|hotfix)\b"),
+    ("refactor", 3, r"\b(refactor\w*|renam\w*|restructur\w*|reorgani[sz]\w*|clean ?up|cleanup|"
+                    r"simplif\w*|dedup\w*|de-?duplicat\w*|tidy|decoupl\w*|modulari[sz]\w*)\b"),
+    ("test", 2, r"\b(tests?|testing|unit ?tests?|e2e|coverage|pytest|jest|vitest|specs?)\b"),
+    ("docs", 2, r"\b(docs?|documentation|document(ing)?|readme|changelog|docstrings?|"
+                r"release notes|write-?up)\b"),
+    ("review", 2, r"\b(review\w*|audit\w*|critique|look (it )?over|double[- ]check|"
+                  r"sanity[- ]check|second opinion)\b"),
+    ("plan", 2, r"\b(plan(ning)?|design|architect\w*|approach(es)?|roadmap|proposal|strategy|"
+                r"brainstorm\w*|ideas?|trade-?offs?)\b"),
+    ("build", 1, r"\b(add(s|ing)?|implement\w*|create\w*|build(ing)?|new|features?|support|"
+                 r"introduc\w*|integrat\w*|set ?up|scaffold\w*)\b"),
+)
+_INTENT_RX = [(k, w, re.compile(p, re.I)) for k, w, p in _INTENTS]
+
+
+def _prompt_intents(text):
+    """{intent: score} for a prompt — small ints only; the text itself is dropped."""
+    t = (text or "")[:4000]
+    out = {}
+    for k, w, rx in _INTENT_RX:
+        n = min(len(rx.findall(t)), 5)
+        if n:
+            out[k] = n * w
+    return out
+
+
+def _top_intent(scores):
+    best = None
+    for k, _, _ in _INTENTS:                 # declaration order breaks ties
+        if scores.get(k, 0) > (scores.get(best, 0) if best else 0):
+            best = k
+    return best
+
+
+def _classify_turn(tr):
+    n, cmd, fk = tr.get("n") or {}, tr.get("cmd") or {}, tr.get("fk") or {}
+    intent = _top_intent(tr.get("iv") or {})
+    if n.get("edit"):
+        if fk.get("doc") and not (fk.get("code") or fk.get("test")):
+            return "docs"
+        if fk.get("test") and not fk.get("code"):
+            return "test"
+        return intent if intent in ("fix", "refactor", "test") else "build"
+    if n.get("agent"):
+        return "delegate"
+    if cmd.get("test"):
+        return "test"
+    if cmd.get("vcs") and cmd.get("vcs", 0) >= cmd.get("ops", 0):
+        return "vcs"
+    if cmd.get("ops"):
+        return "ops"
+    looked = n.get("read", 0) + n.get("shell", 0)
+    if n.get("mcp") and n["mcp"] >= looked + n.get("web", 0):
+        return "data"
+    if n.get("web") and n["web"] >= looked:
+        return "research"
+    if n.get("plan") and not looked:
+        return "plan"
+    if looked or n.get("mcp") or n.get("web"):
+        return intent if intent in ("review", "fix", "plan") else "explore"
+    return "plan" if intent == "plan" else "chat"
+
+
+def _turn_open(agg, dt, text, implicit=False):
+    """A typed prompt: close the running turn and start a new one. `implicit` is the
+    work a session does before its first counted prompt (it opened with a slash
+    command or a task notification): its tokens are classified like any turn's, but
+    it isn't a prompt, so it adds nothing to turn, edit or one-shot counts."""
+    if agg.get("subagent"):      # a subagent's whole file is one delegated task
+        return
+    _turn_close(agg)
+    agg["state"]["turn"] = {"d": _buckets(dt)[0], "iv": _prompt_intents(text), "n": {},
+                            "cmd": {}, "fk": {}, "ed": {}, "rw": 0, "tok": {}}
+    if implicit:
+        agg["state"]["turn"]["imp"] = 1
+
+
+def _turn_tool(agg, name, file=None, cmd=None):
+    """One tool call inside the running turn. Rework = a file edited again after a
+    command ran that could have shown the previous edit didn't work."""
+    tr = agg["state"].get("turn")
+    if not tr:
+        return
+    kind = _tool_kind(name)
+    tr["n"][kind] = tr["n"].get(kind, 0) + 1
+    if kind == "shell" and cmd:
+        ks = _cmd_kinds(cmd)
+        for k in ks - {"check"}:
+            tr["cmd"][k] = tr["cmd"].get(k, 0) + 1
+        if "check" in ks:
+            for f in tr["ed"]:
+                tr["ed"][f] = 1          # every file edited so far has now been checked
+    elif kind == "edit":
+        f = file or "?"
+        fk = _file_kind(file)
+        tr["fk"][fk] = tr["fk"].get(fk, 0) + 1
+        if tr["ed"].get(f) == 1:
+            tr["rw"] += 1
+        if f in tr["ed"] or len(tr["ed"]) < 64:
+            tr["ed"][f] = 0
+
+def _turn_usage(agg, model, inp, out, cr, cc5, cc1, ws=0):
+    tr = agg["state"].get("turn")
+    if not tr:
+        return
+    t = tr["tok"].setdefault(model or "Unknown", [0, 0, 0, 0, 0, 0, 0])
+    for j, v in enumerate((inp, out, cr, cc5, cc1, ws, 1)):
+        t[j] += v
+
+
+_ACT_FIELDS = ("in", "out", "cr", "cc5", "cc1", "ws")
+
+
+def _turn_rows(tr):
+    """One finished (or still-open) turn -> {"date\\tmodel\\tcategory": row}."""
+    tok = tr.get("tok") or {}
+    if not tok:                  # no reply yet, or interrupted before one
+        return {}
+    cat = _classify_turn(tr) if "n" in tr else "chat"   # a pre-v48 open turn
+    # an implicit turn (see _turn_open) counts its tokens only: it was no prompt
+    edits = bool((tr.get("n") or {}).get("edit")) and not tr.get("imp")
+    rt = tr.get("rw", 0)
+    dom = max(tok, key=lambda m: (tok[m][6], tok[m][0] + tok[m][1]))
+    out = {}
+    for m, t in tok.items():
+        row = {k: t[j] for j, k in enumerate(_ACT_FIELDS)}
+        row.update(turns=0, edits=0, oneshot=0, retries=0)
+        if m == dom and not tr.get("imp"):
+            row.update(turns=1, edits=int(edits), oneshot=int(edits and not rt), retries=rt)
+        if edits:                # every editing turn, so a retried one can be compared to the rest
+            row.update({"e" + k: t[j] for j, k in enumerate(_ACT_FIELDS)})
+        if edits and rt:         # the whole turn's cost is the price of not landing it
+            row.update({"r" + k: t[j] for j, k in enumerate(_ACT_FIELDS)})
+        out[f"{tr['d']}\t{m}\t{cat}"] = row
+    return out
+
+
+def _add_rows(dst, rows):
+    for k, row in rows.items():
+        e = dst.setdefault(k, {})
+        for f, v in row.items():
+            e[f] = e.get(f, 0) + v
+
+
+def _turn_close(agg):
+    tr = agg["state"].pop("turn", None)
+    if tr:
+        _add_rows(agg.setdefault("activity", {}), _turn_rows(tr))
+
+
+def activity_of(agg):
+    """Closed turns plus the one still open — a session's last turn has no next
+    prompt to close it. Read-only, so a later chunk can still extend that turn."""
+    rows = {}
+    for k, row in (agg.get("activity") or {}).items():
+        d, m, c = (k.split("\t") + ["", "", ""])[:3]
+        _add_rows(rows, {f"{d}\t{m}\t{_LEGACY_CATEGORY.get(c, c)}": row})
+    tr = (agg.get("state") or {}).get("turn")
+    if tr:
+        _add_rows(rows, _turn_rows(tr))
+    return rows
+
+
+# ===========================================================================
+# READ HYGIENE — reads that put tokens into context for nothing (Claude Code)
+# ===========================================================================
+# A file read again with no edit to it since (and no /compact in between) adds
+# the same tokens to context a second time; a read inside generated or vendored
+# folders is rarely what anyone meant. Counted per day, with the size of what
+# each such read returned (chars / 4) — never the content itself.
+_JUNK_PATH = re.compile(
+    r"(^|[/\\])(node_modules|dist|build|out|\.next|\.nuxt|\.svelte-kit|target|vendor|"
+    r"__pycache__|\.venv|venv|\.git|coverage|\.cache|\.turbo|Pods|DerivedData)([/\\]|$)"
+    r"|\.min\.(js|css)$|(^|[/\\])(package-lock\.json|yarn\.lock|pnpm-lock\.yaml|"
+    r"poetry\.lock|Cargo\.lock|Gemfile\.lock)$")
+
+
+def _read_hygiene(agg, date, name, inp, tool_id):
+    st = agg["state"]
+    seen, ids = st.setdefault("rd", {}), st.setdefault("rid", {})
+    kind = _tool_kind(name)
+    if kind == "edit":
+        p = inp.get("file_path") or inp.get("notebook_path")
+        if p:
+            for k in [k for k in seen if k.split("\t", 1)[0] == p]:
+                del seen[k]      # changed: reading it again is how you see the change
+        return
+    if name not in ("Read", "Grep"):
+        return
+    p = str(inp.get("file_path") or inp.get("path") or "")
+    # [reads, re-reads, junk reads, re-read tokens, junk tokens]
+    e = agg.setdefault("reads", {}).setdefault(date, [0, 0, 0, 0, 0])
+    flag = None
+    if name == "Read" and p:
+        e[0] += 1
+        key = f"{p}\t{inp.get('offset')}\t{inp.get('limit')}"   # a different slice is new
+        if key in seen:
+            e[1] += 1
+            flag = 1
+        seen[key] = 1
+        if len(seen) > 512:
+            seen.clear()
+    if p and _JUNK_PATH.search(p):
+        e[2] += 1
+        flag = 2
+    if flag and tool_id:
+        ids[tool_id] = [date, flag]
+        while len(ids) > 64:
+            ids.pop(next(iter(ids)))
+
+
+def _result_chars(c):
+    if isinstance(c, str):
+        return len(c)
+    if isinstance(c, list):
+        return sum(len(b.get("text") or "") for b in c if isinstance(b, dict))
+    return 0
+
+
+def _read_result(agg, blk):
+    """A tool_result: if it answers a flagged read, book the tokens it returned."""
+    hit = agg["state"].get("rid", {}).pop(blk.get("tool_use_id"), None)
+    if hit:
+        e = agg.setdefault("reads", {}).setdefault(hit[0], [0, 0, 0, 0, 0])
+        e[2 + hit[1]] += _result_chars(blk.get("content")) // 4
+
+
+# ===========================================================================
 # CLAUDE CODE
 # ===========================================================================
 def _is_subagent_path(path):
@@ -603,6 +994,10 @@ def parse_claude(agg, lines):
         cwd = o.get("cwd")
         if cwd:
             project = _leaf(cwd) or cwd
+            agg["cwd"] = cwd
+        # after a compaction the old reads are gone from context; re-reading is fine
+        if o.get("isCompactSummary") or (o.get("type") == "system" and o.get("subtype") == "compact_boundary"):
+            agg["state"].get("rd", {}).clear()
         # session metadata Claude Code writes on every entry
         if o.get("gitBranch"):
             agg["branch"] = o["gitBranch"]
@@ -625,6 +1020,13 @@ def parse_claude(agg, lines):
         if t == "assistant" and msg and msg.get("model") != "<synthetic>":
             model = normalize_claude(msg.get("model"))
             u = msg.get("usage") or {}
+            # Two request options change the price of every token, so they become
+            # their own priced model rows (see price_of): fast mode has its own
+            # rate card, and US-only inference bills 1.1x on 4.6+ models.
+            if u.get("speed") == "fast":
+                model += FAST_SUFFIX
+            if str(u.get("inference_geo") or "").lower() == "us":
+                model += US_SUFFIX
             inp = int(u.get("input_tokens", 0) or 0)
             out = int(u.get("output_tokens", 0) or 0)
             cr = int(u.get("cache_read_input_tokens", 0) or 0)
@@ -640,6 +1042,8 @@ def parse_claude(agg, lines):
             cc1 = int(ccd.get("ephemeral_1h_input_tokens", 0) or 0)
             if cc and not (cc5 or cc1):   # older logs without the tier split
                 cc5 = cc                  # assume 5-min when untiered
+            # server-side web searches bill per search on top of tokens
+            ws = int((u.get("server_tool_use") or {}).get("web_search_requests", 0) or 0)
             # Claude Code writes ONE record per content block of a response —
             # thinking, text, each tool_use — and every one repeats the whole
             # response's usage, so summing records counted each API call ~2.3x
@@ -648,21 +1052,29 @@ def parse_claude(agg, lines):
             # grew, since output_tokens streams upward (1 on the first block, 388
             # by the last). With replays gone a response's blocks are contiguous,
             # so remembering the last few responses is enough.
-            full = [inp, out, cr, cc, cc5, cc1, reason]
+            full = [inp, out, cr, cc, cc5, cc1, reason, ws]
             rk = f"{msg['id']}\t{o.get('requestId')}" if msg.get("id") else None
             prev = resp.pop(rk, None) if rk else None
             first = prev is None
+            if prev is not None and len(prev) < len(full):   # state saved by an older build
+                prev = list(prev) + [0] * (len(full) - len(prev))
             if rk:
                 resp[rk] = full if first else [max(a, b) for a, b in zip(full, prev)]
                 while len(resp) > 8:
                     resp.pop(next(iter(resp)))
             if not first:
-                inp, out, cr, cc, cc5, cc1, reason = (max(0, a - b) for a, b in zip(full, prev))
+                inp, out, cr, cc, cc5, cc1, reason, ws = (max(0, a - b) for a, b in zip(full, prev))
             if dt:
                 r = _rec(agg, _buckets(dt)[0], model)
                 r["in"] += inp; r["out"] += out; r["cr"] += cr; r["cc"] += cc
                 r["cc5"] += cc5; r["cc1"] += cc1
                 r["reason"] += reason
+                if ws:
+                    r["ws"] = r.get("ws", 0) + ws
+                    agg["totals"]["ws"] = agg["totals"].get("ws", 0) + ws
+                if "turn" not in agg["state"]:          # replying before any counted prompt
+                    _turn_open(agg, dt, None, implicit=True)
+                _turn_usage(agg, model, inp, out, cr, cc5, cc1, ws)
                 r["asst"] += int(first)
                 # count tool_use blocks
                 tools = 0
@@ -672,6 +1084,22 @@ def parse_claude(agg, lines):
                         if isinstance(blk, dict) and blk.get("type") == "tool_use":
                             _tool(agg, _buckets(dt)[0], blk.get("name", "tool"))
                             tools += 1
+                            inp_ = blk.get("input") if isinstance(blk.get("input"), dict) else {}
+                            nm_ = blk.get("name", "tool")
+                            _read_hygiene(agg, _buckets(dt)[0], nm_, inp_, blk.get("id"))
+                            # which installed agents and skills get used, by name
+                            if nm_ in ("Agent", "Task") and isinstance(inp_.get("subagent_type"), str):
+                                k_ = f"{_buckets(dt)[0]}\tagent\t{inp_['subagent_type']}"
+                            elif nm_ == "Skill" and isinstance(inp_.get("skill"), str):
+                                k_ = f"{_buckets(dt)[0]}\tskill\t{inp_['skill']}"
+                            else:
+                                k_ = None
+                            if k_:
+                                iu = agg.setdefault("used_ext", {})
+                                iu[k_] = iu.get(k_, 0) + 1
+                            _turn_tool(agg, blk.get("name", "tool"),
+                                       file=inp_.get("file_path") or inp_.get("notebook_path"),
+                                       cmd=inp_.get("command") if isinstance(inp_.get("command"), str) else None)
                 r["tools"] += tools
                 _bump_time(agg, dt, inp + out + cr + cc, int(first))
                 r["active"] += _active_gap(agg["_active_last"], dt)
@@ -691,6 +1119,10 @@ def parse_claude(agg, lines):
                 # sent, cached or not. Long conversations cost more even when cached.
                 # Taken from the full record, not the delta a later block adds.
                 ctx = full[0] + full[2] + full[3]
+                # what the session's first request carried before any work: system
+                # prompt, tool definitions, CLAUDE.md, memory — the fixed cost of opening one
+                if first and not side and agg.get("open_ctx") is None:
+                    agg["open_ctx"] = ctx
                 b = ("0-50k" if ctx < 50_000 else "50-150k" if ctx < 150_000
                      else "150-400k" if ctx < 400_000 else "400k+")
                 ck = f"{date0}\t{b}"
@@ -723,6 +1155,10 @@ def parse_claude(agg, lines):
             content = msg.get("content")
             is_tool_result = isinstance(content, list) and any(
                 isinstance(b, dict) and b.get("type") == "tool_result" for b in content)
+            if is_tool_result and agg["state"].get("rid"):
+                for b in content:
+                    if isinstance(b, dict) and b.get("type") == "tool_result":
+                        _read_result(agg, b)
             org = o.get("origin")
             not_typed = (bool(o.get("isMeta")) or bool(o.get("isCompactSummary"))
                          or (isinstance(org, dict) and org.get("kind", "human") != "human")
@@ -737,6 +1173,8 @@ def parse_claude(agg, lines):
                 # given — without this the row has no title at all.
                 if not side or agg.get("subagent"):
                     _set_title(agg, _first_text(content), "prompt")
+                if not side:
+                    _turn_open(agg, dt, _first_text(content))
 
         elif t == "attachment":
             # A message typed WHILE Claude is working ("steering") is never written
@@ -764,6 +1202,17 @@ def parse_claude(agg, lines):
                     r = _rec(agg, _buckets(dt)[0], "(user)")
                     r["user"] += 1
                     agg["totals"]["user"] += 1
+            # Which MCP tools this session was OFFERED, so the Tools tab can set what
+            # was used against what was loaded. Claude Code announces them by name as
+            # they become available ("mcp__<server>__<tool>"), before any is called.
+            elif a.get("type") == "deferred_tools_delta" and dt:
+                inv = agg.setdefault("mcp_offered", {})
+                for nm in (a.get("addedNames") or []) + (a.get("readdedNames") or []):
+                    if isinstance(nm, str) and nm.startswith("mcp__"):
+                        server, _, tool = nm[5:].partition("__")
+                        e = inv.setdefault(server, {"d": _buckets(dt)[0], "tools": []})
+                        if tool and tool not in e["tools"]:
+                            e["tools"].append(tool)
 
     agg["project"] = project
     agg["editor"] = "Claude Code (CLI)"
@@ -788,16 +1237,28 @@ def _codex_usage(agg, dt, u, model):
     a token_usage_record's usage — the two share a shape."""
     inp = int(u.get("input_tokens", 0) or 0)
     cached = int(u.get("cached_input_tokens", 0) or 0)
+    # Newer builds split out the part of input_tokens that WROTE the prompt cache.
+    # It is a subset of input_tokens and disjoint from cached_input_tokens (checked
+    # over 35,736 events: in >= cached + written, always), and OpenAI bills it at
+    # 1.25x input on GPT-5.6/GPT-6 — so it moves out of "in" into the cache-write
+    # fields, where _cost() prices it at the write rate.
+    written = int(u.get("cache_write_input_tokens", 0) or 0)
     out = int(u.get("output_tokens", 0) or 0)
     reason = int(u.get("reasoning_output_tokens", 0) or 0)
     if not (dt and (inp or out)):
         return
+    written = min(written, max(0, inp - cached))
+    fresh = max(0, inp - cached - written)
     r = _rec(agg, _buckets(dt)[0], model or "Unknown")
-    # store non-cached input in "in", cached in "cr"
-    r["in"] += max(0, inp - cached)
+    # store non-cached input in "in", cached in "cr", cache writes in "cc"/"cc5"
+    r["in"] += fresh
     r["cr"] += cached
+    r["cc"] += written; r["cc5"] += written
     r["out"] += out
     r["reason"] += reason
+    # one billed model call — what OpenAI's usage page calls a request.
+    # Not "asst": that counts visible replies, and one reply can take many calls.
+    r["req"] += 1
     _bump_time(agg, dt, inp + out, 0)
     r["active"] += _active_gap(agg["_active_last"], dt)
     agg["_active_last"] = dt.isoformat()
@@ -810,9 +1271,68 @@ def _codex_usage(agg, dt, u, model):
     ce = agg["ctx"].setdefault(f"{date0}\t{b}", {"tok": 0, "n": 0})
     ce["tok"] += inp + out; ce["n"] += 1
     T = agg["totals"]
-    T["in"] += max(0, inp - cached); T["cr"] += cached
-    T["out"] += out; T["reason"] += reason
+    _turn_usage(agg, model, fresh, out, cached, written, 0)
+    # the first request's full input: the fixed cost of opening a session (not for
+    # a fork, whose first request carries its parent's whole history)
+    if (agg.get("open_ctx") is None and not agg.get("subagent")
+            and "replay_last" not in agg["state"] and model != "codex-auto-review"):
+        agg["open_ctx"] = inp
+    T["in"] += fresh; T["cr"] += cached
+    T["cc"] += written; T["cc5"] += written
+    T["out"] += out; T["reason"] += reason; T["req"] += 1
 
+
+_EXEC_CMD = re.compile(r"""\bcmd\s*:\s*(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'|`([^`]*)`)""")
+_PATCH_FILE = re.compile(r"^\*\*\* (?:Update|Add|Delete) File: (.+)$", re.M)
+
+
+def _codex_edit_event(agg, changes):
+    """An applied patch, however it was applied (apply_patch, or from inside exec):
+    the one place every Codex build records each file an edit touched."""
+    first = not agg["state"].get("edit_events")
+    agg["state"]["edit_events"] = True
+    files = list(changes)[:16] if isinstance(changes, dict) else []
+    ed = (agg["state"].get("turn") or {}).get("ed")
+    for f in files or [None]:
+        if first and f and ed is not None:
+            # the rollout's first patch was already counted from its apply_patch call,
+            # under the name the patch text used (usually relative): re-key, don't recount
+            n = f.replace("\\", "/")
+            same = f if f in ed else next((k for k in ed if n.endswith("/" + k.replace("\\", "/"))), None)
+            if same is not None:
+                ed[f] = ed.pop(same)
+                continue
+        _turn_tool(agg, "apply_patch", file=f)
+
+
+def _codex_turn_tool(agg, nm, pl):
+    """Feed one Codex tool call to the activity classifier."""
+    kind = _tool_kind(nm)
+    if kind == "edit":
+        if agg["state"].get("edit_events"):
+            return               # this rollout logs each applied patch; counted there
+        # apply_patch names its files inside the patch text; one call can touch several
+        body = pl.get("input") if isinstance(pl.get("input"), str) else str(pl.get("arguments") or "")
+        for f in _PATCH_FILE.findall(body)[:16] or [None]:
+            _turn_tool(agg, nm, file=f.strip() if f else None)
+        return
+    cmd = None
+    if kind == "shell" and isinstance(pl.get("input"), str):
+        # Codex Desktop's `exec` tool takes a JS program that calls
+        # tools.exec_command({cmd: "..."}); pull the commands out of it.
+        cmd = " ; ".join("".join(g).replace('\\"', '"').replace("\\'", "'")
+                         for g in _EXEC_CMD.findall(pl["input"])[:8]) or None
+    elif kind == "shell":
+        try:
+            args = json.loads(pl.get("arguments") or "{}")
+        except (ValueError, TypeError):
+            args = {}
+        if isinstance(args, dict):
+            c = args.get("cmd") or args.get("command")
+            if isinstance(c, list):          # ["bash", "-lc", "<script>"]
+                c = c[-1] if c else None
+            cmd = c if isinstance(c, str) else None
+    _turn_tool(agg, nm, cmd=cmd)
 
 def parse_codex(agg, lines):
     cur_model = agg["state"].get("cur_model")
@@ -832,10 +1352,33 @@ def parse_codex(agg, lines):
         pt = pl.get("type")
         dt = _from_iso(o.get("timestamp", "")) if o.get("timestamp") else None
 
+        # A forked thread — `/fork`, and every subagent, which Codex forks from its
+        # parent — opens by rewriting the parent's whole history into its own file,
+        # all stamped within ~0.2s of its session_meta: every token_count, reply,
+        # prompt and tool call the parent already logged, including its spawn
+        # markers. Counting it bills the parent twice (one fork replayed 73 usage
+        # events, 10.9M tokens, matching its parent's running total exactly). So
+        # everything in that burst is skipped except turn_context, which carries
+        # the model the fork inherits. The burst ends at the first gap over 1s:
+        # real work resumed 3.5-4.8s after session_meta in every fork seen, so a
+        # fixed 5s cutoff would also clip the fork's own first turn.
+        st = agg["state"]
+        if st.get("replay_last") and dt:
+            last = _from_iso(st["replay_last"])
+            if last and (dt - last).total_seconds() <= 1.0:
+                st["replay_last"] = o["timestamp"]
+                if t != "turn_context":
+                    continue
+            else:
+                st["replay_last"] = None
+
         if t == "session_meta":
+            if pl.get("forked_from_id") and "replay_last" not in st and o.get("timestamp"):
+                st["replay_last"] = o["timestamp"]
             cwd = pl.get("cwd")
             if cwd:
                 project = _leaf(cwd) or cwd
+                agg["cwd"] = cwd
             if pl.get("originator"):
                 agg["entry"] = pl["originator"]
             if pl.get("cli_version"):
@@ -863,6 +1406,7 @@ def parse_codex(agg, lines):
             cwd = pl.get("cwd")
             if cwd:
                 project = _leaf(cwd) or cwd
+                agg["cwd"] = cwd
         elif t == "token_usage_record":
             # Newer Codex builds (seen from 2026-09) log one of these per model
             # response. They are the better usage source: token_count below logs
@@ -873,6 +1417,8 @@ def parse_codex(agg, lines):
             agg["state"]["usage_records"] = True
             _codex_usage(agg, dt, pl.get("usage") or {}, cur_model)
         elif t == "event_msg":
+            if pt == "patch_apply_end":
+                _codex_edit_event(agg, pl.get("changes"))
             if pt == "token_count":
                 info = pl.get("info") or {}
                 last = info.get("last_token_usage") or {}
@@ -910,6 +1456,7 @@ def parse_codex(agg, lines):
                     _rec(agg, _buckets(dt)[0], "(user)")["user"] += 1
                     agg["totals"]["user"] += 1
                     _set_title(agg, pl.get("message") or _first_text(pl.get("content")), "prompt")
+                    _turn_open(agg, dt, pl.get("message") or _first_text(pl.get("content")))
             elif pt == "item_completed":
                 # Recent Codex CLI builds (0.151.x alpha) stopped emitting the flat
                 # agent_message/user_message payloads above. Every turn's user text,
@@ -927,17 +1474,21 @@ def parse_codex(agg, lines):
                     _rec(agg, _buckets(dt)[0], "(user)")["user"] += 1
                     agg["totals"]["user"] += 1
                     _set_title(agg, _first_text(item.get("content")), "prompt")
+                    _turn_open(agg, dt, _first_text(item.get("content")))
                 elif it == "AgentMessage" and dt:
                     model = cur_model or "Unknown"
                     if model != "codex-auto-review":
                         _rec(agg, _buckets(dt)[0], model)["asst"] += 1
                         agg["totals"]["asst"] += 1
                         _bump_time(agg, dt, 0, 1)
+                elif it == "FileChange":
+                    _codex_edit_event(agg, item.get("changes"))
                 elif it == "SubAgentActivity" and item.get("kind") == "started":
                     # Counted on the PARENT's own file — a spawn marker, not a token
                     # or message event — so this session's own "delegated to a
                     # subagent" count is known without reading any other file.
                     agg["_spawned"] = agg.get("_spawned", 0) + 1
+                    _turn_tool(agg, "Agent")
         elif t == "response_item" and dt:
             if pt in _CODEX_BUILTIN_TOOLS:
                 # The model's own built-in tools are response items of their own
@@ -946,6 +1497,7 @@ def parse_codex(agg, lines):
                 date = _buckets(dt)[0]
                 _tool(agg, date, _CODEX_BUILTIN_TOOLS[pt])
                 _rec(agg, date, cur_model or "Unknown")["tools"] += 1
+                _turn_tool(agg, _CODEX_BUILTIN_TOOLS[pt])
             elif pt in ("function_call", "custom_tool_call"):
                 date = _buckets(dt)[0]
                 nm = pl.get("name") or ("function" if pt == "function_call" else "custom_tool")
@@ -959,6 +1511,7 @@ def parse_codex(agg, lines):
                     nm = f"{ns}__{nm}"
                 _tool(agg, date, nm)
                 _rec(agg, date, cur_model or "Unknown")["tools"] += 1
+                _codex_turn_tool(agg, nm, pl)
 
     agg["state"]["cur_model"] = cur_model
     agg["project"] = project
@@ -1968,6 +2521,259 @@ def parse_hermes(agg, db_path):
     agg["sessions"] = out
 
 
+
+# ===========================================================================
+# OPENCLAW — per-agent SQLite (current) and JSONL transcripts (older / archived).
+# Transcript events are the same JSON either way: a `session` header, then
+# `message` entries whose assistant messages carry a normalized `usage`
+# {input, output, cacheRead, cacheWrite, cacheWrite1h?, reasoning?, cost.total} —
+# input EXCLUDES cache reads and writes (OpenClaw's model layer subtracts them from
+# the provider's prompt count), and reasoning is a subset of output, like ours.
+# ===========================================================================
+_OPENCLAW_DB = os.path.join("agent", "openclaw-agent.sqlite")
+
+
+def _zstd_decode_many(blobs):
+    """Decode zstd frames: Python 3.14's compression.zstd when present, else one
+    batched run of the `zstd` command. Returns {key: text}; what can't be decoded is
+    left out (and counted by the caller), never guessed."""
+    if not blobs:
+        return {}
+    try:
+        from compression import zstd as _z          # Python 3.14+
+        out = {}
+        for k, b in blobs.items():
+            try:
+                out[k] = _z.decompress(b).decode("utf-8", "replace")
+            except Exception as e:
+                sys.stderr.write(f"[openclaw] zstd row {k}: {e}\n")
+        return out
+    except ImportError:
+        pass
+    exe = shutil.which("zstd")
+    if not exe:
+        return {}
+    import tempfile
+    out = {}
+    with tempfile.TemporaryDirectory(prefix="agenttelemetry-zstd-") as tmp:
+        names = {}
+        for i, (k, b) in enumerate(blobs.items()):
+            fn = os.path.join(tmp, f"{i}.zst")
+            with open(fn, "wb") as f:
+                f.write(b)
+            names[k] = fn
+        keys = list(names)
+        for j in range(0, len(keys), 400):          # keep the command line bounded
+            chunk = keys[j:j + 400]
+            r = subprocess.run([exe, "-d", "-q", "-f", *[names[k] for k in chunk]],
+                               capture_output=True, text=True)
+            if r.returncode != 0:
+                sys.stderr.write(f"[openclaw] zstd: {r.stderr.strip()[:200]}\n")
+            for k in chunk:
+                try:
+                    with open(names[k][:-4], encoding="utf-8", errors="replace") as f:
+                        out[k] = f.read()
+                except OSError:
+                    pass
+    return out
+
+
+def _openclaw_ts(entry):
+    m = entry.get("message") if isinstance(entry.get("message"), dict) else {}
+    ts = entry.get("timestamp") or m.get("timestamp")
+    if isinstance(ts, (int, float)):
+        return _from_ms_or_s(ts)
+    return _from_iso(ts) if isinstance(ts, str) else None
+
+
+def _openclaw_sessions(agent_dir):
+    """{session_id: [event dict, ...]} in order, plus {session_id: meta}, plus how
+    many compressed events couldn't be decoded. SQLite first; a JSONL transcript
+    only for a session the database doesn't have."""
+    events, meta, undecoded = {}, {}, 0
+    db = os.path.join(agent_dir, _OPENCLAW_DB)
+    if os.path.exists(db):
+        con = _open_ro_sqlite(db)
+        try:
+            cur = con.cursor()
+            cols = {r[1] for r in cur.execute("PRAGMA table_info(transcript_events)")}
+            zcol = "event_zstd" if "event_zstd" in cols else "NULL"
+            rows = cur.execute(f"SELECT session_id, seq, event_json, {zcol}, created_at "
+                               "FROM transcript_events ORDER BY session_id, seq").fetchall()
+            packed = {(sid, seq): bytes(z) for sid, seq, ej, z, _ in rows if ej is None and z}
+            plain = _zstd_decode_many(packed)
+            undecoded = len(packed) - len(plain)
+            for sid, seq, ej, z, created in rows:
+                text = ej if ej is not None else plain.get((sid, seq))
+                if not text:
+                    continue
+                try:
+                    e = json.loads(text)
+                except ValueError:
+                    continue
+                if isinstance(e, dict):
+                    if not e.get("timestamp") and created:
+                        e["timestamp"] = created
+                    events.setdefault(sid, []).append(e)
+            try:
+                for sid, model, prov in cur.execute(
+                        "SELECT session_id, model, model_provider FROM session_windows"):
+                    meta.setdefault(sid, {}).update(model=model, provider=prov)
+            except Exception as e:
+                sys.stderr.write(f"[openclaw] session_windows: {e}\n")
+            try:
+                for sid, label, disp in cur.execute(
+                        "SELECT current_session_id, label, display_name FROM session_nodes"):
+                    meta.setdefault(sid, {})["title"] = label or disp
+            except Exception as e:
+                sys.stderr.write(f"[openclaw] session_nodes: {e}\n")
+        finally:
+            con.close()
+    sdir = os.path.join(agent_dir, "sessions")
+    index = {}
+    try:
+        with open(os.path.join(sdir, "sessions.json"), encoding="utf-8") as f:
+            raw = json.load(f)
+        for v in (raw.values() if isinstance(raw, dict) else []):
+            if isinstance(v, dict) and v.get("sessionId"):
+                index[v["sessionId"]] = v.get("label") or v.get("displayName") or v.get("subject")
+    except (OSError, ValueError):
+        pass
+    for fn in sorted(glob.glob(os.path.join(sdir, "*.jsonl")) + glob.glob(os.path.join(sdir, "*.jsonl.*"))):
+        sid = os.path.basename(fn).split(".jsonl", 1)[0]
+        if sid in events:                   # the database already holds this session
+            continue
+        try:
+            with open(fn, encoding="utf-8", errors="replace") as f:
+                evs = []
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        e = json.loads(line)
+                    except ValueError:
+                        continue
+                    if isinstance(e, dict):
+                        evs.append(e)
+        except OSError as e:
+            sys.stderr.write(f"[openclaw] {fn}: {e}\n")
+            continue
+        if evs:
+            events[sid] = evs
+            if index.get(sid):
+                meta.setdefault(sid, {})["title"] = index[sid]
+    return events, meta, undecoded
+
+
+def parse_openclaw(agg, agent_dir):
+    agg["source"] = "openclaw"
+    agg["editor"] = "OpenClaw"
+    agent = _leaf(agent_dir) or "agent"
+    events, meta, undecoded = _openclaw_sessions(agent_dir)
+    agg["state"]["undecoded"] = undecoded
+    if undecoded:
+        sys.stderr.write(f"[openclaw] {agent_dir}: {undecoded} compressed transcript event(s) "
+                         "not read — install zstd (or use Python 3.14+) to include them\n")
+    seen = set()          # a fork copies its parent's messages: count each response once
+    out, tally = [], {}
+    T = agg["totals"]
+    for sid, evs in events.items():
+        m0 = meta.get(sid, {})
+        cur_model = m0.get("model")
+        cwd, start, end = None, None, None
+        s = {"in": 0, "out": 0, "cr": 0, "cc": 0, "cc5": 0, "cc1": 0, "reason": 0, "asst": 0,
+             "user": 0, "tools": 0, "req": 0, "cost": 0.0, "active": 0.0, "days": {}}
+        mt, last = {}, None
+        for e in evs:
+            t = e.get("type")
+            if t == "session":
+                cwd = e.get("cwd") or cwd
+                continue
+            if t == "model_change":
+                cur_model = e.get("modelId") or e.get("model") or cur_model
+                continue
+            if t != "message" or not isinstance(e.get("message"), dict):
+                continue
+            msg = e["message"]
+            dt = _openclaw_ts(e)
+            if not dt:
+                continue
+            date = _buckets(dt)[0]
+            role = msg.get("role")
+            if role == "assistant":
+                u = msg.get("usage") if isinstance(msg.get("usage"), dict) else {}
+                key = (msg.get("timestamp") or e.get("timestamp"), msg.get("model") or cur_model,
+                       u.get("input"), u.get("output"), u.get("cacheRead"), u.get("cacheWrite"))
+                if key in seen and (u.get("input") or u.get("output")):
+                    continue               # the same response, copied into a fork
+                seen.add(key)
+            elif role != "user":
+                continue
+            start = start or dt; end = dt
+            dd = s["days"].setdefault(date, {"in": 0, "out": 0, "cr": 0, "cc": 0, "asst": 0,
+                                             "user": 0, "tools": 0, "active": 0.0, "cost": 0.0})
+            gap = _active_gap(last, dt); last = dt.isoformat()
+            s["active"] += gap; dd["active"] += gap
+            if role == "user":
+                internal = msg.get("__openclaw") if isinstance(msg.get("__openclaw"), dict) else {}
+                if msg.get("excludeFromContext") or internal.get("contextFreeCommand"):
+                    continue
+                r = _rec(agg, date, "(user)")
+                r["user"] += 1; r["active"] += gap; T["user"] += 1; s["user"] += 1; dd["user"] += 1
+                if not m0.get("title"):
+                    _set_title(agg, _first_text(msg.get("content")), "prompt")
+                    m0.setdefault("_first", _first_text(msg.get("content")))
+                continue
+            if role != "assistant":
+                continue
+            model = _normalize_hermes(msg.get("model") or cur_model)
+            u = msg.get("usage") if isinstance(msg.get("usage"), dict) else {}
+            inp, out_, cr = int(u.get("input") or 0), int(u.get("output") or 0), int(u.get("cacheRead") or 0)
+            cw = int(u.get("cacheWrite") or 0)
+            cw1 = min(cw, int(u.get("cacheWrite1h") or 0))
+            reason = int(u.get("reasoning") or 0)
+            cost = u.get("cost") if isinstance(u.get("cost"), dict) else {}
+            logged = float(cost.get("total") or 0)
+            r = _rec(agg, date, model)
+            r["in"] += inp; r["out"] += out_; r["cr"] += cr; r["cc"] += cw
+            r["cc5"] += cw - cw1; r["cc1"] += cw1; r["reason"] += reason
+            r["asst"] += 1; r["req"] += 1; r["cost"] += logged; r["active"] += gap
+            T["in"] += inp; T["out"] += out_; T["cr"] += cr; T["cc"] += cw
+            T["cc5"] += cw - cw1; T["cc1"] += cw1; T["reason"] += reason
+            T["asst"] += 1; T["req"] += 1
+            _bump_time(agg, dt, inp + out_ + cr + cw, 1)
+            ntools = 0
+            for b in (msg.get("content") or []) if isinstance(msg.get("content"), list) else []:
+                if isinstance(b, dict) and b.get("type") in ("toolCall", "tool_use") and b.get("name"):
+                    _tool(agg, date, b["name"]); ntools += 1
+            r["tools"] += ntools; T["tools"] += ntools
+            for k, v in (("in", inp), ("out", out_), ("cr", cr), ("cc", cw)):
+                s[k] += v; dd[k] += v
+            s["cc5"] += cw - cw1; s["cc1"] += cw1; s["reason"] += reason
+            s["asst"] += 1; s["req"] += 1; s["tools"] += ntools; s["cost"] += logged
+            dd["asst"] += 1; dd["tools"] += ntools; dd["cost"] += logged
+            mt[model] = mt.get(model, 0) + inp + out_
+        if not (s["asst"] or s["user"]):
+            continue
+        project = _leaf(cwd) or f"OpenClaw · {agent}"
+        tally[project] = tally.get(project, 0) + s["in"] + s["out"] + s["asst"]
+        ranked = [m for m, _ in sorted(mt.items(), key=lambda kv: -kv[1])] or [_normalize_hermes(m0.get("model"))]
+        title = m0.get("title") or ((m0.get("_first") or "").strip()[:90] or None)
+        out.append({
+            "id": (sid or "")[:8], "source": "openclaw", "ide": IDE_FIXED["openclaw"],
+            "editor": "OpenClaw", "title": title, "project": project,
+            "model": ranked[0], "models": ranked[:6], "nmodels": len(mt),
+            "branch": None, "entry": agent,
+            "start": start.isoformat() if start else None, "end": end.isoformat() if end else None,
+            "in": s["in"], "out": s["out"], "cr": s["cr"], "cc": s["cc"], "cc5": s["cc5"], "cc1": s["cc1"],
+            "asst": s["asst"], "user": s["user"], "req": s["req"], "prem": 0.0,
+            "tools": s["tools"], "side": 0, "days": s["days"], "cost": round(s["cost"], 6),
+            "active": round(s["active"], 1),
+        })
+    agg["project"] = max(tally, key=tally.get) if tally else f"OpenClaw · {agent}"
+    agg["sessions"] = out
+
 # ===========================================================================
 # Incremental file scanning
 # ===========================================================================
@@ -2050,6 +2856,13 @@ def discover():
             out.append(("cursor", db, "Cursor"))
     if os.path.exists(HERMES_DB):
         out.append(("hermes", HERMES_DB, "Hermes Agent"))
+    # OpenClaw: one entry per agent directory — it holds both the SQLite store and
+    # any older JSONL transcripts, which parse_openclaw reconciles
+    for root in _openclaw_roots():
+        for ad in sorted(glob.glob(os.path.join(root, "agents", "*"))):
+            if (os.path.exists(os.path.join(ad, _OPENCLAW_DB))
+                    or glob.glob(os.path.join(ad, "sessions", "*.jsonl*"))):
+                out.append(("openclaw", ad, "OpenClaw"))
     # opencode: current versions keep everything in opencode.db; older versions
     # used storage/message/<session>/msg_*.json. Discover both so upgrades and
     # legacy installs are both covered.
@@ -2115,6 +2928,29 @@ def update_file(agg, source, path, editor_hint, proj_map):
             pass
         fresh["size"], fresh["mtime"] = size, mtime
         _finalize_session(fresh, source, path)
+        return fresh
+
+    if source == "openclaw":
+        # an agent directory: re-parse when its database, WAL or any transcript changes
+        parts = [os.path.join(path, _OPENCLAW_DB), os.path.join(path, _OPENCLAW_DB) + "-wal"]
+        parts += sorted(glob.glob(os.path.join(path, "sessions", "*.jsonl*")))
+        sig, total = [], 0
+        for f in parts:
+            try:
+                fs = os.stat(f); sig.append([os.path.basename(f), fs.st_size, fs.st_mtime]); total += fs.st_size
+            except OSError:
+                pass
+        if agg and agg.get("_sig") == sig:
+            return agg
+        fresh = _blank_agg(source, path)
+        fresh["editor"] = editor_hint
+        fresh["size"] = total
+        try:
+            parse_openclaw(fresh, path)
+        except Exception as e:
+            sys.stderr.write(f"[openclaw] {path}: {type(e).__name__}: {e}\n")
+        fresh["_sig"] = sig
+        fresh["mtime"] = max((x[2] for x in sig), default=mtime)
         return fresh
 
     if source in ("gemini", "cursor", "hermes"):
@@ -2298,6 +3134,7 @@ IDE_FIXED = {
     "opencode": "CLI",
     "hermes": "CLI",
     "gemini": "CLI",
+    "openclaw": "OpenClaw",
 }
 
 
@@ -2406,12 +3243,13 @@ def _finalize_session(agg, source, path):
         "end": agg.get("last_ts"),
         "in": T["in"], "out": T["out"], "cr": T["cr"], "cc": T["cc"],
         "cc5": T["cc5"], "cc1": T["cc1"],
-        "asst": T["asst"], "user": T["user"], "req": T["req"],
+        "asst": T["asst"], "user": T["user"], "req": T["req"], "ws": T.get("ws", 0),
         "prem": T["prem"], "tools": T["tools"], "side": T.get("side", 0),
         # Reuses Cursor's "subagents" (a count) — here, how many SubAgentActivity
         # "started" markers this Codex session's own file recorded. 0 for anyone
         # who didn't spawn any, so it renders identically to Cursor's absence case.
         "subagents": agg.get("_spawned", 0),
+        "open_ctx": agg.get("open_ctx"),
         "ide": _ide_of(source, agg),
         "active": round(active_total, 1),
         "bytes": agg.get("size", 0), "archived": bool(agg.get("archived")),

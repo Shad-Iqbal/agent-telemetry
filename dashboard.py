@@ -13,14 +13,14 @@ day / model / tool / project / hour, and serves an interactive dashboard.
 Stdlib only. First run parses everything (one large Codex log makes that take a
 moment); results are cached, and subsequent refreshes are incremental & instant.
 """
-import os, re, sys, json, time, threading, argparse, shutil, mimetypes
+import os, re, sys, json, time, glob, threading, argparse, shutil, mimetypes, platform, subprocess
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import parser as P
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CACHE_PATH = os.path.join(HERE, ".usage_cache.json")
-CACHE_VERSION = 43
+CACHE_VERSION = 51
 
 # ---------------------------------------------------------------------------
 # In-memory store of per-file aggregates, refreshed on a background interval.
@@ -28,6 +28,143 @@ CACHE_VERSION = 43
 _lock = threading.Lock()
 _state = {"files": {}, "version": CACHE_VERSION}
 _meta = {"last_refresh": 0.0, "last_duration": 0.0, "files": 0, "building": False}
+
+
+def _device():
+    """The name this machine goes by in its own OS (System Settings > Sharing on a Mac),
+    falling back to the bare hostname, plus a short OS label."""
+    name, osl = "", ""
+    if sys.platform == "darwin":
+        try:
+            name = subprocess.run(["scutil", "--get", "ComputerName"], capture_output=True,
+                                  text=True, timeout=2).stdout.strip()
+        except (OSError, subprocess.SubprocessError) as e:
+            sys.stderr.write(f"[device] scutil failed: {e}\n")
+        ver = platform.mac_ver()[0]
+        osl = f"macOS {ver}" if ver else "macOS"
+    elif os.name == "nt":
+        name = os.environ.get("COMPUTERNAME", "")
+        osl = f"Windows {platform.release()}".strip()
+    else:
+        for path, key in (("/etc/machine-info", "PRETTY_HOSTNAME="), ("/etc/os-release", "PRETTY_NAME=")):
+            try:
+                with open(path, encoding="utf-8") as f:
+                    for line in f:
+                        if line.startswith(key):
+                            val = line.split("=", 1)[1].strip().strip('"')
+                            if key.startswith("PRETTY_HOSTNAME"):
+                                name = val
+                            else:
+                                osl = val
+            except OSError:
+                pass
+        osl = osl or "Linux"
+    host = platform.node()
+    return {"name": name or host.split(".")[0] or "This computer", "host": host, "os": osl}
+
+
+DEVICE = _device()
+
+# ---------------------------------------------------------------------------
+# Version + self-update. The version comes from this checkout's git metadata.
+# Checking for an update is the ONLY thing here that touches the network, and it
+# runs only when the user clicks "Check for updates" — never on a timer.
+# ---------------------------------------------------------------------------
+APP_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+def _git(*args, timeout=10):
+    r = subprocess.run(["git", "-C", APP_DIR, *args], capture_output=True, text=True,
+                       timeout=timeout)
+    if r.returncode != 0:
+        raise RuntimeError((r.stderr or r.stdout).strip() or f"git {args[0]} failed")
+    return r.stdout.strip()
+
+
+def _version():
+    try:
+        return {"git": True, "commit": _git("rev-parse", "--short", "HEAD"),
+                "date": _git("log", "-1", "--format=%cs"),
+                "branch": _git("rev-parse", "--abbrev-ref", "HEAD"),
+                # "v1.4.2" on a release, "v1.4.2-7-g0bb26d6" seven commits past it
+                "describe": (subprocess.run(["git", "-C", APP_DIR, "describe", "--tags"],
+                                            capture_output=True, text=True, timeout=5).stdout.strip()
+                             or None)}
+    except (OSError, subprocess.SubprocessError, RuntimeError) as e:
+        sys.stderr.write(f"[version] not a git checkout: {e}\n")
+        return {"git": False}
+
+
+VERSION = _version()
+
+
+def _upstream():
+    """What to update from: this branch's upstream while the remote still has it, else
+    the remote's default branch. A feature branch that was merged and then deleted on
+    the remote keeps its local tracking ref (a plain fetch never prunes), which would
+    read "up to date" forever. Asks the remote, so it runs only from update_action."""
+    try:
+        up = _git("rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
+    except RuntimeError:
+        up = None
+    remote = up.split("/", 1)[0] if up else "origin"
+    if up and _git("ls-remote", "--heads", remote, "refs/heads/" + up.split("/", 1)[1], timeout=30):
+        return up
+    m = re.search(r"^ref: refs/heads/(\S+)\s+HEAD$",
+                  _git("ls-remote", "--symref", remote, "HEAD", timeout=30), re.M)
+    return f"{remote}/{m.group(1) if m else 'main'}"
+
+
+def update_action(action):
+    """check: fetch and report how far behind this checkout is.
+    apply: fast-forward to it (never a merge, never over local edits), then restart."""
+    if not VERSION.get("git"):
+        raise ValueError("This copy isn't a git checkout — download the latest release instead.")
+    remote = "origin"
+    try:
+        up = _upstream()
+        remote = up.split("/", 1)[0]
+        _git("fetch", "--quiet", remote, timeout=30)
+        behind = int(_git("rev-list", "--count", f"HEAD..{up}") or 0)
+        ahead = int(_git("rev-list", "--count", f"{up}..HEAD") or 0)
+        log = _git("log", "--format=%h %cs %s", "-n", "8", f"HEAD..{up}") if behind else ""
+    except (RuntimeError, subprocess.SubprocessError) as e:
+        raise ValueError(f"Couldn't reach {remote}: {e}")
+    info = {"upstream": up, "behind": behind, "ahead": ahead,
+            "changes": [ln for ln in log.splitlines() if ln], "current": VERSION}
+    if action == "check":
+        return info
+    if action != "apply":
+        raise ValueError("unknown action")
+    if not behind:
+        return dict(info, updated=False)
+    if _git("status", "--porcelain", "--untracked-files=no"):
+        raise ValueError("This checkout has local changes; commit or stash them, then update.")
+    if ahead:
+        raise ValueError(f"This checkout has {ahead} commit(s) not on {up}; update it with git.")
+    try:
+        _git("merge", "--ff-only", "--quiet", up, timeout=30)
+    except RuntimeError as e:
+        raise ValueError(f"Update failed: {e}")
+    threading.Thread(target=_restart, daemon=True).start()
+    return dict(info, updated=True, restarting=True)
+
+
+def _restart():
+    """Re-exec this process on the new code once the response has gone out."""
+    time.sleep(0.8)
+    try:
+        with _refresh_lock, _lock:
+            save_cache()
+    except Exception as e:                      # never lose the restart over the cache
+        sys.stderr.write(f"[update] cache save before restart failed: {e}\n")
+    sys.stderr.write("[update] restarting on the new version\n")
+    # never carry --rebuild over: it deletes the cache just saved, archived history
+    # included (./run.sh --rebuild once, then Update, would wipe the ledger)
+    # (argparse also takes any prefix of it, down to --r)
+    argv = [a for a in sys.argv if not (len(a) > 2 and "--rebuild".startswith(a))]
+    os.execv(sys.executable, [sys.executable, *argv])
+
 _dirty = {"v": True}          # cache is only rewritten when a file actually changed
 # Only one refresh at a time: the background timer and the Rebuild button can now
 # collide, and `gone = [p for p in files ...]` iterating while another thread
@@ -122,20 +259,30 @@ def _refresh_locked(verbose=False):
 # ---------------------------------------------------------------------------
 # Merge per-file aggregates → a single dataset payload for the frontend.
 # ---------------------------------------------------------------------------
-def _cost(source, model, inp, out, cr, cc5, cc1, cc_fallback=0, date=None, logged_cost=None):
+def _cost(source, model, inp, out, cr, cc5, cc1, cc_fallback=0, date=None, logged_cost=None, ws=0):
     # opencode's SQLite store logs the actual per-message cost; prefer it over a
     # list-price estimate. Callers pass None (not 0.0) when there is no logged
     # figure — the older opencode JSON layout records no cost at all, and
     # treating its 0.0 as authoritative would zero out those installs.
     if source == "opencode" and logged_cost is not None:
         return logged_cost
+    # OpenClaw logs its own per-response estimate; it is used only for a model we
+    # have no verified price for, so every priced model still bills the same way
+    # whichever tool ran it
+    if source == "openclaw" and logged_cost and not any(P.price_of(model, date)):
+        return logged_cost
     # date-aware: usage from before a vendor price change bills at that day's rate
     pin, pout, pcw5, pcw1, pcr = P.price_of(model, date)
     # if a record only has the untiered total (cc_fallback), bill it at the 5-min rate
     if cc_fallback and not (cc5 or cc1):
         cc5 = cc_fallback
-    return (inp * pin + out * pout + cr * pcr
-            + cc5 * pcw5 + cc1 * pcw1) / 1_000_000.0
+    # A cache write is still input the model read. A model with no published write
+    # rate (most OpenAI rows, and a GPT-5.6 day priced from PRICE_HISTORY, whose old
+    # page listed none) bills it at the plain input rate, never at $0.
+    pcw5 = pcw5 or pin
+    pcw1 = pcw1 or pcw5
+    return ((inp * pin + out * pout + cr * pcr
+             + cc5 * pcw5 + cc1 * pcw1) / 1_000_000.0 + ws * P.WEB_SEARCH_USD)
 
 
 _UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
@@ -190,6 +337,14 @@ def build_payload():
     ctxb = {}         # (date, bucket) -> tokens/requests
     model_meta = {}   # model -> vendor
     ai_lines = {}     # date -> Cursor's suggested/accepted line counts
+    activity = {}     # (date, source, model, category, project, ide) -> turn counts + cost
+    mcp_inv = {}      # server -> set of tool names Claude Code offered
+    mcp_loaded = {}   # (date, server, project) -> sessions it was offered in
+    mcp_calls = {}    # (date, server, project) -> calls
+    reads = {}        # (date, source, project) -> [reads, re-reads, junk, re-read tok, junk tok]
+    used_ext = {}     # (date, kind, name) -> uses of an installed skill / agent
+    cwds = {}         # (source family, cwd) -> first day Claude Code there read AGENTS.md
+    undecoded = 0     # OpenClaw events stored compressed that couldn't be read here
 
     with _lock:
         items = list(_state["files"].items())
@@ -200,8 +355,8 @@ def build_payload():
         # Only the SQLite store records a real per-message cost. The older
         # opencode JSON layout logs none, so its records carry a placeholder
         # 0.0 that must NOT be mistaken for "this was free".
-        has_logged_cost = (source == "opencode"
-                           and str(agg.get("path", "")).endswith(".db"))
+        has_logged_cost = ((source == "opencode" and str(agg.get("path", "")).endswith(".db"))
+                           or source == "openclaw")
         project = agg.get("project") or "(unknown)"
         # One IDE per file for every source (Copilot's is the editor whose storage
         # it came from; Claude/Codex stamp an entrypoint; the rest run in exactly
@@ -224,17 +379,64 @@ def build_payload():
                 continue
             rk = (date, source, model, project, ide)
             slot = records.setdefault(rk, _zero())
-            for f in ("in", "out", "cr", "cc", "cc5", "cc1", "reason", "asst", "user", "req", "tools", "active"):
+            for f in ("in", "out", "cr", "cc", "cc5", "cc1", "reason", "asst", "user", "req", "tools", "active", "ws"):
                 slot[f] += r.get(f, 0)
             slot["prem"] += r.get("prem", 0.0)
             c = _cost(source, model, r["in"], r["out"], r["cr"],
                       r.get("cc5", 0), r.get("cc1", 0), r.get("cc", 0), date,
-                      logged_cost=r.get("cost", 0.0) if has_logged_cost else None)
+                      logged_cost=r.get("cost", 0.0) if has_logged_cost else None,
+                      ws=r.get("ws", 0))
             slot["cost"] += c
             model_meta[model] = P.vendor_of(model)
             file_tokens += r["in"] + r["out"] + r["cr"] + r["cc"]
             file_msgs += r.get("asst", 0)
             file_cost += c
+        for ak, v in P.activity_of(agg).items():
+            date, model, cat = ak.split("\t")
+            e = activity.setdefault((date, source, model, cat, project, ide),
+                                    {"turns": 0, "edits": 0, "oneshot": 0, "retries": 0,
+                                     "tok": 0, "cost": 0.0, "edit_cost": 0.0, "retry_cost": 0.0})
+            for f in ("turns", "edits", "oneshot", "retries"):
+                e[f] += v.get(f, 0)
+            e["tok"] += v.get("in", 0) + v.get("out", 0) + v.get("cr", 0) + v.get("cc5", 0) + v.get("cc1", 0)
+            e["cost"] += _cost(source, model, v.get("in", 0), v.get("out", 0), v.get("cr", 0),
+                               v.get("cc5", 0), v.get("cc1", 0), 0, date, ws=v.get("ws", 0))
+            if v.get("ein") or v.get("eout"):
+                e["edit_cost"] += _cost(source, model, v.get("ein", 0), v.get("eout", 0),
+                                        v.get("ecr", 0), v.get("ecc5", 0), v.get("ecc1", 0), 0,
+                                        date, ws=v.get("ews", 0))
+            if v.get("rin") or v.get("rout"):
+                e["retry_cost"] += _cost(source, model, v.get("rin", 0), v.get("rout", 0),
+                                         v.get("rcr", 0), v.get("rcc5", 0), v.get("rcc1", 0), 0,
+                                         date, ws=v.get("rws", 0))
+        if not agg.get("subagent"):
+            for server, e in (agg.get("mcp_offered") or {}).items():
+                mcp_inv.setdefault(server, set()).update(e.get("tools") or ())
+                k = (e.get("d") or "", server, project)
+                mcp_loaded[k] = mcp_loaded.get(k, 0) + 1
+        for tk, c in agg.get("tools", {}).items():
+            date, _, name = tk.partition("\t")
+            if name.startswith("mcp__"):
+                k = (date, name[5:].split("__", 1)[0], project)
+                mcp_calls[k] = mcp_calls.get(k, 0) + c
+        for date, e in (agg.get("reads") or {}).items():
+            slot = reads.setdefault((date, source, project), [0, 0, 0, 0, 0])
+            for i, v in enumerate(e[:5]):
+                slot[i] += v
+        for k, c in (agg.get("used_ext") or {}).items():
+            date, kind, name = (k.split("\t") + ["", "", ""])[:3]
+            used_ext[(date, kind, name)] = used_ext.get((date, kind, name), 0) + c
+        if source == "openclaw":
+            undecoded += int((agg.get("state") or {}).get("undecoded") or 0)
+        if agg.get("cwd") and source in ("claude", "claude-desktop", "codex") and not agg.get("archived"):
+            ck = ("codex" if source == "codex" else "claude", agg["cwd"])
+            # when Claude Code started reading AGENTS.md here. A file keeps only its
+            # newest version, so take its LAST day: `since` can start late, never early
+            since = ((agg.get("last_ts") or "")[:10] or None
+                     if ck[0] == "claude" and _ver_tuple(agg.get("cliver")) >= CLAUDE_AGENTS_MD_SINCE
+                     else None)
+            prev = cwds.get(ck)
+            cwds[ck] = min(prev, since) if prev and since else (prev or since)
         for sk, v in agg.get("skills", {}).items():
             date, _, name = sk.partition("\t")
             if not name:
@@ -297,7 +499,8 @@ def build_payload():
             dd["prem"] += r.get("prem", 0.0)
             dd["cost"] += _cost(source, model, r["in"], r["out"], r["cr"],
                                 r.get("cc5", 0), r.get("cc1", 0), r.get("cc", 0), date,
-                                logged_cost=r.get("cost", 0.0) if has_logged_cost else None)
+                                logged_cost=r.get("cost", 0.0) if has_logged_cost else None,
+                                ws=r.get("ws", 0))
 
         # sessions
         for s in agg.get("sessions", []):
@@ -307,7 +510,8 @@ def build_payload():
                 days = {}
                 for date, v in own.items():
                     days[date] = dict(v, cost=_cost(source, s["model"], v["in"], v["out"],
-                                                    v.get("cr", 0), 0, 0, v.get("cc", 0), date))
+                                                    v.get("cr", 0), 0, 0, v.get("cc", 0), date,
+                                                    logged_cost=v.get("cost") if source == "openclaw" else None))
             else:
                 days = file_days
             s2["days"] = {d: [round(v["cost"], 6), v["in"], v["out"], v["cr"], v["cc"],
@@ -321,7 +525,8 @@ def build_payload():
             s2["cost"] = _cost(source, s["model"], s["in"], s["out"], s["cr"],
                                s.get("cc5", 0), s.get("cc1", 0), s.get("cc", 0),
                                (s.get("end") or s.get("start") or "")[:10],
-                               logged_cost=s.get("cost", 0.0) if has_logged_cost else None)
+                               logged_cost=s.get("cost", 0.0) if has_logged_cost else None,
+                               ws=s.get("ws", 0))
             sessions.append(s2)
 
     rec_list = []
@@ -359,12 +564,34 @@ def build_payload():
     return {
         "generated_at": time.time(),
         "meta": dict(_meta),
+        "device": DEVICE,
+        "version": VERSION,
+        "home": P.HOME,        # to show instruction-file paths as ~/...
+        "openclaw_undecoded": undecoded,
         "mcp_servers": _mcp_servers(),
         # Real per-1M rates for the models THIS user actually ran, so the client can
         # cost a "what if this had run on X" without any hardcoded model list.
         "prices": {m: list(P.price_of(m)) for m in model_meta},
         "codex_effort": _codex_config()["effort"],
         "skills": [{"date": d, "name": n, **v} for (d, n), v in skills.items()],
+        # what each turn was for (Claude Code, Claude Desktop, Codex) — see parser.py ACTIVITY
+        "activity": [{"date": d, "source": src, "model": m, "category": c, "project": pj, "ide": i,
+                      **{k: (round(x, 6) if isinstance(x, float) else x) for k, x in v.items()}}
+                     for (d, src, m, c, pj, i), v in activity.items()],
+        "mcp_inventory": {"servers": {sv: {"tools": sorted(t)} for sv, t in mcp_inv.items()},
+                          "loaded": [{"date": d, "server": sv, "project": pj, "sessions": n}
+                                     for (d, sv, pj), n in sorted(mcp_loaded.items())],
+                          "calls": [{"date": d, "server": sv, "project": pj, "calls": n}
+                                    for (d, sv, pj), n in sorted(mcp_calls.items())]},
+        # reads that added tokens for nothing (Claude Code) — see parser.py READ HYGIENE
+        "reads": [{"date": d, "source": src, "project": pj, "reads": v[0], "rereads": v[1],
+                   "junk": v[2], "reread_tok": v[3], "junk_tok": v[4]}
+                  for (d, src, pj), v in reads.items()],
+        # sizes of the CLAUDE.md / AGENTS.md files each request carries
+        "context_files": _context_files(cwds),
+        "installed": {"items": _installed(cwds),
+                      "used": [{"date": d, "kind": k, "name": n, "n": c}
+                               for (d, k, n), c in used_ext.items()]},
         "ctx": [{"date": d, "bucket": b, "source": src, **v} for (d, b, src), v in ctxb.items()],
         "records": rec_list,
         "tools": tool_list,
@@ -506,6 +733,181 @@ def _write_claude_settings(data):
 
 
 _mcp_cache = {"at": 0.0, "data": None}
+
+
+_ctxfile_cache = {"at": 0.0, "key": None, "data": None}
+
+
+# Claude Code reads a project's AGENTS.md itself from this version on
+CLAUDE_AGENTS_MD_SINCE = (2, 1, 277)
+CODEX_DOC_MAX_BYTES = 32 * 1024     # Codex's project_doc_max_bytes default
+
+
+def _ver_tuple(v):
+    return tuple(int(x) for x in re.findall(r"\d+", str(v or ""))[:3])
+
+
+def _size(path):
+    """Size of a regular file, or 0 when there is none."""
+    try:
+        return os.path.getsize(path) if os.path.isfile(path) else 0
+    except OSError as e:
+        sys.stderr.write(f"[context files] {path}: {e}\n")
+        return 0
+
+
+def _claude_instruction_mode():
+    """Claude Code's "Project instructions" setting (pluginConfigs → agents-md@builtin).
+    Only that one key is read from settings.json."""
+    try:
+        cfg = _read_claude_settings().get("pluginConfigs") or {}
+        mode = ((cfg.get("agents-md@builtin") or {}).get("options") or {}).get("instructionFiles")
+        return mode if isinstance(mode, str) else "claude-md-or-agents-md"
+    except (AttributeError, TypeError):
+        return "claude-md-or-agents-md"
+
+
+def _context_files(cwds):
+    """SIZES (never contents) of the instruction files each agent loads at the start of
+    every session, following each agent's own documented rules:
+
+    Claude Code — ~/.claude/CLAUDE.md, then CLAUDE.md, CLAUDE.local.md and
+    .claude/CLAUDE.md in the working directory and EVERY directory above it. From
+    2.1.277 a project with none of those gets its AGENTS.md / .claude/AGENTS.md
+    instead (or as well, with the "claude-md-and-agents-md" setting).
+    Codex — ~/.codex/AGENTS.override.md, else ~/.codex/AGENTS.md; then from the git
+    root DOWN to the working directory, at most one file per directory (the override
+    wins), and it stops adding once those total project_doc_max_bytes (32 KiB).
+
+    `bytes` is a file's size, `sent` how much of it goes into the request. `since`
+    is the first day the file could have been loaded, when that isn't forever.
+    `cwds` is {(source family, cwd): first day with AGENTS.md support, or None}."""
+    key = tuple(sorted(cwds.items(), key=lambda kv: kv[0]))
+    if (time.time() - _ctxfile_cache["at"] < 60 and _ctxfile_cache["key"] == key
+            and _ctxfile_cache["data"] is not None):
+        return _ctxfile_cache["data"]
+    out, seen = [], set()
+    home = os.path.normpath(P.HOME)
+    user_claude = os.path.join(home, ".claude", "CLAUDE.md")
+
+    def add(source, project, path, size, sent=None, since=None):
+        if size and (source, project, path) not in seen:
+            seen.add((source, project, path))
+            out.append({"source": source, "project": project, "file": path, "bytes": size,
+                        "sent": size if sent is None else sent, "since": since})
+
+    add("claude", "*", user_claude, _size(user_claude))
+    codex_home = os.path.join(home, ".codex")
+    for n in ("AGENTS.override.md", "AGENTS.md"):      # the first non-empty one
+        p = os.path.join(codex_home, n)
+        if _size(p):
+            add("codex", "*", p, _size(p))
+            break
+    cfg = ""
+    try:
+        with open(os.path.join(codex_home, "config.toml"), encoding="utf-8") as f:
+            cfg = f.read()
+    except OSError:
+        pass
+    m = re.search(r"^\s*project_doc_max_bytes\s*=\s*(\d+)", cfg, re.M)
+    codex_cap = int(m.group(1)) if m else CODEX_DOC_MAX_BYTES
+    claude_mode = _claude_instruction_mode()
+
+    for (source, cwd), agents_since in list(key)[:300]:
+        d = os.path.normpath(cwd)
+        if not os.path.isdir(d):
+            continue
+        project = P._leaf(cwd) or cwd
+        chain = [d]                                     # the dir, then every parent
+        while os.path.dirname(chain[-1]) != chain[-1] and len(chain) < 64:
+            chain.append(os.path.dirname(chain[-1]))
+        if source == "claude":
+            if claude_mode == "managed-only":
+                continue
+            claude_md, agents_md = [], []
+            for dd in chain:
+                # home and above load for every project under home: one row, "*"
+                pj = "*" if home == dd or home.startswith(dd.rstrip(os.sep) + os.sep) else project
+                for n in ("CLAUDE.md", "CLAUDE.local.md", os.path.join(".claude", "CLAUDE.md"),
+                          "AGENTS.md", os.path.join(".claude", "AGENTS.md")):
+                    p = os.path.join(dd, n)
+                    if p == user_claude:                # already counted as the user file
+                        continue
+                    s = _size(p)
+                    if s and "AGENTS" in n:             # loads per project, so never "*"
+                        agents_md.append((project, p, s))
+                    elif s:
+                        claude_md.append((pj, p, s))
+            for pj, p, s in claude_md:
+                add(source, pj, p, s)
+            if agents_since and (claude_mode == "claude-md-and-agents-md" or not claude_md):
+                for pj, p, s in agents_md:
+                    add(source, pj, p, s, since=agents_since)
+        elif source == "codex":
+            root = next((dd for dd in chain if os.path.exists(os.path.join(dd, ".git"))), d)
+            left = codex_cap
+            for dd in reversed(chain[:chain.index(root) + 1]):   # root down to cwd
+                if left <= 0:
+                    break
+                for n in ("AGENTS.override.md", "AGENTS.md"):
+                    p = os.path.join(dd, n)
+                    s = _size(p)
+                    if s:
+                        add(source, project, p, s, sent=min(s, left))
+                        left -= s
+                        break
+    _ctxfile_cache.update(at=time.time(), key=key, data=out)
+    return out
+
+
+_installed_cache = {"at": 0.0, "key": None, "data": None}
+
+
+def _frontmatter_desc_len(path):
+    """Length of a skill/agent file's `description:` — what Claude Code lists in
+    every session. Only the length leaves this function."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            head = f.read(8192)
+    except OSError as e:
+        sys.stderr.write(f"[installed] {path}: {e}\n")
+        return 0, None
+    m = re.match(r"---\s*\n(.*?)\n---", head, re.S)
+    if not m:
+        return 0, None
+    fm = m.group(1)
+    name = re.search(r"^name:\s*(.+)$", fm, re.M)
+    desc = re.search(r"^description:\s*(.*(?:\n[ \t]+.*)*)", fm, re.M)
+    return (len(desc.group(1).strip()) if desc else 0,
+            name.group(1).strip().strip("'\"") if name else None)
+
+
+def _installed(cwds):
+    """Claude Code skills and subagents installed for the user (~/.claude) or a
+    project (<cwd>/.claude), with how big a description each adds to every session."""
+    key = tuple(sorted(c for s_, c in cwds if s_ == "claude"))
+    if (time.time() - _installed_cache["at"] < 60 and _installed_cache["key"] == key
+            and _installed_cache["data"] is not None):
+        return _installed_cache["data"]
+    out = []
+    roots = [("user", "*", os.path.join(P.HOME, ".claude"))]
+    roots += [("project", P._leaf(c) or c, os.path.join(c, ".claude")) for c in key[:300]
+              if os.path.normpath(c) != os.path.normpath(P.HOME)]
+    seen = set()
+    for scope, project, root in roots:
+        for kind, pattern in (("skill", os.path.join(root, "skills", "*", "SKILL.md")),
+                              ("agent", os.path.join(root, "agents", "*.md"))):
+            for path in glob.glob(pattern):
+                if path in seen or not os.path.isfile(path):   # a dangling symlink
+                    continue
+                seen.add(path)
+                n, fm_name = _frontmatter_desc_len(path)
+                name = fm_name or (os.path.basename(os.path.dirname(path)) if kind == "skill"
+                                   else os.path.splitext(os.path.basename(path))[0])
+                out.append({"kind": kind, "name": name, "scope": scope, "project": project,
+                            "desc_chars": n})
+    _installed_cache.update(at=time.time(), key=key, data=out)
+    return out
 
 
 def _mcp_servers():
@@ -766,7 +1168,7 @@ def build_storage():
 def _zero():
     return {"in": 0, "out": 0, "cr": 0, "cc": 0, "cc5": 0, "cc1": 0, "reason": 0,
             "asst": 0, "user": 0, "req": 0, "tools": 0, "prem": 0.0, "cost": 0.0,
-            "active": 0.0}
+            "active": 0.0, "ws": 0}
 
 
 # ---------------------------------------------------------------------------
@@ -888,7 +1290,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         route = self.path.split("?")[0]
-        if route in ("/api/settings", "/api/cache"):
+        if route in ("/api/settings", "/api/cache", "/api/update"):
             if not self._csrf_ok():
                 self._send(403, json.dumps({"error": "cross-site request refused"}))
                 return
@@ -902,6 +1304,8 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 if route == "/api/cache":
                     result = cache_action(body.get("action"))
+                elif route == "/api/update":
+                    result = update_action(body.get("action"))
                 else:
                     result = save_claude_cleanup_days(body.get("cleanupPeriodDays"))
                 self._send(200, json.dumps(result))
@@ -915,6 +1319,12 @@ class Handler(BaseHTTPRequestHandler):
 
 
 class Server(ThreadingHTTPServer):
+    # socketserver's default listen backlog is 5. A page load opens about seven
+    # connections at once (page, Chart.js, three scripts, the stylesheet, the data),
+    # so a burst could overflow it and the kernel reset one — a script that
+    # silently failed to load ("heroHTML is not defined") once in a few dozen loads.
+    request_queue_size = 128
+    daemon_threads = True
     def handle_error(self, request, client_address):
         # A browser tab closed/refreshed mid-response is normal traffic, not a
         # server fault — don't spam stderr with a traceback for it.
@@ -954,7 +1364,7 @@ def main():
     BIND.update(host=args.host, port=args.port)
     srv = Server((args.host, args.port), Handler)
     url = f"http://{args.host}:{args.port}"
-    sys.stderr.write(f"\n  ✦ AI Usage Dashboard live at  {url}\n")
+    sys.stderr.write(f"\n  ✦ AgentTelemetry live at  {url}  ·  {DEVICE['name']}\n")
     sys.stderr.write(f"    refreshing every {args.interval}s · Ctrl-C to stop\n\n")
     try:
         srv.serve_forever()

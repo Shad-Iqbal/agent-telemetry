@@ -1,12 +1,12 @@
 {
-  "name": "AI Usage Analytics",
-  "short_name": "AI Usage",
+  "name": "AgentTelemetry",
+  "short_name": "AgentTelemetry",
   "start_url": "/",
   "display": "standalone",
   "orientation": "any",
-  "background_color": "#0b0e13",
-  "theme_color": "#3987e5",
-  "description": "Live local analytics for your AI coding-assistant usage.",
+  "background_color": "#0b0c0f",
+  "theme_color": "#111317",
+  "description": "Live, local telemetry for your AI coding agents \u2014 spend, tokens, models, tools and projects. Nothing leaves your machine.",
   "icons": [
     {
       "src": "/static/icon-192.png",
