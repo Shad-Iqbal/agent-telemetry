@@ -510,6 +510,11 @@ reloads once the new commit answers. A copy that isn't a git checkout shows no b
 The re-exec drops `--rebuild` (and any prefix argparse would accept for it) from the
 arguments: it would delete the cache that was just saved, archived history included.
 
+`_upstream()` asks the remote (`ls-remote`) whether the branch's upstream still exists, and
+falls back to the remote's default branch when it doesn't. A feature branch that was merged
+and deleted keeps its local tracking ref, because a plain `fetch` never prunes. Comparing
+against that stale ref reported "Up to date" forever, while `main` had moved on.
+
 `load()` keeps a fetch failure ("cannot reach /api/data") apart from a render failure: the
 second sets `data-js-error` — it used to be reported as the server being down, which hid a
 render bug from the headless sweep.

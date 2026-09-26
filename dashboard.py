@@ -99,10 +99,20 @@ VERSION = _version()
 
 
 def _upstream():
+    """What to update from: this branch's upstream while the remote still has it, else
+    the remote's default branch. A feature branch that was merged and then deleted on
+    the remote keeps its local tracking ref (a plain fetch never prunes), which would
+    read "up to date" forever. Asks the remote, so it runs only from update_action."""
     try:
-        return _git("rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
+        up = _git("rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
     except RuntimeError:
-        return "origin/main"
+        up = None
+    remote = up.split("/", 1)[0] if up else "origin"
+    if up and _git("ls-remote", "--heads", remote, "refs/heads/" + up.split("/", 1)[1], timeout=30):
+        return up
+    m = re.search(r"^ref: refs/heads/(\S+)\s+HEAD$",
+                  _git("ls-remote", "--symref", remote, "HEAD", timeout=30), re.M)
+    return f"{remote}/{m.group(1) if m else 'main'}"
 
 
 def update_action(action):
@@ -110,9 +120,10 @@ def update_action(action):
     apply: fast-forward to it (never a merge, never over local edits), then restart."""
     if not VERSION.get("git"):
         raise ValueError("This copy isn't a git checkout — download the latest release instead.")
-    up = _upstream()
-    remote = up.split("/", 1)[0]
+    remote = "origin"
     try:
+        up = _upstream()
+        remote = up.split("/", 1)[0]
         _git("fetch", "--quiet", remote, timeout=30)
         behind = int(_git("rev-list", "--count", f"HEAD..{up}") or 0)
         ahead = int(_git("rev-list", "--count", f"{up}..HEAD") or 0)
