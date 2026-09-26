@@ -13,7 +13,7 @@ day / model / tool / project / hour, and serves an interactive dashboard.
 Stdlib only. First run parses everything (one large Codex log makes that take a
 moment); results are cached, and subsequent refreshes are incremental & instant.
 """
-import os, re, sys, json, time, threading, argparse, shutil, mimetypes
+import os, re, sys, json, time, threading, argparse, shutil, mimetypes, platform, subprocess
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import parser as P
@@ -28,6 +28,42 @@ CACHE_VERSION = 43
 _lock = threading.Lock()
 _state = {"files": {}, "version": CACHE_VERSION}
 _meta = {"last_refresh": 0.0, "last_duration": 0.0, "files": 0, "building": False}
+
+
+def _device():
+    """The name this machine goes by in its own OS (System Settings > Sharing on a Mac),
+    falling back to the bare hostname, plus a short OS label."""
+    name, osl = "", ""
+    if sys.platform == "darwin":
+        try:
+            name = subprocess.run(["scutil", "--get", "ComputerName"], capture_output=True,
+                                  text=True, timeout=2).stdout.strip()
+        except (OSError, subprocess.SubprocessError) as e:
+            sys.stderr.write(f"[device] scutil failed: {e}\n")
+        ver = platform.mac_ver()[0]
+        osl = f"macOS {ver}" if ver else "macOS"
+    elif os.name == "nt":
+        name = os.environ.get("COMPUTERNAME", "")
+        osl = f"Windows {platform.release()}".strip()
+    else:
+        for path, key in (("/etc/machine-info", "PRETTY_HOSTNAME="), ("/etc/os-release", "PRETTY_NAME=")):
+            try:
+                with open(path, encoding="utf-8") as f:
+                    for line in f:
+                        if line.startswith(key):
+                            val = line.split("=", 1)[1].strip().strip('"')
+                            if key.startswith("PRETTY_HOSTNAME"):
+                                name = val
+                            else:
+                                osl = val
+            except OSError:
+                pass
+        osl = osl or "Linux"
+    host = platform.node()
+    return {"name": name or host.split(".")[0] or "This computer", "host": host, "os": osl}
+
+
+DEVICE = _device()
 _dirty = {"v": True}          # cache is only rewritten when a file actually changed
 # Only one refresh at a time: the background timer and the Rebuild button can now
 # collide, and `gone = [p for p in files ...]` iterating while another thread
@@ -359,6 +395,7 @@ def build_payload():
     return {
         "generated_at": time.time(),
         "meta": dict(_meta),
+        "device": DEVICE,
         "mcp_servers": _mcp_servers(),
         # Real per-1M rates for the models THIS user actually ran, so the client can
         # cost a "what if this had run on X" without any hardcoded model list.
@@ -954,7 +991,7 @@ def main():
     BIND.update(host=args.host, port=args.port)
     srv = Server((args.host, args.port), Handler)
     url = f"http://{args.host}:{args.port}"
-    sys.stderr.write(f"\n  ✦ AI Usage Dashboard live at  {url}\n")
+    sys.stderr.write(f"\n  ✦ AgentTelemetry live at  {url}  ·  {DEVICE['name']}\n")
     sys.stderr.write(f"    refreshing every {args.interval}s · Ctrl-C to stop\n\n")
     try:
         srv.serve_forever()
