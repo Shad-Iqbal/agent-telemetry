@@ -574,7 +574,7 @@ function categorize(name){
 /* ---------------- ACTIVITY ----------------
    RAW.activity: one row per (date, tool, model, category) — a turn is one typed
    prompt plus all the work until the next one, classified by the tools it used and
-   the words it used (parser.py ACTIVITY, codeburn's rules). Only Claude Code,
+   the words it used (parser.py ACTIVITY). Only Claude Code,
    Claude Desktop and Codex log enough to classify. */
 const ACT_LABEL = {coding:"Coding", feature:"New features", debugging:"Debugging",
   refactoring:"Refactoring", testing:"Testing", exploration:"Exploring / research",

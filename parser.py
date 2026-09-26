@@ -579,8 +579,9 @@ def _first_text(content):
 # ACTIVITY — what each turn was for, and whether its edits landed first time
 # ===========================================================================
 # A turn is one typed prompt plus all the agent work until the next typed prompt.
-# Classified from the tools it used, refined by keywords in the prompt — the rules
-# are codeburn's (src/classifier.ts), ported so the two tools' categories agree.
+# Classified from the tools it used, refined by keywords in the prompt.
+# Keyword and tool rules adapted from CodeBurn (github.com/getagentseal/codeburn),
+# MIT License, Copyright (c) 2026 AgentSeal.
 # The prompt is only regex-matched when it arrives; what persists in the cache is a
 # handful of flags (_prompt_kw), never its text.
 _KW_TEST = re.compile(r"\b(test|pytest|vitest|jest|mocha|spec|coverage|npm\s+test|npx\s+vitest|npx\s+jest)\b", re.I)
@@ -1081,7 +1082,7 @@ def _codex_usage(agg, dt, u, model):
     r["cc"] += written; r["cc5"] += written
     r["out"] += out
     r["reason"] += reason
-    # one billed model call — what OpenAI's usage page and codeburn call a request.
+    # one billed model call — what OpenAI's usage page calls a request.
     # Not "asst": that counts visible replies, and one reply can take many calls.
     r["req"] += 1
     _bump_time(agg, dt, inp + out, 0)
@@ -1175,7 +1176,7 @@ def parse_codex(agg, lines):
         # everything in that burst is skipped except turn_context, which carries
         # the model the fork inherits. The burst ends at the first gap over 1s:
         # real work resumed 3.5-4.8s after session_meta in every fork seen, so a
-        # fixed 5s cutoff (codeburn's) also clips the fork's own first turn.
+        # fixed 5s cutoff would also clip the fork's own first turn.
         st = agg["state"]
         if st.get("replay_last") and dt:
             last = _from_iso(st["replay_last"])

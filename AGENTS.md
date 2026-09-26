@@ -131,7 +131,7 @@ so that file stops being a cache and becomes the sole record. Two consequences:
 - **OpenAI long-context rates are not billed.** The pricing page lists a higher rate for
   long prompts on GPT-5.4+ but states no threshold, so there is nothing to apply it to
   without guessing. 35 Codex requests here passed 272K input tokens; they bill at the
-  standard rate, as codeburn's do.
+  standard rate.
 - **Claude's advisor iterations** (`usage.iterations[].type == "advisor_message"`) are not
   priced separately — none exist in any log seen, so their shape can't be verified. Every
   iteration here is a plain `message`, already covered by the response's own `usage`.
@@ -224,7 +224,7 @@ so that file stops being a cache and becomes the sole record. Two consequences:
   first gap over 1s (`state.replay_last`) — keeping only `turn_context` for the inherited
   model. One `/fork` here replayed 73 usage events, matching its parent's running total to
   the token. Don't use a fixed window: real work resumed 3.5–4.8s after `session_meta` in
-  every fork seen, so codeburn's 5s cutoff also clips the fork's own first turn.
+  every fork seen, so a fixed 5s cutoff would also clip the fork's own first turn.
 - **Codex cache writes are carved out of input.** `cache_write_input_tokens` is a subset of
   `input_tokens`, disjoint from `cached_input_tokens` (in >= cached + written in all 35,736
   events checked), so it moves from `in` to `cc`/`cc5` and bills at the write rate.
@@ -257,7 +257,7 @@ so that file stops being a cache and becomes the sole record. Two consequences:
   (chars/4). It also logs a premium-request multiplier in `result.details` ("… • 1x") —
   that's its real billing unit. Not read yet (none exist on this machine): the Copilot CLI's
   `~/.copilot/session-state/*/events.jsonl`, JetBrains, and `GitHub.copilot-chat/transcripts/`
-  (turns only, no tokens). codeburn reads all three.
+  (turns only, no tokens).
 - **opencode**: current versions use one SQLite `opencode.db`; older ones use
   `storage/message/<session>/msg_*.json`. Both are read. Only the DB records a real
   per-message cost, so cost routing keys on whether the aggregate's path ends `.db`.
@@ -354,8 +354,8 @@ appears as `claude-in-chrome` and `Claude_in_Chrome` across versions, and
 
 `agg["activity"]` (`"date\tmodel\tcategory"` → turns, edits, oneshot, retries and token
 fields) comes from the ACTIVITY block in `parser.py`; the payload ships it as `activity`,
-costed per row by `_cost()`. The rules are codeburn's (`src/classifier.ts`), ported so the
-two tools' categories agree — on this machine they land within a few percent.
+costed per row by `_cost()`. The keyword and tool rules are adapted from an MIT-licensed
+classifier; its attribution sits on the ACTIVITY block — keep it if you change the rules.
 
 - **A turn is one typed prompt plus everything until the next one.** It opens at the same
   places prompts are counted (`_turn_open`), so the prompt filters above decide what a turn
