@@ -152,9 +152,14 @@ dollars**, so cost is always derived. Rates live in `parser.py → PRICING` as
   see `parser.py → PRICE_HISTORY`.
 - **These are API-equivalent values.** If you're on a subscription (Claude Max/Pro, Codex,
   Copilot), you don't pay per token — the $ is "what this would cost at API rates."
-- **Copilot / Cursor** don't log real token counts, so their tokens (and thus $) are rough.
+- **Cursor** rarely logs token counts, and **older Copilot chats** have none, so their tokens
+  (and thus $) are rough. Current Copilot builds log real per-request tokens, which are used.
   Copilot's honest metric is **request count** and its **premium-request** total (both shown);
   Cursor's is **messages, tool calls and AI lines kept** (also shown).
+- **Billing details that change the price are applied**: prompt-cache writes at their own
+  rate (Claude and GPT-5.6/GPT-6), Claude fast mode, US-only inference (1.1x) and web
+  searches ($10/1K). A forked or subagent Codex thread's replay of its parent is skipped,
+  so it isn't billed twice.
 - A model with no price row reads as **$0** — add it to `PRICING` (see below).
 
 ## Note on log retention

@@ -1,6 +1,6 @@
 # AGENTS.md
 
-A local, **stdlib-only** dashboard that reads the logs your AI coding tools already write
+**AgentTelemetry** — a local, **stdlib-only** dashboard that reads the logs your AI coding tools already write
 to this machine and shows tokens, estimated cost, and breakdowns by model / day / tool /
 project / hour. Nothing leaves the machine. Nothing to install.
 
@@ -20,12 +20,18 @@ first — it may already be up.
 | `parser.py` | `discover()` lists log files; `update_file()` routes each to a `parse_*`. Holds `PRICING` and the model-name normalizers. |
 | `static/core.js` | `SRC`/`ORDER`, state `S`, formatting, date ranges, filtering. |
 | `static/charts.js` | Chart.js theming, `mk()`/`hbar()`/`areaDS()`, calendar + heatmap SVG. |
-| `static/views.js` | The seven views, controls, events, boot. |
-| `index.html` | Shell only: header, tabs, filter bar, card markup. |
+| `static/views.js` | The eight views, controls, events, boot. |
+| `index.html` | Shell only: sidebar (device name, tabs, live/refresh/theme/settings), page header (period, range, metric, filters), card markup, an SVG icon sprite. |
 
-Eight tabs: Overview · Cost · Models & Providers · Tools & Agents · Projects · Sessions ·
-**Optimize** · Storage. Tab lives in `location.hash`; `?theme=` and `?range=` preset the UI (handy for
-headless screenshots).
+Eight tabs in the sidebar: Overview · Cost · Models · Tools · Projects · Sessions ·
+**Optimize** · Storage. Tab lives in `location.hash`; `?theme=`, `?range=` and `?metric=`
+(`cost|tokens|time`) preset the UI (handy for headless screenshots). Below 900px the sidebar
+becomes a top bar. Every chart has a table twin (`.tv[data-tv]`, `chartTable()`), and each view
+leads with one hero figure — keep it that way rather than adding a second.
+
+The device name at the top of the sidebar is `DEVICE` in `dashboard.py`: the OS's own name
+for the machine (`scutil --get ComputerName` on macOS, `%COMPUTERNAME%`, `/etc/machine-info`
+`PRETTY_HOSTNAME`), falling back to the bare hostname. It's in the payload as `device`.
 
 Aggregates are keyed `records["date\tmodel"]`, `tools["date\tname"]`,
 `hourly["date\thour"]` — **every dimension carries a date** so the UI can filter by range.
@@ -122,6 +128,13 @@ so that file stops being a cache and becomes the sole record. Two consequences:
   them — where they exist, the transcript matches them exactly *except* for those calls,
   typically a few percent of cost. Don't estimate them from `compactMetadata` token sizes.
 - **`codex-auto-review` has no public price**, so its tokens are counted but cost $0.
+- **OpenAI long-context rates are not billed.** The pricing page lists a higher rate for
+  long prompts on GPT-5.4+ but states no threshold, so there is nothing to apply it to
+  without guessing. 35 Codex requests here passed 272K input tokens; they bill at the
+  standard rate, as codeburn's do.
+- **Claude's advisor iterations** (`usage.iterations[].type == "advisor_message"`) are not
+  priced separately — none exist in any log seen, so their shape can't be verified. Every
+  iteration here is a plain `message`, already covered by the response's own `usage`.
 
 ## Field conventions that differ by source (do not "fix" these)
 
@@ -164,6 +177,17 @@ so that file stops being a cache and becomes the sole record. Two consequences:
   occasionally logs `cache_creation_input_tokens: 0` alongside a non-zero
   `cache_creation.ephemeral_1h_input_tokens`. Both are recorded as-is; cost uses the
   tiered fields. Seen once in 813 rows, worth ~$0.003 — upstream, not ours.
+- **Claude request options become model rows.** `usage.speed == "fast"` appends
+  `FAST_SUFFIX` (" (fast)") and `usage.inference_geo == "us"` appends `US_SUFFIX` (" (US)").
+  `price_of()` strips them: fast mode reads `FAST_PRICING` (a model with no published fast
+  rate prices at zero, not at a guess) and US-only multiplies every rate by 1.1. Web
+  searches (`server_tool_use.web_search_requests`) land in `ws` and `_cost()` adds
+  $10 per 1,000. None of the three occur on this machine yet — they are for other users.
+- **Cache writes with no published write rate bill at the input rate**, never $0 — `_cost()`
+  falls back to it. Most OpenAI rows have cw5 = 0; GPT-5.6 and GPT-6 list 1.25x input.
+- **`req` is one billed model call**, `asst` one visible reply. Codex, Copilot and Hermes
+  fill `req`; for Codex both are non-zero and differ (a reply can take many calls), so the
+  Sessions drawer shows "Model calls" separately rather than through the `asst||req` fallback.
 - **`side` vs `subagents`**: Claude folds subagent tokens into the parent's stream
   (`side`); Codex spawns wholly separate sessions and only the parent's spawn COUNT
   (`subagents`) is knowable. Check both when asking "did this session delegate".
@@ -193,6 +217,17 @@ so that file stops being a cache and becomes the sole record. Two consequences:
   `threads.tokens_used` in `state_5.sqlite` (it resets, and omits compactions) nor a
   `guardian_review` rollout's total (forked from the session it reviews, it starts with
   that session's total on the clock) can be compared directly.
+- **A forked Codex thread opens by replaying its parent.** `/fork` and every subagent
+  (Codex forks subagents from the parent) write `session_meta.forked_from_id`, then rewrite
+  the parent's whole history into the new file within ~0.2s: token_counts, replies,
+  prompts, tool calls, even spawn markers. `parse_codex` skips that burst — it ends at the
+  first gap over 1s (`state.replay_last`) — keeping only `turn_context` for the inherited
+  model. One `/fork` here replayed 73 usage events, matching its parent's running total to
+  the token. Don't use a fixed window: real work resumed 3.5–4.8s after `session_meta` in
+  every fork seen, so codeburn's 5s cutoff also clips the fork's own first turn.
+- **Codex cache writes are carved out of input.** `cache_write_input_tokens` is a subset of
+  `input_tokens`, disjoint from `cached_input_tokens` (in >= cached + written in all 35,736
+  events checked), so it moves from `in` to `cc`/`cc5` and bills at the write rate.
 - **Codex's built-in tools are `response_item`s of their own type** —
   `web_search_call`, `tool_search_call`, `image_generation_call` — not function calls and
   never an `event_msg`. Web searches were uncounted until they were read from there.
@@ -217,8 +252,12 @@ so that file stops being a cache and becomes the sole record. Two consequences:
   `createdAt` — use it, not the session's, or a months-long session lands on day one.
   `ItemTable` holds `aiCodeTracking.dailyStats.*` (AI lines suggested vs accepted). Only
   ~2% of bubbles carry tokens; that's Cursor, not a parsing gap.
-- **Copilot** logs no tokens at all. It does log a premium-request multiplier in
-  `result.details` ("… • 1x") — that's its real billing unit.
+- **Copilot** logs real `promptTokens`/`completionTokens` on finished requests in current
+  VS Code builds; older chats have none, so their tokens are estimated from message text
+  (chars/4). It also logs a premium-request multiplier in `result.details` ("… • 1x") —
+  that's its real billing unit. Not read yet (none exist on this machine): the Copilot CLI's
+  `~/.copilot/session-state/*/events.jsonl`, JetBrains, and `GitHub.copilot-chat/transcripts/`
+  (turns only, no tokens). codeburn reads all three.
 - **opencode**: current versions use one SQLite `opencode.db`; older ones use
   `storage/message/<session>/msg_*.json`. Both are read. Only the DB records a real
   per-message cost, so cost routing keys on whether the aggregate's path ends `.db`.
@@ -240,7 +279,8 @@ so that file stops being a cache and becomes the sole record. Two consequences:
 
 **A model shows $0 / an unknown name** → in `parser.py`, add
 `PRICING["<Display Name>"] = (input, output, cache_write_5m, cache_write_1h, cache_read)`
-(USD per 1M; OpenAI rows use `0, 0` for the write tiers and put the cached rate last), and
+(USD per 1M; OpenAI rows put the cache-write rate in cw5 — 1.25x input where the pricing
+page lists one, else 0, which bills at the input rate — 0 in cw1, and the cached rate last), and
 make the normalizer map the raw id to that name. Pricing applies at request time — no
 re-parse needed; a normalizer change needs `--rebuild` + a `CACHE_VERSION` bump.
 

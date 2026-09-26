@@ -752,6 +752,7 @@ function openSession(i){
     ${row("Cache hit rate",s.cache?fmtPct(s.cache):"—")}
     ${row("Your prompts",fmtNum(s.user))}
     ${row("Assistant replies",fmtNum(s.asst||s.req))}
+    ${row("Model calls",s.asst&&s.req&&s.req!==s.asst&&!s.clipped?fmtNum(s.req):null)}
     ${row("Tool calls",fmtNum(s.tools))}
     ${row("Active time",s.active?fmtDur(s.active):null)}
     ${row("Mode",s.mode?esc(s.mode):null)}

@@ -20,7 +20,7 @@ import parser as P
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CACHE_PATH = os.path.join(HERE, ".usage_cache.json")
-CACHE_VERSION = 43
+CACHE_VERSION = 44
 
 # ---------------------------------------------------------------------------
 # In-memory store of per-file aggregates, refreshed on a background interval.
@@ -158,7 +158,7 @@ def _refresh_locked(verbose=False):
 # ---------------------------------------------------------------------------
 # Merge per-file aggregates → a single dataset payload for the frontend.
 # ---------------------------------------------------------------------------
-def _cost(source, model, inp, out, cr, cc5, cc1, cc_fallback=0, date=None, logged_cost=None):
+def _cost(source, model, inp, out, cr, cc5, cc1, cc_fallback=0, date=None, logged_cost=None, ws=0):
     # opencode's SQLite store logs the actual per-message cost; prefer it over a
     # list-price estimate. Callers pass None (not 0.0) when there is no logged
     # figure — the older opencode JSON layout records no cost at all, and
@@ -170,8 +170,13 @@ def _cost(source, model, inp, out, cr, cc5, cc1, cc_fallback=0, date=None, logge
     # if a record only has the untiered total (cc_fallback), bill it at the 5-min rate
     if cc_fallback and not (cc5 or cc1):
         cc5 = cc_fallback
-    return (inp * pin + out * pout + cr * pcr
-            + cc5 * pcw5 + cc1 * pcw1) / 1_000_000.0
+    # A cache write is still input the model read. A model with no published write
+    # rate (most OpenAI rows, and a GPT-5.6 day priced from PRICE_HISTORY, whose old
+    # page listed none) bills it at the plain input rate, never at $0.
+    pcw5 = pcw5 or pin
+    pcw1 = pcw1 or pcw5
+    return ((inp * pin + out * pout + cr * pcr
+             + cc5 * pcw5 + cc1 * pcw1) / 1_000_000.0 + ws * P.WEB_SEARCH_USD)
 
 
 _UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
@@ -260,12 +265,13 @@ def build_payload():
                 continue
             rk = (date, source, model, project, ide)
             slot = records.setdefault(rk, _zero())
-            for f in ("in", "out", "cr", "cc", "cc5", "cc1", "reason", "asst", "user", "req", "tools", "active"):
+            for f in ("in", "out", "cr", "cc", "cc5", "cc1", "reason", "asst", "user", "req", "tools", "active", "ws"):
                 slot[f] += r.get(f, 0)
             slot["prem"] += r.get("prem", 0.0)
             c = _cost(source, model, r["in"], r["out"], r["cr"],
                       r.get("cc5", 0), r.get("cc1", 0), r.get("cc", 0), date,
-                      logged_cost=r.get("cost", 0.0) if has_logged_cost else None)
+                      logged_cost=r.get("cost", 0.0) if has_logged_cost else None,
+                      ws=r.get("ws", 0))
             slot["cost"] += c
             model_meta[model] = P.vendor_of(model)
             file_tokens += r["in"] + r["out"] + r["cr"] + r["cc"]
@@ -333,7 +339,8 @@ def build_payload():
             dd["prem"] += r.get("prem", 0.0)
             dd["cost"] += _cost(source, model, r["in"], r["out"], r["cr"],
                                 r.get("cc5", 0), r.get("cc1", 0), r.get("cc", 0), date,
-                                logged_cost=r.get("cost", 0.0) if has_logged_cost else None)
+                                logged_cost=r.get("cost", 0.0) if has_logged_cost else None,
+                                ws=r.get("ws", 0))
 
         # sessions
         for s in agg.get("sessions", []):
@@ -357,7 +364,8 @@ def build_payload():
             s2["cost"] = _cost(source, s["model"], s["in"], s["out"], s["cr"],
                                s.get("cc5", 0), s.get("cc1", 0), s.get("cc", 0),
                                (s.get("end") or s.get("start") or "")[:10],
-                               logged_cost=s.get("cost", 0.0) if has_logged_cost else None)
+                               logged_cost=s.get("cost", 0.0) if has_logged_cost else None,
+                               ws=s.get("ws", 0))
             sessions.append(s2)
 
     rec_list = []
@@ -803,7 +811,7 @@ def build_storage():
 def _zero():
     return {"in": 0, "out": 0, "cr": 0, "cc": 0, "cc5": 0, "cc1": 0, "reason": 0,
             "asst": 0, "user": 0, "req": 0, "tools": 0, "prem": 0.0, "cost": 0.0,
-            "active": 0.0}
+            "active": 0.0, "ws": 0}
 
 
 # ---------------------------------------------------------------------------

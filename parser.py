@@ -152,8 +152,8 @@ EDITOR_LABEL = {
 # NOT the old $15/$75 — Opus pricing dropped with 4.5). Cache write = 1.25x input
 # (5-min TTL) / 2x input (1-hour TTL); cache read = 0.1x input, EXCEPT Opus 5.5
 # (0.05x) and Fable/Mythos 5.1 (0.025x) — so the cache_read slot is written out per
-# row, never derived from input. OpenAI rows have no cache-write tier
-# (cw5/cw1 = 0); cached input goes in the cache_read slot.
+# row, never derived from input. Most OpenAI rows have no cache-write tier
+# (cw5/cw1 = 0, billed at the input rate); cached input goes in the cache_read slot.
 # Codex/Copilot/Cursor are subscription-billed, so their $ is an API-equivalent
 # estimate, not an actual charge. Costs are computed at request time — edit
 # freely, no re-parse needed.
@@ -192,23 +192,22 @@ PRICING = {
     # OpenAI GPT-5.6 series (Sol/Terra/Luna) — CURRENT rates, verified against
     # developers.openai.com/api/docs/pricing (2026-09-23). All three are cuts from
     # the launch prices, which PRICE_HISTORY keeps for usage dated before them.
-    # cache read = 0.1x input; a >272K-input surcharge (2x in/1.5x out) is not modeled.
+    # cache read = 0.1x input; cache write = 1.25x input (the pricing page lists it
+    # for GPT-5.6 and GPT-6 only — older rows keep 0, which _cost() bills at the
+    # plain input rate). The page lists long-context rates but states no threshold,
+    # so they are not modeled; see AGENTS.md "What the logs cannot show".
     # Sol's $4/$20 is a promo "at least through November 21, 2026" — if it reverts,
     # move this tuple into PRICE_HISTORY and restore $5/$30 here.
-    "GPT-5.6 Sol": (4, 20, 0, 0, 0.40),
-    "GPT-5.6 Terra": (2, 12, 0, 0, 0.20),
-    "GPT-5.6 Luna": (0.20, 1.20, 0, 0, 0.02),
+    "GPT-5.6 Sol": (4, 20, 5.00, 0, 0.40),
+    "GPT-5.6 Terra": (2, 12, 2.50, 0, 0.20),
+    "GPT-5.6 Luna": (0.20, 1.20, 0.25, 0, 0.02),
     # GPT-6 — verified directly against developers.openai.com/api/docs/models/
     # gpt-6-{astra,sol,luna} and the pricing page (2026-09-23); Sol and Luna launched
-    # 2026-09-22 at half GPT-5.6's promo price. Cache-write tiers are 0 like the
-    # other OpenAI rows: newer Codex builds DO log cache_write_input_tokens, but as
-    # a subset of input_tokens, and parse_codex leaves them inside "in" — so they
-    # bill at 1x input instead of OpenAI's 1.25x write rate, a small undercount.
-    # Same >272K-input surcharge caveat as GPT-5.6/5.5 (2x in+cache, 1.5x out) is
-    # not modeled — no source currently threads context length into _cost().
-    "GPT-6 Astra": (10, 50, 0, 0, 1),
-    "GPT-6 Sol": (2, 10, 0, 0, 0.20),
-    "GPT-6 Luna": (0.10, 0.50, 0, 0, 0.01),
+    # 2026-09-22 at half GPT-5.6's promo price. Cache write 1.25x input, as above —
+    # parse_codex carves cache_write_input_tokens out of input into cc5.
+    "GPT-6 Astra": (10, 50, 12.50, 0, 1),
+    "GPT-6 Sol": (2, 10, 2.50, 0, 0.20),
+    "GPT-6 Luna": (0.10, 0.50, 0.125, 0, 0.01),
     # OpenAI GPT-5.4 / 5.5 — verified from OpenAI API pricing docs (2026-07).
     # NOTE: GPT-5.5 has a >272K-input surcharge (2x in / 1.5x out for the session)
     # not modeled here, so heavy-context Codex sessions may cost somewhat more.
@@ -249,9 +248,30 @@ PRICE_HISTORY = {
 }
 
 
+# Claude request options that reprice a whole response, carried as a suffix on the
+# model name so they show as their own row and price without a new record field.
+FAST_SUFFIX = " (fast)"
+US_SUFFIX = " (US)"
+# Fast mode's own rate card (platform.claude.com pricing, 2026-09): the cache
+# multipliers apply on top of the fast input rate, same as standard speed.
+FAST_PRICING = {
+    "Claude Opus 5.5": (8, 40, 10, 16, 0.40),
+    "Claude Opus 5": (10, 50, 12.5, 20, 1.0),
+    "Claude Opus 4.8": (10, 50, 12.5, 20, 1.0),
+}
+US_MULTIPLIER = 1.1          # inference_geo "us", every token category
+WEB_SEARCH_USD = 10 / 1000   # Anthropic web search: $10 per 1,000 searches
+
+
 def price_of(display, date=None):
     """(in, out, cw5, cw1, cr) for a model as of `date` ("YYYY-MM-DD"), else today.
     Unknown models price at zero."""
+    if display.endswith(US_SUFFIX):
+        return tuple(round(x * US_MULTIPLIER, 6)
+                     for x in price_of(display[:-len(US_SUFFIX)], date))
+    if display.endswith(FAST_SUFFIX):
+        # a model with no published fast rate prices at zero rather than at a guess
+        return FAST_PRICING.get(display[:-len(FAST_SUFFIX)], (0, 0, 0, 0, 0))
     if date:
         for until, p in PRICE_HISTORY.get(display, ()):
             if date <= until:
@@ -625,6 +645,13 @@ def parse_claude(agg, lines):
         if t == "assistant" and msg and msg.get("model") != "<synthetic>":
             model = normalize_claude(msg.get("model"))
             u = msg.get("usage") or {}
+            # Two request options change the price of every token, so they become
+            # their own priced model rows (see price_of): fast mode has its own
+            # rate card, and US-only inference bills 1.1x on 4.6+ models.
+            if u.get("speed") == "fast":
+                model += FAST_SUFFIX
+            if str(u.get("inference_geo") or "").lower() == "us":
+                model += US_SUFFIX
             inp = int(u.get("input_tokens", 0) or 0)
             out = int(u.get("output_tokens", 0) or 0)
             cr = int(u.get("cache_read_input_tokens", 0) or 0)
@@ -640,6 +667,8 @@ def parse_claude(agg, lines):
             cc1 = int(ccd.get("ephemeral_1h_input_tokens", 0) or 0)
             if cc and not (cc5 or cc1):   # older logs without the tier split
                 cc5 = cc                  # assume 5-min when untiered
+            # server-side web searches bill per search on top of tokens
+            ws = int((u.get("server_tool_use") or {}).get("web_search_requests", 0) or 0)
             # Claude Code writes ONE record per content block of a response —
             # thinking, text, each tool_use — and every one repeats the whole
             # response's usage, so summing records counted each API call ~2.3x
@@ -648,21 +677,26 @@ def parse_claude(agg, lines):
             # grew, since output_tokens streams upward (1 on the first block, 388
             # by the last). With replays gone a response's blocks are contiguous,
             # so remembering the last few responses is enough.
-            full = [inp, out, cr, cc, cc5, cc1, reason]
+            full = [inp, out, cr, cc, cc5, cc1, reason, ws]
             rk = f"{msg['id']}\t{o.get('requestId')}" if msg.get("id") else None
             prev = resp.pop(rk, None) if rk else None
             first = prev is None
+            if prev is not None and len(prev) < len(full):   # state saved by an older build
+                prev = list(prev) + [0] * (len(full) - len(prev))
             if rk:
                 resp[rk] = full if first else [max(a, b) for a, b in zip(full, prev)]
                 while len(resp) > 8:
                     resp.pop(next(iter(resp)))
             if not first:
-                inp, out, cr, cc, cc5, cc1, reason = (max(0, a - b) for a, b in zip(full, prev))
+                inp, out, cr, cc, cc5, cc1, reason, ws = (max(0, a - b) for a, b in zip(full, prev))
             if dt:
                 r = _rec(agg, _buckets(dt)[0], model)
                 r["in"] += inp; r["out"] += out; r["cr"] += cr; r["cc"] += cc
                 r["cc5"] += cc5; r["cc1"] += cc1
                 r["reason"] += reason
+                if ws:
+                    r["ws"] = r.get("ws", 0) + ws
+                    agg["totals"]["ws"] = agg["totals"].get("ws", 0) + ws
                 r["asst"] += int(first)
                 # count tool_use blocks
                 tools = 0
@@ -788,16 +822,28 @@ def _codex_usage(agg, dt, u, model):
     a token_usage_record's usage — the two share a shape."""
     inp = int(u.get("input_tokens", 0) or 0)
     cached = int(u.get("cached_input_tokens", 0) or 0)
+    # Newer builds split out the part of input_tokens that WROTE the prompt cache.
+    # It is a subset of input_tokens and disjoint from cached_input_tokens (checked
+    # over 35,736 events: in >= cached + written, always), and OpenAI bills it at
+    # 1.25x input on GPT-5.6/GPT-6 — so it moves out of "in" into the cache-write
+    # fields, where _cost() prices it at the write rate.
+    written = int(u.get("cache_write_input_tokens", 0) or 0)
     out = int(u.get("output_tokens", 0) or 0)
     reason = int(u.get("reasoning_output_tokens", 0) or 0)
     if not (dt and (inp or out)):
         return
+    written = min(written, max(0, inp - cached))
+    fresh = max(0, inp - cached - written)
     r = _rec(agg, _buckets(dt)[0], model or "Unknown")
-    # store non-cached input in "in", cached in "cr"
-    r["in"] += max(0, inp - cached)
+    # store non-cached input in "in", cached in "cr", cache writes in "cc"/"cc5"
+    r["in"] += fresh
     r["cr"] += cached
+    r["cc"] += written; r["cc5"] += written
     r["out"] += out
     r["reason"] += reason
+    # one billed model call — what OpenAI's usage page and codeburn call a request.
+    # Not "asst": that counts visible replies, and one reply can take many calls.
+    r["req"] += 1
     _bump_time(agg, dt, inp + out, 0)
     r["active"] += _active_gap(agg["_active_last"], dt)
     agg["_active_last"] = dt.isoformat()
@@ -810,8 +856,9 @@ def _codex_usage(agg, dt, u, model):
     ce = agg["ctx"].setdefault(f"{date0}\t{b}", {"tok": 0, "n": 0})
     ce["tok"] += inp + out; ce["n"] += 1
     T = agg["totals"]
-    T["in"] += max(0, inp - cached); T["cr"] += cached
-    T["out"] += out; T["reason"] += reason
+    T["in"] += fresh; T["cr"] += cached
+    T["cc"] += written; T["cc5"] += written
+    T["out"] += out; T["reason"] += reason; T["req"] += 1
 
 
 def parse_codex(agg, lines):
@@ -832,7 +879,29 @@ def parse_codex(agg, lines):
         pt = pl.get("type")
         dt = _from_iso(o.get("timestamp", "")) if o.get("timestamp") else None
 
+        # A forked thread — `/fork`, and every subagent, which Codex forks from its
+        # parent — opens by rewriting the parent's whole history into its own file,
+        # all stamped within ~0.2s of its session_meta: every token_count, reply,
+        # prompt and tool call the parent already logged, including its spawn
+        # markers. Counting it bills the parent twice (one fork replayed 73 usage
+        # events, 10.9M tokens, matching its parent's running total exactly). So
+        # everything in that burst is skipped except turn_context, which carries
+        # the model the fork inherits. The burst ends at the first gap over 1s:
+        # real work resumed 3.5-4.8s after session_meta in every fork seen, so a
+        # fixed 5s cutoff (codeburn's) also clips the fork's own first turn.
+        st = agg["state"]
+        if st.get("replay_last") and dt:
+            last = _from_iso(st["replay_last"])
+            if last and (dt - last).total_seconds() <= 1.0:
+                st["replay_last"] = o["timestamp"]
+                if t != "turn_context":
+                    continue
+            else:
+                st["replay_last"] = None
+
         if t == "session_meta":
+            if pl.get("forked_from_id") and "replay_last" not in st and o.get("timestamp"):
+                st["replay_last"] = o["timestamp"]
             cwd = pl.get("cwd")
             if cwd:
                 project = _leaf(cwd) or cwd
@@ -2406,7 +2475,7 @@ def _finalize_session(agg, source, path):
         "end": agg.get("last_ts"),
         "in": T["in"], "out": T["out"], "cr": T["cr"], "cc": T["cc"],
         "cc5": T["cc5"], "cc1": T["cc1"],
-        "asst": T["asst"], "user": T["user"], "req": T["req"],
+        "asst": T["asst"], "user": T["user"], "req": T["req"], "ws": T.get("ws", 0),
         "prem": T["prem"], "tools": T["tools"], "side": T.get("side", 0),
         # Reuses Cursor's "subagents" (a count) — here, how many SubAgentActivity
         # "started" markers this Codex session's own file recorded. 0 for anyone

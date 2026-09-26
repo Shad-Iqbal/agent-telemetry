@@ -203,7 +203,8 @@ function clipSession(s, r){
     asst+=v[5]; user+=v[6]; tools+=v[7]; prem+=v[8]||0; active+=v[9]||0;
   }
   return Object.assign({}, s, {cost, in:i, out:o, cr, cc, asst, user, tools, prem, active,
-    req:asst, span:allN, clipped:inN<allN});
+    // model calls aren't split per day, so they're only exact when the whole session is in range
+    req: inN<allN ? asst : s.req, span:allN, clipped:inN<allN});
 }
 
 /* Tool-call rows carry a date + source but no project/model dimension, so the
