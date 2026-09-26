@@ -20,7 +20,7 @@ import parser as P
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CACHE_PATH = os.path.join(HERE, ".usage_cache.json")
-CACHE_VERSION = 44
+CACHE_VERSION = 47
 
 # ---------------------------------------------------------------------------
 # In-memory store of per-file aggregates, refreshed on a background interval.
@@ -231,6 +231,9 @@ def build_payload():
     ctxb = {}         # (date, bucket) -> tokens/requests
     model_meta = {}   # model -> vendor
     ai_lines = {}     # date -> Cursor's suggested/accepted line counts
+    activity = {}     # (date, source, model, category, project, ide) -> turn counts + cost
+    mcp_inv = {}      # server -> set of tool names Claude Code offered
+    mcp_loaded = {}   # (date, server) -> sessions it was offered in
 
     with _lock:
         items = list(_state["files"].items())
@@ -277,6 +280,29 @@ def build_payload():
             file_tokens += r["in"] + r["out"] + r["cr"] + r["cc"]
             file_msgs += r.get("asst", 0)
             file_cost += c
+        for ak, v in P.activity_of(agg).items():
+            date, model, cat = ak.split("\t")
+            e = activity.setdefault((date, source, model, cat, project, ide),
+                                    {"turns": 0, "edits": 0, "oneshot": 0, "retries": 0,
+                                     "tok": 0, "cost": 0.0, "edit_cost": 0.0, "retry_cost": 0.0})
+            for f in ("turns", "edits", "oneshot", "retries"):
+                e[f] += v.get(f, 0)
+            e["tok"] += v.get("in", 0) + v.get("out", 0) + v.get("cr", 0) + v.get("cc5", 0) + v.get("cc1", 0)
+            e["cost"] += _cost(source, model, v.get("in", 0), v.get("out", 0), v.get("cr", 0),
+                               v.get("cc5", 0), v.get("cc1", 0), 0, date, ws=v.get("ws", 0))
+            if v.get("ein") or v.get("eout"):
+                e["edit_cost"] += _cost(source, model, v.get("ein", 0), v.get("eout", 0),
+                                        v.get("ecr", 0), v.get("ecc5", 0), v.get("ecc1", 0), 0,
+                                        date, ws=v.get("ews", 0))
+            if v.get("rin") or v.get("rout"):
+                e["retry_cost"] += _cost(source, model, v.get("rin", 0), v.get("rout", 0),
+                                         v.get("rcr", 0), v.get("rcc5", 0), v.get("rcc1", 0), 0,
+                                         date, ws=v.get("rws", 0))
+        if not agg.get("subagent"):
+            for server, e in (agg.get("mcp_offered") or {}).items():
+                mcp_inv.setdefault(server, set()).update(e.get("tools") or ())
+                k = (e.get("d") or "", server)
+                mcp_loaded[k] = mcp_loaded.get(k, 0) + 1
         for sk, v in agg.get("skills", {}).items():
             date, _, name = sk.partition("\t")
             if not name:
@@ -410,6 +436,13 @@ def build_payload():
         "prices": {m: list(P.price_of(m)) for m in model_meta},
         "codex_effort": _codex_config()["effort"],
         "skills": [{"date": d, "name": n, **v} for (d, n), v in skills.items()],
+        # what each turn was for (Claude Code, Claude Desktop, Codex) — see parser.py ACTIVITY
+        "activity": [{"date": d, "source": src, "model": m, "category": c, "project": pj, "ide": i,
+                      **{k: (round(x, 6) if isinstance(x, float) else x) for k, x in v.items()}}
+                     for (d, src, m, c, pj, i), v in activity.items()],
+        "mcp_inventory": {"servers": {sv: {"tools": sorted(t)} for sv, t in mcp_inv.items()},
+                          "loaded": [{"date": d, "server": sv, "sessions": n}
+                                     for (d, sv), n in sorted(mcp_loaded.items())]},
         "ctx": [{"date": d, "bucket": b, "source": src, **v} for (d, b, src), v in ctxb.items()],
         "records": rec_list,
         "tools": tool_list,

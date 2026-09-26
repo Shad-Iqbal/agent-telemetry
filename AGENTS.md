@@ -350,6 +350,38 @@ and the MCP servers configured in `~/.claude.json` (`_mcp_servers()`) compared a
 appears as `claude-in-chrome` and `Claude_in_Chrome` across versions, and
 `google-workspace` shows up in tool names as `workspace`.
 
+## Activity — what each prompt was for, and whether its edits landed
+
+`agg["activity"]` (`"date\tmodel\tcategory"` → turns, edits, oneshot, retries and token
+fields) comes from the ACTIVITY block in `parser.py`; the payload ships it as `activity`,
+costed per row by `_cost()`. The rules are codeburn's (`src/classifier.ts`), ported so the
+two tools' categories agree — on this machine they land within a few percent.
+
+- **A turn is one typed prompt plus everything until the next one.** It opens at the same
+  places prompts are counted (`_turn_open`), so the prompt filters above decide what a turn
+  is. A queued steer does NOT open a turn — it redirects the running one. A subagent's file
+  never opens one: its work is the parent's delegation turn.
+- **The prompt's text never reaches the cache.** `_prompt_kw()` regex-matches it on arrival
+  and keeps only flags; the running turn persists in `state.turn` (incremental parsing).
+  `activity_of()` adds the still-open last turn read-only, since nothing will close it.
+- **Retry** = an edit, then a shell run that isn't read-only, then another edit to the SAME
+  file. `oneshot` = an editing turn with none. `retry_cost` is the whole turn's cost, not the
+  redo alone — the Optimize finder compares it with `edit_cost` (all editing turns) to get
+  an excess from the user's own averages rather than a guessed fraction.
+- **Codex edits come from `patch_apply_end` / `item_completed:FileChange`**, the one place
+  every build records each file a patch touched — Codex Desktop applies patches from inside
+  its `exec` JS tool, which never shows as `apply_patch`. Once a rollout shows either event,
+  `apply_patch` calls stop counting for activity so an edit isn't counted twice. `exec`
+  programs are scanned for their `cmd:` strings, so one that only runs `rg`/`cat` is a
+  lookup, not a check.
+- Turns are attributed to the model that answered most; tokens split by the model that
+  actually produced them.
+
+**MCP inventory** (`mcp_inventory` in the payload): Claude Code announces the tools each
+session is offered as `type:"attachment"` / `deferred_tools_delta` records (names only —
+full definitions load when searched for). `agg["mcp_offered"]` keeps {server → first date,
+tool names}; the Tools tab's MCP table reads used / offered and sessions loaded from it.
+
 ## Active time — a gap-capped estimate, not wall-clock length
 
 `records`/`sessions` carry `active` seconds: the sum of gaps BETWEEN consecutive real

@@ -576,6 +576,224 @@ def _first_text(content):
 
 
 # ===========================================================================
+# ACTIVITY — what each turn was for, and whether its edits landed first time
+# ===========================================================================
+# A turn is one typed prompt plus all the agent work until the next typed prompt.
+# Classified from the tools it used, refined by keywords in the prompt — the rules
+# are codeburn's (src/classifier.ts), ported so the two tools' categories agree.
+# The prompt is only regex-matched when it arrives; what persists in the cache is a
+# handful of flags (_prompt_kw), never its text.
+_KW_TEST = re.compile(r"\b(test|pytest|vitest|jest|mocha|spec|coverage|npm\s+test|npx\s+vitest|npx\s+jest)\b", re.I)
+_KW_GIT = re.compile(r"\bgit\s+(push|pull|commit|merge|rebase|checkout|branch|stash|log|diff|status|add|reset|cherry-pick|tag)\b", re.I)
+_KW_BUILD = re.compile(r"\b(npm\s+run\s+build|npm\s+publish|pip\s+install|docker|deploy|make\s+build|npm\s+run\s+dev|npm\s+start|pm2|systemctl|brew|cargo\s+build"
+                       r"|npm\s+install|apt\s+install|cargo\s+add)\b", re.I)
+_KW_DEBUG = re.compile(r"\b(fix|bug|error|broken|failing|crash|issue|debug|traceback|exception|stack\s*trace|not\s+working|wrong|unexpected|status\s+code|404|500|401|403)\b", re.I)
+_KW_FEATURE = re.compile(r"\b(add|create|implement|new|build|feature|introduce|set\s*up|scaffold|generate|make\s+(?:a|me|the)|write\s+(?:a|me|the))\b", re.I)
+_KW_REFACTOR = re.compile(r"\b(refactor|clean\s*up|rename|reorganize|simplify|extract|restructure|move|migrate|split)\b", re.I)
+_KW_BRAINSTORM = re.compile(r"\b(brainstorm|idea|what\s+if|explore|think\s+about|approach|strategy|design|consider|how\s+should|what\s+would|opinion|suggest|recommend)\b", re.I)
+_KW_RESEARCH = re.compile(r"\b(research|investigate|look\s+into|find\s+out|check|search|analyze|review|understand|explain|how\s+does|what\s+is|show\s+me|list|compare)\b", re.I)
+_KW_FILE = re.compile(r"\.(py|js|ts|tsx|jsx|json|yaml|yml|toml|sql|sh|go|rs|java|rb|php|css|html|md|csv|xml)\b", re.I)
+_KW_SCRIPT = re.compile(r"\b(run\s+\S+\.\w+|execute|scrip?t|curl|api\s+\S+|endpoint|request\s+url|fetch\s+\S+|query|database|db\s+\S+)\b", re.I)
+_KW_URL = re.compile(r"https?://\S+", re.I)
+
+_T_EDIT = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
+_T_READ = {"Read", "Grep", "Glob", "LS"}
+_T_BASH = {"Bash", "PowerShell"}
+_T_TASK = {"TaskCreate", "TaskUpdate", "TaskGet", "TaskList", "TaskOutput", "TaskStop", "TodoWrite"}
+_T_SEARCH = {"WebSearch", "WebFetch", "ToolSearch"}
+# Codex's names for the same tools
+_CODEX_TOOL_AS = {"exec_command": "Bash", "exec": "Bash", "shell": "Bash", "local_shell": "Bash",
+                  "read_file": "Read", "write_file": "Edit", "apply_diff": "Edit",
+                  "apply_patch": "Edit", "spawn_agent": "Agent", "read_dir": "Glob",
+                  "web_search": "WebSearch", "update_plan": "TodoWrite"}
+# A shell command made only of these is a lookup, not a check of the last edit, so
+# edit -> grep -> edit is not a retry.
+_READ_ONLY_SH = {"rg", "grep", "egrep", "fgrep", "ag", "cat", "head", "tail", "less", "more",
+                 "ls", "find", "fd", "tree", "wc", "stat", "file", "du", "df", "which", "type",
+                 "pwd", "printenv", "env", "readlink", "realpath", "basename", "dirname",
+                 "jq", "diff", "sed", "nl"}
+_GIT_READ = {"log", "diff", "status", "show", "blame", "grep", "shortlog", "describe",
+             "rev-parse", "ls-files"}
+_SH_PREFIX = {"sudo", "doas", "npx", "bunx", "time", "nice", "nohup", "stdbuf"}
+CATEGORIES = ("coding", "debugging", "feature", "refactoring", "testing", "exploration",
+              "planning", "delegation", "git", "build/deploy", "brainstorming",
+              "conversation", "general")
+
+
+def _read_shaped(cmd):
+    """True when every segment of a shell command only reads (rg, cat, git log...)."""
+    s = re.sub(r'"[^"]*"|\'[^\']*\'', " ", cmd or "")
+    saw = False
+    for seg in re.split(r"&&|;|\|", s):
+        toks = seg.split()
+        i = 0
+        while i < len(toks) and (re.match(r"^\w+=", toks[i]) or _leaf(toks[i]) in _SH_PREFIX):
+            i += 1
+        if i >= len(toks) or _leaf(toks[i]) == "cd":
+            continue
+        saw = True
+        base = _leaf(toks[i])
+        if base == "git":
+            if i + 1 >= len(toks) or toks[i + 1] not in _GIT_READ:
+                return False
+        elif base not in _READ_ONLY_SH:
+            return False
+    return saw
+
+
+def _first_cat(text, cands):
+    """The category whose pattern matches EARLIEST in the text; ties go to the
+    candidate listed first. So "add error handling" is a feature, not a bug."""
+    best = None
+    for order, (rx, cat) in enumerate(cands):
+        m = rx.search(text)
+        if m and (best is None or m.start() < best[0]):
+            best = (m.start(), order, cat)
+    return best[2] if best else None
+
+
+def _prompt_kw(text):
+    """Everything the classifier needs from a prompt, as flags — the text is dropped."""
+    t = (text or "")[:4000]
+    if _KW_BRAINSTORM.search(t):
+        conv = "brainstorming"
+    elif _KW_RESEARCH.search(t):
+        conv = "exploration"
+    else:
+        conv = (_first_cat(t, [(_KW_FEATURE, "feature"), (_KW_DEBUG, "debugging")])
+                or ("coding" if _KW_FILE.search(t) or _KW_SCRIPT.search(t)
+                    else "exploration" if _KW_URL.search(t) else "conversation"))
+    return {
+        "t": bool(_KW_TEST.search(t)), "g": bool(_KW_GIT.search(t)), "b": bool(_KW_BUILD.search(t)),
+        "c": _first_cat(t, [(_KW_REFACTOR, "refactoring"), (_KW_FEATURE, "feature"),
+                            (_KW_DEBUG, "debugging")]) or "coding",
+        "x": "debugging" if (not _KW_RESEARCH.search(t) and _KW_DEBUG.search(t)) else "exploration",
+        "v": conv,
+    }
+
+
+def _classify_turn(tr):
+    f, kw = tr.get("f", ""), tr.get("kw") or {}
+    if not f:
+        return kw.get("v", "conversation")
+    if "P" in f:
+        return "planning"
+    if "A" in f:
+        return "delegation"
+    E, R, B = "E" in f, "R" in f, "B" in f
+    if B and not E:
+        if kw.get("t"):
+            return "testing"
+        if kw.get("g"):
+            return "git"
+        if kw.get("b"):
+            return "build/deploy"
+    if E or (B and not R):
+        return kw.get("c", "coding")
+    if B or "S" in f or "M" in f or R:
+        return kw.get("x", "exploration")
+    if "T" in f:
+        return "planning"
+    if "K" in f:
+        return "general"
+    return kw.get("v", "conversation")
+
+
+def _turn_open(agg, dt, text):
+    """A typed prompt: close the running turn and start a new one."""
+    if agg.get("subagent"):      # a subagent's whole file is one delegated task
+        return
+    _turn_close(agg)
+    agg["state"]["turn"] = {"d": _buckets(dt)[0], "kw": _prompt_kw(text), "f": "",
+                            "step": 0, "le": {}, "lv": -1, "rt": 0, "tok": {}}
+
+
+def _turn_tool(agg, name, file=None, cmd=None):
+    tr = agg["state"].get("turn")
+    if not tr:
+        return
+    flag = ("E" if name in _T_EDIT else "R" if name in _T_READ else "B" if name in _T_BASH
+            else "T" if name in _T_TASK else "S" if name in _T_SEARCH
+            else "M" if name.startswith("mcp__") else "K" if name == "Skill"
+            else "A" if name in ("Agent", "Task") else "P" if name == "EnterPlanMode" else "")
+    if flag and flag not in tr["f"]:
+        tr["f"] = "".join(sorted(tr["f"] + flag))
+    elif not tr["f"]:
+        tr["f"] = "o"            # some other tool: not a chat-only turn
+    # A retry is an edit, then a shell run that checks it, then another edit to the
+    # SAME file — the first attempt didn't land.
+    i = tr["step"]; tr["step"] += 1
+    if flag == "B" and not (cmd and _read_shaped(cmd)):
+        tr["lv"] = i
+    if flag == "E":
+        key = file or "?"
+        prev = tr["le"].get(key)
+        if prev is not None and tr["lv"] > prev:
+            tr["rt"] += 1
+        if key in tr["le"] or len(tr["le"]) < 64:
+            tr["le"][key] = i
+
+
+def _turn_usage(agg, model, inp, out, cr, cc5, cc1, ws=0):
+    tr = agg["state"].get("turn")
+    if not tr:
+        return
+    t = tr["tok"].setdefault(model or "Unknown", [0, 0, 0, 0, 0, 0, 0])
+    for j, v in enumerate((inp, out, cr, cc5, cc1, ws, 1)):
+        t[j] += v
+
+
+_ACT_FIELDS = ("in", "out", "cr", "cc5", "cc1", "ws")
+
+
+def _turn_rows(tr):
+    """One finished (or still-open) turn -> {"date\\tmodel\\tcategory": row}."""
+    tok = tr.get("tok") or {}
+    if not tok:                  # no reply yet, or interrupted before one
+        return {}
+    cat = _classify_turn(tr)
+    edits = "E" in tr.get("f", "")
+    rt = tr.get("rt", 0)
+    dom = max(tok, key=lambda m: (tok[m][6], tok[m][0] + tok[m][1]))
+    out = {}
+    for m, t in tok.items():
+        row = {k: t[j] for j, k in enumerate(_ACT_FIELDS)}
+        row.update(turns=0, edits=0, oneshot=0, retries=0)
+        if m == dom:
+            row.update(turns=1, edits=int(edits), oneshot=int(edits and not rt), retries=rt)
+        if edits:                # every editing turn, so a retried one can be compared to the rest
+            row.update({"e" + k: t[j] for j, k in enumerate(_ACT_FIELDS)})
+        if edits and rt:         # the whole turn's cost is the price of not landing it
+            row.update({"r" + k: t[j] for j, k in enumerate(_ACT_FIELDS)})
+        out[f"{tr['d']}\t{m}\t{cat}"] = row
+    return out
+
+
+def _add_rows(dst, rows):
+    for k, row in rows.items():
+        e = dst.setdefault(k, {})
+        for f, v in row.items():
+            e[f] = e.get(f, 0) + v
+
+
+def _turn_close(agg):
+    tr = agg["state"].pop("turn", None)
+    if tr:
+        _add_rows(agg.setdefault("activity", {}), _turn_rows(tr))
+
+
+def activity_of(agg):
+    """Closed turns plus the one still open — a session's last turn has no next
+    prompt to close it. Read-only, so a later chunk can still extend that turn."""
+    rows = {}
+    _add_rows(rows, agg.get("activity") or {})
+    tr = (agg.get("state") or {}).get("turn")
+    if tr:
+        _add_rows(rows, _turn_rows(tr))
+    return rows
+
+
+# ===========================================================================
 # CLAUDE CODE
 # ===========================================================================
 def _is_subagent_path(path):
@@ -701,6 +919,7 @@ def parse_claude(agg, lines):
                 if ws:
                     r["ws"] = r.get("ws", 0) + ws
                     agg["totals"]["ws"] = agg["totals"].get("ws", 0) + ws
+                _turn_usage(agg, model, inp, out, cr, cc5, cc1, ws)
                 r["asst"] += int(first)
                 # count tool_use blocks
                 tools = 0
@@ -710,6 +929,10 @@ def parse_claude(agg, lines):
                         if isinstance(blk, dict) and blk.get("type") == "tool_use":
                             _tool(agg, _buckets(dt)[0], blk.get("name", "tool"))
                             tools += 1
+                            inp_ = blk.get("input") if isinstance(blk.get("input"), dict) else {}
+                            _turn_tool(agg, blk.get("name", "tool"),
+                                       file=inp_.get("file_path") or inp_.get("notebook_path"),
+                                       cmd=inp_.get("command") if isinstance(inp_.get("command"), str) else None)
                 r["tools"] += tools
                 _bump_time(agg, dt, inp + out + cr + cc, int(first))
                 r["active"] += _active_gap(agg["_active_last"], dt)
@@ -775,6 +998,8 @@ def parse_claude(agg, lines):
                 # given — without this the row has no title at all.
                 if not side or agg.get("subagent"):
                     _set_title(agg, _first_text(content), "prompt")
+                if not side:
+                    _turn_open(agg, dt, _first_text(content))
 
         elif t == "attachment":
             # A message typed WHILE Claude is working ("steering") is never written
@@ -802,6 +1027,17 @@ def parse_claude(agg, lines):
                     r = _rec(agg, _buckets(dt)[0], "(user)")
                     r["user"] += 1
                     agg["totals"]["user"] += 1
+            # Which MCP tools this session was OFFERED, so the Tools tab can set what
+            # was used against what was loaded. Claude Code announces them by name as
+            # they become available ("mcp__<server>__<tool>"), before any is called.
+            elif a.get("type") == "deferred_tools_delta" and dt:
+                inv = agg.setdefault("mcp_offered", {})
+                for nm in (a.get("addedNames") or []) + (a.get("readdedNames") or []):
+                    if isinstance(nm, str) and nm.startswith("mcp__"):
+                        server, _, tool = nm[5:].partition("__")
+                        e = inv.setdefault(server, {"d": _buckets(dt)[0], "tools": []})
+                        if tool and tool not in e["tools"]:
+                            e["tools"].append(tool)
 
     agg["project"] = project
     agg["editor"] = "Claude Code (CLI)"
@@ -860,9 +1096,56 @@ def _codex_usage(agg, dt, u, model):
     ce = agg["ctx"].setdefault(f"{date0}\t{b}", {"tok": 0, "n": 0})
     ce["tok"] += inp + out; ce["n"] += 1
     T = agg["totals"]
+    _turn_usage(agg, model, fresh, out, cached, written, 0)
     T["in"] += fresh; T["cr"] += cached
     T["cc"] += written; T["cc5"] += written
     T["out"] += out; T["reason"] += reason; T["req"] += 1
+
+
+_EXEC_CMD = re.compile(r"""\bcmd\s*:\s*(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'|`([^`]*)`)""")
+_PATCH_FILE = re.compile(r"^\*\*\* (?:Update|Add|Delete) File: (.+)$", re.M)
+
+
+def _codex_edit_event(agg, changes):
+    """An applied patch, however it was applied (apply_patch, or from inside exec):
+    the one place every Codex build records each file an edit touched."""
+    agg["state"]["edit_events"] = True
+    files = list(changes)[:16] if isinstance(changes, dict) else []
+    for f in files or [None]:
+        _turn_tool(agg, "Edit", file=f)
+
+
+def _codex_turn_tool(agg, nm, pl):
+    """Feed one Codex tool call to the activity classifier under Claude's tool names."""
+    as_ = _CODEX_TOOL_AS.get(nm, nm)
+    if as_ == "Edit" and agg["state"].get("edit_events"):
+        return                   # this rollout logs each applied patch; counted there
+    if as_ == "Edit":
+        # apply_patch names its files inside the patch text; one call can touch several
+        body = pl.get("input") if isinstance(pl.get("input"), str) else str(pl.get("arguments") or "")
+        files = _PATCH_FILE.findall(body)[:16] or [None]
+        for f in files:
+            _turn_tool(agg, "Edit", file=f.strip() if f else None)
+        return
+    cmd = None
+    if as_ == "Bash" and isinstance(pl.get("input"), str):
+        # Codex Desktop's `exec` tool takes a JS program that calls
+        # tools.exec_command({cmd: "..."}); read the commands out of it so a program
+        # that only cats or greps is a lookup, not a check of the last edit.
+        cmds = ["".join(g).replace('\\"', '"').replace("\\'", "'")
+                for g in _EXEC_CMD.findall(pl["input"])[:8]]
+        cmd = " ; ".join(cmds) or None
+    elif as_ == "Bash":
+        try:
+            args = json.loads(pl.get("arguments") or "{}")
+        except (ValueError, TypeError):
+            args = {}
+        if isinstance(args, dict):
+            c = args.get("cmd") or args.get("command")
+            if isinstance(c, list):          # ["bash", "-lc", "<script>"]
+                c = c[-1] if c else None
+            cmd = c if isinstance(c, str) else None
+    _turn_tool(agg, as_, cmd=cmd)
 
 
 def parse_codex(agg, lines):
@@ -946,6 +1229,8 @@ def parse_codex(agg, lines):
             agg["state"]["usage_records"] = True
             _codex_usage(agg, dt, pl.get("usage") or {}, cur_model)
         elif t == "event_msg":
+            if pt == "patch_apply_end":
+                _codex_edit_event(agg, pl.get("changes"))
             if pt == "token_count":
                 info = pl.get("info") or {}
                 last = info.get("last_token_usage") or {}
@@ -983,6 +1268,7 @@ def parse_codex(agg, lines):
                     _rec(agg, _buckets(dt)[0], "(user)")["user"] += 1
                     agg["totals"]["user"] += 1
                     _set_title(agg, pl.get("message") or _first_text(pl.get("content")), "prompt")
+                    _turn_open(agg, dt, pl.get("message") or _first_text(pl.get("content")))
             elif pt == "item_completed":
                 # Recent Codex CLI builds (0.151.x alpha) stopped emitting the flat
                 # agent_message/user_message payloads above. Every turn's user text,
@@ -1000,12 +1286,15 @@ def parse_codex(agg, lines):
                     _rec(agg, _buckets(dt)[0], "(user)")["user"] += 1
                     agg["totals"]["user"] += 1
                     _set_title(agg, _first_text(item.get("content")), "prompt")
+                    _turn_open(agg, dt, _first_text(item.get("content")))
                 elif it == "AgentMessage" and dt:
                     model = cur_model or "Unknown"
                     if model != "codex-auto-review":
                         _rec(agg, _buckets(dt)[0], model)["asst"] += 1
                         agg["totals"]["asst"] += 1
                         _bump_time(agg, dt, 0, 1)
+                elif it == "FileChange":
+                    _codex_edit_event(agg, item.get("changes"))
                 elif it == "SubAgentActivity" and item.get("kind") == "started":
                     # Counted on the PARENT's own file — a spawn marker, not a token
                     # or message event — so this session's own "delegated to a
@@ -1019,6 +1308,7 @@ def parse_codex(agg, lines):
                 date = _buckets(dt)[0]
                 _tool(agg, date, _CODEX_BUILTIN_TOOLS[pt])
                 _rec(agg, date, cur_model or "Unknown")["tools"] += 1
+                _turn_tool(agg, _CODEX_TOOL_AS.get(_CODEX_BUILTIN_TOOLS[pt], "other"))
             elif pt in ("function_call", "custom_tool_call"):
                 date = _buckets(dt)[0]
                 nm = pl.get("name") or ("function" if pt == "function_call" else "custom_tool")
@@ -1032,6 +1322,7 @@ def parse_codex(agg, lines):
                     nm = f"{ns}__{nm}"
                 _tool(agg, date, nm)
                 _rec(agg, date, cur_model or "Unknown")["tools"] += 1
+                _codex_turn_tool(agg, nm, pl)
 
     agg["state"]["cur_model"] = cur_model
     agg["project"] = project

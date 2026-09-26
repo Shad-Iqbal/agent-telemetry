@@ -240,6 +240,10 @@
             <div class="card-h"><div><h3>Models</h3><p class="card-sub">click a header to sort · a model used in several tools expands into its per-tool split</p></div></div>
             <div class="tbl-wrap"><table id="modelTable"></table></div>
           </div>
+          <div class="card col-12">
+            <div class="card-h"><div><h3>Model efficiency</h3><p class="card-sub">how often each model's edits land first time, and what a prompt costs on it · Claude Code &amp; Codex</p></div></div>
+            <div class="tbl-wrap"><table id="modelEff"></table></div>
+          </div>
           <div class="card col-7">
             <div class="card-h">
               <div><h3>Model timeline</h3><p class="card-sub">top 8 models per day</p></div>
@@ -277,12 +281,21 @@
             <div class="card-h"><div><h3>What the agents do</h3><p class="card-sub">tool calls by category</p></div></div>
             <div id="catList"></div>
           </div>
+          <div class="card col-7">
+            <div class="card-h"><div><h3>What your prompts were for</h3><p class="card-sub" id="actSub">each prompt and the work it set off</p></div></div>
+            <div id="actList"></div>
+          </div>
+          <div class="card col-5">
+            <div class="card-h"><div><h3>Edits that landed first time</h3><p class="card-sub" id="osSub">share of editing prompts with no edit → run → re-edit of the same file</p></div></div>
+            <div id="osList"></div>
+            <div class="facts" id="osFacts"></div>
+          </div>
           <div class="card col-12">
             <div class="card-h"><div><h3>Where you work</h3><p class="card-sub" id="ideHint">which IDE or surface each tool ran in</p></div></div>
             <div class="tbl-wrap" id="ideMatrix"></div>
           </div>
           <div class="card col-6">
-            <div class="card-h"><div><h3>MCP servers</h3><p class="card-sub">calls into connected MCP servers</p></div></div>
+            <div class="card-h"><div><h3>MCP servers</h3><p class="card-sub">calls, and tools used out of those offered</p></div></div>
             <div class="tbl-wrap" style="max-height:320px"><table id="mcpTable"></table></div>
           </div>
           <div class="card col-6">

@@ -96,12 +96,16 @@ that's comparable across providers) · daily spend.
 
 **Models** — provider cards (who made the model, independent of the tool that ran it) ·
 sortable `model × tool` table with a ⚠ on any model missing a price · model timeline ·
-provider share over time · **provider × tool matrix**.
+provider share over time · **provider × tool matrix** · **model efficiency** (how often each
+model's edits land first time, retries per edit, tokens and cost per prompt).
 
 **Tools & agents** — active time, tool calls per prompt, context amplification, subagent
 share, MCP and web calls, Copilot premium requests, Cursor's AI lines kept · top tool calls
-· calls by category · **where you work** (IDE × tool) · MCP servers · **Skills** · the full
-tool list.
+· calls by category · **what your prompts were for** (coding, debugging, new features,
+exploring, testing, git… — each prompt classified by the tools it used and the words it
+used, Claude Code & Codex) · **edits that landed first time** (one-shot rate per tool, retries,
+and what the retried prompts cost) · **where you work** (IDE × tool) · MCP servers, with the
+tools used out of those each server offered · **Skills** · the full tool list.
 
 **Projects** — ranked by the chosen measure, concentration stats, and a searchable table
 where clicking a row opens that project's sessions.

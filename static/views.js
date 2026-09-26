@@ -457,6 +457,7 @@ function viewCost(d){
 
 /* ---------------- MODELS ---------------- */
 function viewModels(d){
+  renderModelEff(d);
   const val = metricOf(), fmt = fmtOf();
   const recs = d.recs.filter(r=>r.model!=="(user)");
   const prov={}, provModels={}, provTools={}, byModel={};
@@ -570,6 +571,76 @@ function categorize(name){
   for(const [lab,re] of CATS) if(re.test(name)) return lab;
   return "Other";
 }
+/* ---------------- ACTIVITY ----------------
+   RAW.activity: one row per (date, tool, model, category) — a turn is one typed
+   prompt plus all the work until the next one, classified by the tools it used and
+   the words it used (parser.py ACTIVITY, codeburn's rules). Only Claude Code,
+   Claude Desktop and Codex log enough to classify. */
+const ACT_LABEL = {coding:"Coding", feature:"New features", debugging:"Debugging",
+  refactoring:"Refactoring", testing:"Testing", exploration:"Exploring / research",
+  planning:"Planning", delegation:"Delegating to agents", git:"Git", "build/deploy":"Build / deploy",
+  brainstorming:"Brainstorming", conversation:"Just talking", general:"Skills / other"};
+function actRows(d){
+  const r = d.r;
+  return (RAW.activity||[]).filter(x => passSrc(x.source) && passModel(x.model)
+    && passProj(x.project) && passIde(x.ide) && x.date>=r.from && x.date<=r.to);
+}
+function actSum(rows, key){
+  const out = {};
+  for(const x of rows){
+    const k = key(x), e = out[k] || (out[k] = {key:k, turns:0, edits:0, oneshot:0, retries:0, cost:0, tok:0, edit_cost:0, retry_cost:0, src:{}});
+    e.turns+=x.turns; e.edits+=x.edits; e.oneshot+=x.oneshot; e.retries+=x.retries;
+    e.cost+=x.cost; e.tok+=x.tok; e.retry_cost+=x.retry_cost; e.edit_cost+=x.edit_cost||0;
+    e.src[x.source] = (e.src[x.source]||0) + (x.cost||x.tok);
+  }
+  return out;
+}
+/* the global measure, for activity rows: time isn't split per turn, so it counts prompts */
+const actVal = x => S.metric==="cost" ? x.cost : S.metric==="tokens" ? x.tok : x.turns;
+const actFmt = () => S.metric==="cost" ? fmtUSD : S.metric==="tokens" ? fmtTok : fmtNum;
+function renderActivity(d){
+  const rows = actRows(d);
+  const cats = Object.values(actSum(rows, x=>x.category));
+  const all = actSum(rows, ()=>"all").all;
+  const noun = S.metric==="cost" ? "est. cost" : S.metric==="tokens" ? "tokens" : "prompts";
+  document.getElementById("actSub").textContent = all
+    ? `${fmtNum(all.turns)} prompts · by ${noun} · Claude Code & Codex only`
+    : "each prompt and the work it set off";
+  barList("actList", cats.map(c=>({label:ACT_LABEL[c.key]||c.key, value:actVal(c),
+      sub:`${fmtNum(c.turns)} prompt${c.turns===1?"":"s"}${c.edits?` · ${fmtPct(c.oneshot/c.edits)} one-shot`:""}`,
+      dots:[domSource(c.src)]})).sort((a,b)=>b.value-a.value),
+    {fmt:actFmt(), empty:"No Claude Code or Codex prompts in range."});
+
+  const bySrc = Object.values(actSum(rows, x=>x.source)).filter(x=>x.edits);
+  barList("osList", ORDER.map(k=>bySrc.find(x=>x.key===k)).filter(Boolean).map(x=>({
+      label:SRC[x.key].label, value:x.oneshot/x.edits, color:`var(${SRC[x.key].v})`,
+      sub:`${fmtNum(x.oneshot)} of ${fmtNum(x.edits)} editing prompts`})),
+    {fmt:fmtPct, share:false, empty:"No edits in range."});
+  const edits = all ? all.edits : 0;
+  document.getElementById("osFacts").innerHTML = edits ? [
+    {k:"Retries", v:fmtNum(all.retries), s:`${(all.retries/edits).toFixed(2)} per editing prompt`},
+    {k:"Prompts that needed one", v:fmtNum(edits-all.oneshot), s:`${fmtPct((edits-all.oneshot)/edits)} of editing prompts`},
+    {k:"What those prompts cost", v:fmtUSD(all.retry_cost), s:all.cost?`${fmtPct(all.retry_cost/all.cost)} of activity spend · the whole prompt, not just the redo`:""},
+  ].map(i=>`<div class="fact"><span class="k">${i.k}</span><span class="x"><b class="num">${esc(i.v)}</b><div title="${esc(i.s)}">${esc(i.s)}</div></span></div>`).join("") : "";
+  return all;
+}
+/* per model: how often its edits land, and what a prompt costs on it */
+function renderModelEff(d){
+  const el = document.getElementById("modelEff");
+  if(!el) return;
+  const rows = Object.values(actSum(actRows(d), x=>x.model)).filter(x=>x.turns);
+  if(!rows.length){ el.innerHTML = `<tbody><tr><td class="empty">No Claude Code or Codex prompts in range.</td></tr></tbody>`; return; }
+  for(const r of rows){ r.model=r.key; r.os = r.edits ? r.oneshot/r.edits : -1; r.rpe = r.edits ? r.retries/r.edits : -1;
+    r.cpt = r.cost/r.turns; r.tpt = r.tok/r.turns; }
+  const sorted = sortRows(rows, S.effSort);
+  el.innerHTML = thead([["model","Model"],["turns","Prompts"],["edits","Editing prompts"],["os","One-shot"],
+      ["rpe","Retries / edit"],["tpt","Tokens / prompt"],["cpt","Est. $ / prompt"]], S.effSort, "eff") + "<tbody>" +
+    sorted.map(r=>`<tr><td class="name">${toolDot(domSource(r.src))} ${esc(r.model)}</td><td class="r">${fmtNum(r.turns)}</td>
+      <td class="r">${fmtNum(r.edits)}</td><td class="r"><b>${r.edits?fmtPct(r.os):'<span class="dim">—</span>'}</b></td>
+      <td class="r">${r.edits?r.rpe.toFixed(2):'<span class="dim">—</span>'}</td><td class="r">${fmtTok(r.tpt)}</td>
+      <td class="r">${fmtUSD2(r.cpt)}</td></tr>`).join("") + "</tbody>";
+}
+
 function viewTools(d){
   const tools = toolCounts(d.r), t = totals(d.recs);
   const totalCalls = tools.reduce((a,x)=>a+x.count,0);
@@ -582,9 +653,12 @@ function viewTools(d){
   const al=(RAW.ai_lines||[]).filter(x=>x.date>=d.r.from&&x.date<=d.r.to);
   const acc=al.reduce((a,x)=>a+x.tab_accepted+x.composer_accepted,0);
   const sug=al.reduce((a,x)=>a+x.tab_suggested+x.composer_suggested,0);
+  const act = renderActivity(d);
   document.getElementById("agentStats").innerHTML = tilesHTML([
     {l:"Active time", v:activeSecs?fmtDur(activeSecs):"—", s:"gap-capped estimate", title:"Consecutive turns no more than 5 minutes apart — a lower bound, not wall-clock length"},
     {l:"Tool calls", v:fmtNum(totalCalls), s:`${fmtNum(tools.length)} distinct tools`},
+    act && act.edits ? {l:"One-shot edits", v:fmtPct(act.oneshot/act.edits), s:`${fmtNum(act.edits)} editing prompts`,
+      title:"Editing prompts whose edits needed no edit → run → re-edit of the same file (Claude Code & Codex)"} : null,
     {l:"Calls per prompt", v:t.user?(totalCalls/t.user).toFixed(1):"—", s:`${fmtNum(t.user)} prompts`},
     {l:"Tokens per prompt", v:t.user?fmtTok(t.tok/t.user):"—", s:"context amplification"},
     {l:"Replies per session", v:d.sessions.length?(t.msgs/d.sessions.length).toFixed(1):"—", s:`${fmtNum(d.sessions.length)} sessions`},
@@ -628,11 +702,21 @@ function viewTools(d){
   for(const x of mcp){ const parts=x.name.replace(/^mcp__/,"").split("__");
     const e=byServer[parts[0]||"?"]||(byServer[parts[0]||"?"]={server:parts[0]||"?",count:0,tools:0,src:{}});
     e.count+=x.count; e.tools++; for(const s in x.src) e.src[s]=(e.src[s]||0)+x.src[s]; }
-  const srv=Object.values(byServer).sort((a,b)=>b.count-a.count);
+  // What Claude Code OFFERED each session (RAW.mcp_inventory), so a server that was
+  // loaded but never called shows up too, and coverage reads used / offered.
+  const inv = RAW.mcp_inventory || {servers:{}, loaded:[]};
+  const loadedIn = {};
+  if(passSrc("claude"))
+    for(const x of inv.loaded) if(x.date>=d.r.from && x.date<=d.r.to) loadedIn[x.server]=(loadedIn[x.server]||0)+x.sessions;
+  for(const sv in loadedIn) if(!byServer[sv]) byServer[sv]={server:sv,count:0,tools:0,src:{claude:1}};
+  const srv=Object.values(byServer).sort((a,b)=>b.count-a.count || (loadedIn[b.server]||0)-(loadedIn[a.server]||0));
+  const offered = sv => ((inv.servers[sv]||{}).tools||[]).length;
   document.getElementById("mcpTable").innerHTML = srv.length
-    ? `<thead><tr><th class="nosort">Server</th><th class="nosort">Tools</th><th class="r nosort">Tools used</th><th class="r nosort">Calls</th></tr></thead><tbody>`+
+    ? `<thead><tr><th class="nosort">Server</th><th class="nosort">Tools</th><th class="r nosort" title="distinct tools called / tools the server offers">Tools used</th><th class="r nosort" title="Claude Code sessions it was loaded in">Sessions</th><th class="r nosort">Calls</th></tr></thead><tbody>`+
       srv.map(r=>`<tr><td class="name">${esc(r.server)}</td><td>${topSources(r.src,3).map(toolDot).join(" ")}</td>
-        <td class="r">${r.tools}</td><td class="r"><b>${fmtNum(r.count)}</b></td></tr>`).join("")+"</tbody>"
+        <td class="r">${r.tools}${offered(r.server)?`<span class="dim"> / ${offered(r.server)}</span>`:""}</td>
+        <td class="r">${loadedIn[r.server]?fmtNum(loadedIn[r.server]):'<span class="dim">—</span>'}</td>
+        <td class="r"><b>${r.count?fmtNum(r.count):'<span class="dim">0</span>'}</b></td></tr>`).join("")+"</tbody>"
     : `<tbody><tr><td class="empty">No MCP tool calls in range.</td></tr></tbody>`;
 
   const sk={};
@@ -1173,9 +1257,13 @@ function findIdleMCP(d){
   return {
     id:"idle-mcp-"+wanted, impact: 0, sev:"info", tools:[wanted],
     title:`${idle.length} ${label} MCP server${idle.length>1?"s":""} configured but never called`,
-    body:`Every connected MCP server's tool definitions are injected into the system prompt of `
-      +`<b>every request</b>, whether you use them or not. These ${idle.length} were not called `
-      +`once in the selected range: <b>${idle.map(m=>esc(m.name)).join(", ")}</b>.`,
+    body:(wanted==="claude" && RAW.mcp_inventory && Object.keys(RAW.mcp_inventory.servers).length
+        ? `Claude Code announces every connected server's tools to each session and loads a tool's full `
+          +`definition when it's searched for, so an idle server costs little context — but it is still `
+          +`started with every session and offered to the model. `
+        : `Every connected MCP server's tool definitions are injected into the system prompt of `
+          +`<b>every request</b>, whether you use them or not. `)
+      +`These ${idle.length} were not called once in the selected range: <b>${idle.map(m=>esc(m.name)).join(", ")}</b>.`,
     todo: wanted==="codex"
       ? "Remove the ones you don't reach for from the [mcp_servers.*] blocks in "
         +"~/.codex/config.toml, and re-add when you next need them."
@@ -1381,10 +1469,40 @@ function findCodexEffort(d){
   };
 }
 
+/* An editing prompt that needed edit → run → re-edit of the same file cost more
+   than one that landed first time. The saving is that difference, from this user's
+   own averages: (avg retried prompt − avg one-shot prompt) × retried prompts. */
+function findRetryTax(d){
+  const by = actSum(actRows(d), x=>x.source);
+  const rows = [];
+  let impact = 0, retried = 0, spend = 0;
+  for(const k of ORDER){ const x = by[k]; if(!x || x.edits < 10) continue;
+    const nr = x.edits - x.oneshot; if(!nr || !x.oneshot) continue;
+    const avgR = x.retry_cost/nr, avgO = (x.edit_cost - x.retry_cost)/x.oneshot;
+    const extra = Math.max(0, (avgR - avgO) * nr);
+    if(extra <= 0) continue;
+    impact += extra; retried += nr; spend += x.retry_cost;
+    rows.push([SRC[k].label, `${fmtPct(x.oneshot/x.edits)} one-shot`,
+      `${fmtUSD2(avgR)} vs ${fmtUSD2(avgO)} per prompt`, `${fmtUSD(extra)} extra`]);
+  }
+  if(!rows.length || impact < 1) return null;
+  return {
+    id:"retry-tax", impact, sev: impact > 50 ? "high" : "low",
+    tools: rows.map(r => ORDER.find(k => SRC[k].label === r[0])),
+    title:`Edits that didn't land first time cost ${fmtUSD(impact)} extra`,
+    body:`<b>${fmtNum(retried)}</b> editing prompts needed a retry — an edit, a run that checked it, and another `
+      +`edit to the same file. Together they cost <b>${fmtUSD(spend)}</b>; at the price of a prompt that `
+      +`landed first time they'd have cost ${fmtUSD(Math.max(0, spend-impact))}.`,
+    todo:"Say how to check the change up front — the test or build command, the expected output — so the "
+      +"agent verifies before it edits again. For a fiddly change, ask for a plan first.",
+    rows
+  };
+}
+
 const OPT_FINDERS = [findBigContext, findCacheWaste, findModelFit, findContextTax,
                      findSubagents, findSubagentShare, findSkills, findCodexEffort,
                      d => findIdleMCP(d, "claude"), d => findIdleMCP(d, "codex"),
-                     findThinking, findLowCache];
+                     findThinking, findLowCache, findRetryTax];
 
 /* Say plainly when a suggestion only applies to one tool — the MCP, Skills and
    /compact advice is Claude Code's, and a Codex or Cursor user should not read it
@@ -1641,7 +1759,7 @@ document.addEventListener("click",e=>{
     renderAll(); return; }
   const th=e.target.closest("th[data-k]");
   if(th){ const k=th.dataset.k, t=th.dataset.t;
-    const st={sess:S.sessSort,model:S.modelSort,tool:S.toolSort,proj:S.projSort,file:S.fileSort}[t];
+    const st={sess:S.sessSort,model:S.modelSort,tool:S.toolSort,proj:S.projSort,file:S.fileSort,eff:S.effSort}[t];
     if(st){ st.dir = st.key===k ? -st.dir : -1; st.key=k; renderAll(); } return; }
   const pr=e.target.closest("[data-proj]");
   if(pr && !pr.closest(".dd-panel")){ S.projs.clear(); S.projs.add(pr.dataset.proj); setView("sessions"); return; }
