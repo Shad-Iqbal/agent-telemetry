@@ -271,6 +271,25 @@ so that file stops being a cache and becomes the sole record. Two consequences:
   per-message cost, so cost routing keys on whether the aggregate's path ends `.db`.
 - **Gemini CLI** is deliberately not parsed — its `chats/*.jsonl` hold only session
   bookkeeping, no prompts/tokens/model.
+- **OpenClaw** (`$OPENCLAW_STATE_DIR`, default `~/.openclaw`; the former names `~/.clawdbot`
+  and `~/.moltbot` too): one aggregate per AGENT directory, `agents/<id>/`, fully reparsed
+  when its signature (DB, `-wal`, every transcript) changes. Current builds keep every session
+  in `agent/openclaw-agent.sqlite` — `transcript_events(session_id, seq, event_json,
+  event_zstd, ...)`, titles from `session_nodes.label` / `display_name`, the model from
+  `session_windows`. Events of 1 KB or more are stored zstd-compressed with `event_json`
+  NULL; `_zstd_decode_many` uses Python 3.14's `compression.zstd` or one batched run of the
+  `zstd` command, and what can't be decoded is COUNTED and shown ("N OpenClaw events
+  unread"), never estimated. Older builds wrote `sessions/<sessionId>.jsonl` (plus the
+  `.jsonl.deleted.<ts>` archives the SQLite migration leaves behind) — read only for a
+  session id the database doesn't have, or a migrated install counts twice.
+  Event shape either way: a `session` header (`cwd`), then `message` entries; an assistant
+  message's `usage` is `{input, output, cacheRead, cacheWrite, cacheWrite1h?, reasoning?,
+  cost.total}` where `input` EXCLUDES cache reads and writes (OpenClaw's model layer
+  subtracts them from the provider's prompt count) and `reasoning` is a subset of `output`.
+  A fork copies its parent's messages, so a response is counted once per agent, keyed by
+  (message timestamp, model, token counts) — and the check runs before any day/start
+  bookkeeping, or the copy gives the fork its parent's start date. `usage.cost.total` is
+  OpenClaw's own estimate: `_cost()` uses it only for a model with no `PRICING` row.
 - **Hermes Agent** (`~/.hermes/state.db`, `$HERMES_HOME`, or `%LOCALAPPDATA%\hermes`): one
   SQLite store for all sessions. Unlike Cursor it logs a real per-model in/out/cache/
   reasoning breakdown in `session_model_usage` (hence `exact:true`), one row per model a

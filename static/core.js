@@ -13,8 +13,11 @@ const SRC = {
   "claude-desktop": {label:"Claude Desktop", v:"--t-claude-desktop",  exact:true },
   opencode:         {label:"opencode",       v:"--t-opencode",        exact:true },
   hermes:           {label:"Hermes Agent",   v:"--t-hermes",          exact:true },
+  openclaw:         {label:"OpenClaw",       v:"--t-openclaw",        exact:true },
 };
-const ORDER = ["claude","codex","copilot","cursor","claude-desktop","opencode","hermes"];
+// adjacency is what the palette validator checks — openclaw's red sits between amber
+// and blue, never beside hermes's olive (red/green fails deutan CVD in dark mode)
+const ORDER = ["claude","codex","copilot","cursor","claude-desktop","openclaw","opencode","hermes"];
 const PROVIDERS = ["Anthropic","OpenAI","Google","Other"];
 const PROV_VAR = {Anthropic:"--p-anthropic",OpenAI:"--p-openai",Google:"--p-google",Other:"--p-other"};
 const DOW = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];

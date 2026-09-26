@@ -20,7 +20,7 @@ import parser as P
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CACHE_PATH = os.path.join(HERE, ".usage_cache.json")
-CACHE_VERSION = 49
+CACHE_VERSION = 50
 
 # ---------------------------------------------------------------------------
 # In-memory store of per-file aggregates, refreshed on a background interval.
@@ -251,6 +251,11 @@ def _cost(source, model, inp, out, cr, cc5, cc1, cc_fallback=0, date=None, logge
     # treating its 0.0 as authoritative would zero out those installs.
     if source == "opencode" and logged_cost is not None:
         return logged_cost
+    # OpenClaw logs its own per-response estimate; it is used only for a model we
+    # have no verified price for, so every priced model still bills the same way
+    # whichever tool ran it
+    if source == "openclaw" and logged_cost and not any(P.price_of(model, date)):
+        return logged_cost
     # date-aware: usage from before a vendor price change bills at that day's rate
     pin, pout, pcw5, pcw1, pcr = P.price_of(model, date)
     # if a record only has the untiered total (cc_fallback), bill it at the 5-min rate
@@ -324,6 +329,7 @@ def build_payload():
     reads = {}        # (date, source, project) -> [reads, re-reads, junk, re-read tok, junk tok]
     used_ext = {}     # (date, kind, name) -> uses of an installed skill / agent
     cwds = set()      # (source family, cwd) — where instruction files are looked for
+    undecoded = 0     # OpenClaw events stored compressed that couldn't be read here
 
     with _lock:
         items = list(_state["files"].items())
@@ -334,8 +340,8 @@ def build_payload():
         # Only the SQLite store records a real per-message cost. The older
         # opencode JSON layout logs none, so its records carry a placeholder
         # 0.0 that must NOT be mistaken for "this was free".
-        has_logged_cost = (source == "opencode"
-                           and str(agg.get("path", "")).endswith(".db"))
+        has_logged_cost = ((source == "opencode" and str(agg.get("path", "")).endswith(".db"))
+                           or source == "openclaw")
         project = agg.get("project") or "(unknown)"
         # One IDE per file for every source (Copilot's is the editor whose storage
         # it came from; Claude/Codex stamp an entrypoint; the rest run in exactly
@@ -405,6 +411,8 @@ def build_payload():
         for k, c in (agg.get("used_ext") or {}).items():
             date, kind, name = (k.split("\t") + ["", "", ""])[:3]
             used_ext[(date, kind, name)] = used_ext.get((date, kind, name), 0) + c
+        if source == "openclaw":
+            undecoded += int((agg.get("state") or {}).get("undecoded") or 0)
         if agg.get("cwd") and source in ("claude", "claude-desktop", "codex") and not agg.get("archived"):
             cwds.add(("codex" if source == "codex" else "claude", agg["cwd"]))
         for sk, v in agg.get("skills", {}).items():
@@ -480,7 +488,8 @@ def build_payload():
                 days = {}
                 for date, v in own.items():
                     days[date] = dict(v, cost=_cost(source, s["model"], v["in"], v["out"],
-                                                    v.get("cr", 0), 0, 0, v.get("cc", 0), date))
+                                                    v.get("cr", 0), 0, 0, v.get("cc", 0), date,
+                                                    logged_cost=v.get("cost") if source == "openclaw" else None))
             else:
                 days = file_days
             s2["days"] = {d: [round(v["cost"], 6), v["in"], v["out"], v["cr"], v["cc"],
@@ -536,6 +545,7 @@ def build_payload():
         "device": DEVICE,
         "version": VERSION,
         "home": P.HOME,        # to show instruction-file paths as ~/...
+        "openclaw_undecoded": undecoded,
         "mcp_servers": _mcp_servers(),
         # Real per-1M rates for the models THIS user actually ran, so the client can
         # cost a "what if this had run on X" without any hardcoded model list.
@@ -1207,6 +1217,12 @@ class Handler(BaseHTTPRequestHandler):
 
 
 class Server(ThreadingHTTPServer):
+    # socketserver's default listen backlog is 5. A page load opens about seven
+    # connections at once (page, Chart.js, three scripts, the stylesheet, the data),
+    # so a burst could overflow it and the kernel reset one — a script that
+    # silently failed to load ("heroHTML is not defined") once in a few dozen loads.
+    request_queue_size = 128
+    daemon_threads = True
     def handle_error(self, request, client_address):
         # A browser tab closed/refreshed mid-response is normal traffic, not a
         # server fault — don't spam stderr with a traceback for it.

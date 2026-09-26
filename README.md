@@ -10,7 +10,7 @@ eat, and suggestions for spending less, drawn from your own numbers.
 **Your data never leaves your machine.** No account, no API key, no telemetry, no
 dependencies — just Python's standard library and a vendored copy of Chart.js.
 
-Covers **Claude Code · Claude Desktop · Codex · GitHub Copilot · Cursor · opencode · Hermes Agent**.
+Covers **Claude Code · Claude Desktop · Codex · GitHub Copilot · Cursor · opencode · Hermes Agent · OpenClaw**.
 
 ---
 
@@ -63,9 +63,10 @@ instead of cloning, delete `.usage_cache.json` first — that file is your perso
 | **Cursor** (native AI) | `Cursor/User/globalStorage/state.vscdb` under App Support / `%APPDATA%` / `~/.config` | partial — model, mode, timestamps, tool calls and AI-line stats are exact; tokens are on only ~2% of messages |
 | **opencode** | `~/.local/share/opencode/opencode.db`, `%LOCALAPPDATA%\opencode\opencode.db`, `~/.opencode/opencode.db` (or `$OPENCODE_DATA_DIR`) | exact (in/out/reasoning/cache); cost is read from opencode's own per-message value |
 | **Hermes Agent** | `~/.hermes/state.db` (or `$HERMES_HOME`, `%LOCALAPPDATA%\hermes`) | exact (in/out/cache/reasoning, per model) |
+| **OpenClaw** | `~/.openclaw/agents/<agent>/agent/openclaw-agent.sqlite` (or `$OPENCLAW_STATE_DIR`; also the older `~/.clawdbot`, `~/.moltbot`) and the older per-session `sessions/*.jsonl` | exact (in/out/cache read/cache write/reasoning, per response); its own logged cost is used only for a model with no verified price. Large events are stored zstd-compressed: read with the `zstd` command or Python 3.14+ |
 
 A tool you don't use simply contributes nothing. **Attribution is by tool, not by model** —
-a Claude or GPT model used *inside* Copilot/Cursor/opencode/Hermes counts under that tool, and the
+a Claude or GPT model used *inside* Copilot/Cursor/opencode/Hermes/OpenClaw counts under that tool, and the
 Models table lists each `model × tool` row separately.
 
 ---

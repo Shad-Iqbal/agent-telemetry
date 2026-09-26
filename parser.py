@@ -12,7 +12,7 @@ Mac/Linux install of the same tools.
 
 No third-party dependencies — stdlib only.
 """
-import os, sys, json, glob, re, time
+import os, sys, json, glob, re, time, shutil, subprocess
 from datetime import datetime, timezone
 
 HOME = os.path.expanduser("~")
@@ -133,6 +133,23 @@ def _hermes_home():
 
 
 HERMES_DB = os.path.join(_hermes_home(), "state.db")
+
+# OpenClaw (formerly Clawdbot / Moltbot) — $OPENCLAW_STATE_DIR, default ~/.openclaw,
+# with one directory per agent under agents/. Current builds keep every session of an
+# agent in agents/<id>/agent/openclaw-agent.sqlite; older ones wrote one JSONL
+# transcript per session under agents/<id>/sessions/ (the SQLite migration leaves
+# those behind as <id>.jsonl.deleted.<ts> archives).
+def _openclaw_roots():
+    override = os.environ.get("OPENCLAW_STATE_DIR", "").strip()
+    roots = [override] if override else []
+    roots += [os.path.join(HOME, d) for d in (".openclaw", ".clawdbot", ".moltbot")]
+    seen, out = set(), []
+    for r in roots:
+        r = os.path.normpath(os.path.expanduser(r))
+        if r not in seen:
+            seen.add(r); out.append(r)
+    return out
+
 
 EDITOR_LABEL = {
     "Code": "VS Code",
@@ -2486,6 +2503,259 @@ def parse_hermes(agg, db_path):
     agg["sessions"] = out
 
 
+
+# ===========================================================================
+# OPENCLAW — per-agent SQLite (current) and JSONL transcripts (older / archived).
+# Transcript events are the same JSON either way: a `session` header, then
+# `message` entries whose assistant messages carry a normalized `usage`
+# {input, output, cacheRead, cacheWrite, cacheWrite1h?, reasoning?, cost.total} —
+# input EXCLUDES cache reads and writes (OpenClaw's model layer subtracts them from
+# the provider's prompt count), and reasoning is a subset of output, like ours.
+# ===========================================================================
+_OPENCLAW_DB = os.path.join("agent", "openclaw-agent.sqlite")
+
+
+def _zstd_decode_many(blobs):
+    """Decode zstd frames: Python 3.14's compression.zstd when present, else one
+    batched run of the `zstd` command. Returns {key: text}; what can't be decoded is
+    left out (and counted by the caller), never guessed."""
+    if not blobs:
+        return {}
+    try:
+        from compression import zstd as _z          # Python 3.14+
+        out = {}
+        for k, b in blobs.items():
+            try:
+                out[k] = _z.decompress(b).decode("utf-8", "replace")
+            except Exception as e:
+                sys.stderr.write(f"[openclaw] zstd row {k}: {e}\n")
+        return out
+    except ImportError:
+        pass
+    exe = shutil.which("zstd")
+    if not exe:
+        return {}
+    import tempfile
+    out = {}
+    with tempfile.TemporaryDirectory(prefix="agenttelemetry-zstd-") as tmp:
+        names = {}
+        for i, (k, b) in enumerate(blobs.items()):
+            fn = os.path.join(tmp, f"{i}.zst")
+            with open(fn, "wb") as f:
+                f.write(b)
+            names[k] = fn
+        keys = list(names)
+        for j in range(0, len(keys), 400):          # keep the command line bounded
+            chunk = keys[j:j + 400]
+            r = subprocess.run([exe, "-d", "-q", "-f", *[names[k] for k in chunk]],
+                               capture_output=True, text=True)
+            if r.returncode != 0:
+                sys.stderr.write(f"[openclaw] zstd: {r.stderr.strip()[:200]}\n")
+            for k in chunk:
+                try:
+                    with open(names[k][:-4], encoding="utf-8", errors="replace") as f:
+                        out[k] = f.read()
+                except OSError:
+                    pass
+    return out
+
+
+def _openclaw_ts(entry):
+    m = entry.get("message") if isinstance(entry.get("message"), dict) else {}
+    ts = entry.get("timestamp") or m.get("timestamp")
+    if isinstance(ts, (int, float)):
+        return _from_ms_or_s(ts)
+    return _from_iso(ts) if isinstance(ts, str) else None
+
+
+def _openclaw_sessions(agent_dir):
+    """{session_id: [event dict, ...]} in order, plus {session_id: meta}, plus how
+    many compressed events couldn't be decoded. SQLite first; a JSONL transcript
+    only for a session the database doesn't have."""
+    events, meta, undecoded = {}, {}, 0
+    db = os.path.join(agent_dir, _OPENCLAW_DB)
+    if os.path.exists(db):
+        con = _open_ro_sqlite(db)
+        try:
+            cur = con.cursor()
+            cols = {r[1] for r in cur.execute("PRAGMA table_info(transcript_events)")}
+            zcol = "event_zstd" if "event_zstd" in cols else "NULL"
+            rows = cur.execute(f"SELECT session_id, seq, event_json, {zcol}, created_at "
+                               "FROM transcript_events ORDER BY session_id, seq").fetchall()
+            packed = {(sid, seq): bytes(z) for sid, seq, ej, z, _ in rows if ej is None and z}
+            plain = _zstd_decode_many(packed)
+            undecoded = len(packed) - len(plain)
+            for sid, seq, ej, z, created in rows:
+                text = ej if ej is not None else plain.get((sid, seq))
+                if not text:
+                    continue
+                try:
+                    e = json.loads(text)
+                except ValueError:
+                    continue
+                if isinstance(e, dict):
+                    if not e.get("timestamp") and created:
+                        e["timestamp"] = created
+                    events.setdefault(sid, []).append(e)
+            try:
+                for sid, model, prov in cur.execute(
+                        "SELECT session_id, model, model_provider FROM session_windows"):
+                    meta.setdefault(sid, {}).update(model=model, provider=prov)
+            except Exception as e:
+                sys.stderr.write(f"[openclaw] session_windows: {e}\n")
+            try:
+                for sid, label, disp in cur.execute(
+                        "SELECT current_session_id, label, display_name FROM session_nodes"):
+                    meta.setdefault(sid, {})["title"] = label or disp
+            except Exception as e:
+                sys.stderr.write(f"[openclaw] session_nodes: {e}\n")
+        finally:
+            con.close()
+    sdir = os.path.join(agent_dir, "sessions")
+    index = {}
+    try:
+        with open(os.path.join(sdir, "sessions.json"), encoding="utf-8") as f:
+            raw = json.load(f)
+        for v in (raw.values() if isinstance(raw, dict) else []):
+            if isinstance(v, dict) and v.get("sessionId"):
+                index[v["sessionId"]] = v.get("label") or v.get("displayName") or v.get("subject")
+    except (OSError, ValueError):
+        pass
+    for fn in sorted(glob.glob(os.path.join(sdir, "*.jsonl")) + glob.glob(os.path.join(sdir, "*.jsonl.*"))):
+        sid = os.path.basename(fn).split(".jsonl", 1)[0]
+        if sid in events:                   # the database already holds this session
+            continue
+        try:
+            with open(fn, encoding="utf-8", errors="replace") as f:
+                evs = []
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        e = json.loads(line)
+                    except ValueError:
+                        continue
+                    if isinstance(e, dict):
+                        evs.append(e)
+        except OSError as e:
+            sys.stderr.write(f"[openclaw] {fn}: {e}\n")
+            continue
+        if evs:
+            events[sid] = evs
+            if index.get(sid):
+                meta.setdefault(sid, {})["title"] = index[sid]
+    return events, meta, undecoded
+
+
+def parse_openclaw(agg, agent_dir):
+    agg["source"] = "openclaw"
+    agg["editor"] = "OpenClaw"
+    agent = _leaf(agent_dir) or "agent"
+    events, meta, undecoded = _openclaw_sessions(agent_dir)
+    agg["state"]["undecoded"] = undecoded
+    if undecoded:
+        sys.stderr.write(f"[openclaw] {agent_dir}: {undecoded} compressed transcript event(s) "
+                         "not read — install zstd (or use Python 3.14+) to include them\n")
+    seen = set()          # a fork copies its parent's messages: count each response once
+    out, tally = [], {}
+    T = agg["totals"]
+    for sid, evs in events.items():
+        m0 = meta.get(sid, {})
+        cur_model = m0.get("model")
+        cwd, start, end = None, None, None
+        s = {"in": 0, "out": 0, "cr": 0, "cc": 0, "cc5": 0, "cc1": 0, "reason": 0, "asst": 0,
+             "user": 0, "tools": 0, "req": 0, "cost": 0.0, "active": 0.0, "days": {}}
+        mt, last = {}, None
+        for e in evs:
+            t = e.get("type")
+            if t == "session":
+                cwd = e.get("cwd") or cwd
+                continue
+            if t == "model_change":
+                cur_model = e.get("modelId") or e.get("model") or cur_model
+                continue
+            if t != "message" or not isinstance(e.get("message"), dict):
+                continue
+            msg = e["message"]
+            dt = _openclaw_ts(e)
+            if not dt:
+                continue
+            date = _buckets(dt)[0]
+            role = msg.get("role")
+            if role == "assistant":
+                u = msg.get("usage") if isinstance(msg.get("usage"), dict) else {}
+                key = (msg.get("timestamp") or e.get("timestamp"), msg.get("model") or cur_model,
+                       u.get("input"), u.get("output"), u.get("cacheRead"), u.get("cacheWrite"))
+                if key in seen and (u.get("input") or u.get("output")):
+                    continue               # the same response, copied into a fork
+                seen.add(key)
+            elif role != "user":
+                continue
+            start = start or dt; end = dt
+            dd = s["days"].setdefault(date, {"in": 0, "out": 0, "cr": 0, "cc": 0, "asst": 0,
+                                             "user": 0, "tools": 0, "active": 0.0, "cost": 0.0})
+            gap = _active_gap(last, dt); last = dt.isoformat()
+            s["active"] += gap; dd["active"] += gap
+            if role == "user":
+                internal = msg.get("__openclaw") if isinstance(msg.get("__openclaw"), dict) else {}
+                if msg.get("excludeFromContext") or internal.get("contextFreeCommand"):
+                    continue
+                r = _rec(agg, date, "(user)")
+                r["user"] += 1; r["active"] += gap; T["user"] += 1; s["user"] += 1; dd["user"] += 1
+                if not m0.get("title"):
+                    _set_title(agg, _first_text(msg.get("content")), "prompt")
+                    m0.setdefault("_first", _first_text(msg.get("content")))
+                continue
+            if role != "assistant":
+                continue
+            model = _normalize_hermes(msg.get("model") or cur_model)
+            u = msg.get("usage") if isinstance(msg.get("usage"), dict) else {}
+            inp, out_, cr = int(u.get("input") or 0), int(u.get("output") or 0), int(u.get("cacheRead") or 0)
+            cw = int(u.get("cacheWrite") or 0)
+            cw1 = min(cw, int(u.get("cacheWrite1h") or 0))
+            reason = int(u.get("reasoning") or 0)
+            cost = u.get("cost") if isinstance(u.get("cost"), dict) else {}
+            logged = float(cost.get("total") or 0)
+            r = _rec(agg, date, model)
+            r["in"] += inp; r["out"] += out_; r["cr"] += cr; r["cc"] += cw
+            r["cc5"] += cw - cw1; r["cc1"] += cw1; r["reason"] += reason
+            r["asst"] += 1; r["req"] += 1; r["cost"] += logged; r["active"] += gap
+            T["in"] += inp; T["out"] += out_; T["cr"] += cr; T["cc"] += cw
+            T["cc5"] += cw - cw1; T["cc1"] += cw1; T["reason"] += reason
+            T["asst"] += 1; T["req"] += 1
+            _bump_time(agg, dt, inp + out_ + cr + cw, 1)
+            ntools = 0
+            for b in (msg.get("content") or []) if isinstance(msg.get("content"), list) else []:
+                if isinstance(b, dict) and b.get("type") in ("toolCall", "tool_use") and b.get("name"):
+                    _tool(agg, date, b["name"]); ntools += 1
+            r["tools"] += ntools; T["tools"] += ntools
+            for k, v in (("in", inp), ("out", out_), ("cr", cr), ("cc", cw)):
+                s[k] += v; dd[k] += v
+            s["cc5"] += cw - cw1; s["cc1"] += cw1; s["reason"] += reason
+            s["asst"] += 1; s["req"] += 1; s["tools"] += ntools; s["cost"] += logged
+            dd["asst"] += 1; dd["tools"] += ntools; dd["cost"] += logged
+            mt[model] = mt.get(model, 0) + inp + out_
+        if not (s["asst"] or s["user"]):
+            continue
+        project = _leaf(cwd) or f"OpenClaw · {agent}"
+        tally[project] = tally.get(project, 0) + s["in"] + s["out"] + s["asst"]
+        ranked = [m for m, _ in sorted(mt.items(), key=lambda kv: -kv[1])] or [_normalize_hermes(m0.get("model"))]
+        title = m0.get("title") or ((m0.get("_first") or "").strip()[:90] or None)
+        out.append({
+            "id": (sid or "")[:8], "source": "openclaw", "ide": IDE_FIXED["openclaw"],
+            "editor": "OpenClaw", "title": title, "project": project,
+            "model": ranked[0], "models": ranked[:6], "nmodels": len(mt),
+            "branch": None, "entry": agent,
+            "start": start.isoformat() if start else None, "end": end.isoformat() if end else None,
+            "in": s["in"], "out": s["out"], "cr": s["cr"], "cc": s["cc"], "cc5": s["cc5"], "cc1": s["cc1"],
+            "asst": s["asst"], "user": s["user"], "req": s["req"], "prem": 0.0,
+            "tools": s["tools"], "side": 0, "days": s["days"], "cost": round(s["cost"], 6),
+            "active": round(s["active"], 1),
+        })
+    agg["project"] = max(tally, key=tally.get) if tally else f"OpenClaw · {agent}"
+    agg["sessions"] = out
+
 # ===========================================================================
 # Incremental file scanning
 # ===========================================================================
@@ -2568,6 +2838,13 @@ def discover():
             out.append(("cursor", db, "Cursor"))
     if os.path.exists(HERMES_DB):
         out.append(("hermes", HERMES_DB, "Hermes Agent"))
+    # OpenClaw: one entry per agent directory — it holds both the SQLite store and
+    # any older JSONL transcripts, which parse_openclaw reconciles
+    for root in _openclaw_roots():
+        for ad in sorted(glob.glob(os.path.join(root, "agents", "*"))):
+            if (os.path.exists(os.path.join(ad, _OPENCLAW_DB))
+                    or glob.glob(os.path.join(ad, "sessions", "*.jsonl*"))):
+                out.append(("openclaw", ad, "OpenClaw"))
     # opencode: current versions keep everything in opencode.db; older versions
     # used storage/message/<session>/msg_*.json. Discover both so upgrades and
     # legacy installs are both covered.
@@ -2633,6 +2910,29 @@ def update_file(agg, source, path, editor_hint, proj_map):
             pass
         fresh["size"], fresh["mtime"] = size, mtime
         _finalize_session(fresh, source, path)
+        return fresh
+
+    if source == "openclaw":
+        # an agent directory: re-parse when its database, WAL or any transcript changes
+        parts = [os.path.join(path, _OPENCLAW_DB), os.path.join(path, _OPENCLAW_DB) + "-wal"]
+        parts += sorted(glob.glob(os.path.join(path, "sessions", "*.jsonl*")))
+        sig, total = [], 0
+        for f in parts:
+            try:
+                fs = os.stat(f); sig.append([os.path.basename(f), fs.st_size, fs.st_mtime]); total += fs.st_size
+            except OSError:
+                pass
+        if agg and agg.get("_sig") == sig:
+            return agg
+        fresh = _blank_agg(source, path)
+        fresh["editor"] = editor_hint
+        fresh["size"] = total
+        try:
+            parse_openclaw(fresh, path)
+        except Exception as e:
+            sys.stderr.write(f"[openclaw] {path}: {type(e).__name__}: {e}\n")
+        fresh["_sig"] = sig
+        fresh["mtime"] = max((x[2] for x in sig), default=mtime)
         return fresh
 
     if source in ("gemini", "cursor", "hermes"):
@@ -2816,6 +3116,7 @@ IDE_FIXED = {
     "opencode": "CLI",
     "hermes": "CLI",
     "gemini": "CLI",
+    "openclaw": "OpenClaw",
 }
 
 
