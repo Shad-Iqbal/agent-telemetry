@@ -24,9 +24,17 @@ first — it may already be up.
 | `index.html` | Shell only: sidebar (device name, tabs, live/refresh/theme/settings), page header (period, range, metric, filters), card markup, an SVG icon sprite. |
 
 Eight tabs in the sidebar: Overview · Cost · Models · Tools · Projects · Sessions ·
-**Optimize** · Storage. Tab lives in `location.hash`; `?theme=`, `?range=` and `?metric=`
-(`cost|tokens|time`) preset the UI (handy for headless screenshots). Below 900px the sidebar
-becomes a top bar. Every chart has a table twin (`.tv[data-tv]`, `chartTable()`), and each view
+**Optimize** · Storage. Tab lives in `location.hash`; `?theme=`, `?range=`, `?metric=`
+(`tokens|cost|messages|time`) and `?side=collapsed|open` preset the UI (handy for headless
+screenshots). The sidebar collapses to an icon rail (`[`, remembered as `aiu.side`); below
+900px it becomes a top bar instead.
+
+**The controls are a sentence**, not a toolbar: "**Tokens** from **all tools** over **the last
+30 days** ‹ ›". Each bold phrase is a `.dd` that opens its menu (`#metricPanel`,
+`#filtersPanel`, `#rangePanel`); `periodPhrase()` supplies the connecting word ("over",
+"in", "across", or none for "today" / "this month"); ‹ › (`stepPeriod`, keys `,` `.`) move
+the window back or forward by its own length as a custom range, stopping at today. Tokens
+are the default measure — the Overview hero follows it, and cost is one of its tiles. Every chart has a table twin (`.tv[data-tv]`, `chartTable()`), and each view
 leads with one hero figure — keep it that way rather than adding a second.
 
 The device name at the top of the sidebar is `DEVICE` in `dashboard.py`: the OS's own name
@@ -342,6 +350,17 @@ Codex server looks unused. Configured servers come from `~/.claude.json` and the
 `[mcp_servers.*]` blocks of `~/.codex/config.toml` (parsed by regex, not tomllib,
 which is 3.11+).
 
+**Setup checks** (payload fields in brackets): instruction files over 8 KB — CLAUDE.md up
+the directory tree and ~/.claude, AGENTS.md for Codex — priced as their size × the
+requests that carried them at the cache-read rate (`context_files`, sizes only, never
+contents); sessions that open heavier than the user's own leanest 10% (`open_ctx` on each
+session: the first request's full input); re-reads of unchanged files and reads inside
+build / dependency folders, with the tokens they returned (`reads`, Claude Code — note it
+already answers an unchanged re-read with a short stub, so this rarely fires); installed
+skills and subagents unused over ≥ 14 days (`installed`, description lengths only); MCP
+servers used for ≤ 10% of the tools they offer, or used in one project while loaded in
+several (`mcp_inventory.loaded/calls`, now per project).
+
 It leans on three signals the other tabs don't use: `attributionSkill` (which Skill
 drove a request — this is how "/dataviz cost you $20" is possible), a per-request
 context-size histogram (`agg["ctx"]`, bucketed 0-50k / 50-150k / 150-400k / 400k+),
@@ -437,6 +456,21 @@ must not report three days of "active" time. Formatted client-side by `fmtDur()`
   `[cost,in,out,cr,cc,asst,user,tools,prem,active]` — specifically so nothing that reads
   it by index elsewhere needs to change. `static/core.js`'s `clipSession()` is the one
   place that unpacks it.
+
+## Version and self-update
+
+The sidebar footer shows the running version from this checkout's git metadata
+(`VERSION` in `dashboard.py`: `git describe --tags`, commit, branch). **Checking for an
+update is the only thing that touches the network, and only on a click** — never on a
+timer, which would break "nothing leaves this machine". `POST /api/update` (through
+`_csrf_ok()`): `check` fetches the upstream and reports how far behind; `apply`
+fast-forwards only — it refuses local edits to tracked files and commits the upstream
+doesn't have — then saves the cache and re-execs the process (`_restart`), and the page
+reloads once the new commit answers. A copy that isn't a git checkout shows no button.
+
+`load()` keeps a fetch failure ("cannot reach /api/data") apart from a render failure: the
+second sets `data-js-error` — it used to be reported as the server being down, which hid a
+render bug from the headless sweep.
 
 ## Gotchas
 

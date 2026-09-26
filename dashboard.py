@@ -13,14 +13,14 @@ day / model / tool / project / hour, and serves an interactive dashboard.
 Stdlib only. First run parses everything (one large Codex log makes that take a
 moment); results are cached, and subsequent refreshes are incremental & instant.
 """
-import os, re, sys, json, time, threading, argparse, shutil, mimetypes, platform, subprocess
+import os, re, sys, json, time, glob, threading, argparse, shutil, mimetypes, platform, subprocess
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import parser as P
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CACHE_PATH = os.path.join(HERE, ".usage_cache.json")
-CACHE_VERSION = 48
+CACHE_VERSION = 49
 
 # ---------------------------------------------------------------------------
 # In-memory store of per-file aggregates, refreshed on a background interval.
@@ -64,6 +64,92 @@ def _device():
 
 
 DEVICE = _device()
+
+# ---------------------------------------------------------------------------
+# Version + self-update. The version comes from this checkout's git metadata.
+# Checking for an update is the ONLY thing here that touches the network, and it
+# runs only when the user clicks "Check for updates" — never on a timer.
+# ---------------------------------------------------------------------------
+APP_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+def _git(*args, timeout=10):
+    r = subprocess.run(["git", "-C", APP_DIR, *args], capture_output=True, text=True,
+                       timeout=timeout)
+    if r.returncode != 0:
+        raise RuntimeError((r.stderr or r.stdout).strip() or f"git {args[0]} failed")
+    return r.stdout.strip()
+
+
+def _version():
+    try:
+        return {"git": True, "commit": _git("rev-parse", "--short", "HEAD"),
+                "date": _git("log", "-1", "--format=%cs"),
+                "branch": _git("rev-parse", "--abbrev-ref", "HEAD"),
+                # "v1.4.2" on a release, "v1.4.2-7-g0bb26d6" seven commits past it
+                "describe": (subprocess.run(["git", "-C", APP_DIR, "describe", "--tags"],
+                                            capture_output=True, text=True, timeout=5).stdout.strip()
+                             or None)}
+    except (OSError, subprocess.SubprocessError, RuntimeError) as e:
+        sys.stderr.write(f"[version] not a git checkout: {e}\n")
+        return {"git": False}
+
+
+VERSION = _version()
+
+
+def _upstream():
+    try:
+        return _git("rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
+    except RuntimeError:
+        return "origin/main"
+
+
+def update_action(action):
+    """check: fetch and report how far behind this checkout is.
+    apply: fast-forward to it (never a merge, never over local edits), then restart."""
+    if not VERSION.get("git"):
+        raise ValueError("This copy isn't a git checkout — download the latest release instead.")
+    up = _upstream()
+    remote = up.split("/", 1)[0]
+    try:
+        _git("fetch", "--quiet", remote, timeout=30)
+        behind = int(_git("rev-list", "--count", f"HEAD..{up}") or 0)
+        ahead = int(_git("rev-list", "--count", f"{up}..HEAD") or 0)
+        log = _git("log", "--format=%h %cs %s", "-n", "8", f"HEAD..{up}") if behind else ""
+    except (RuntimeError, subprocess.SubprocessError) as e:
+        raise ValueError(f"Couldn't reach {remote}: {e}")
+    info = {"upstream": up, "behind": behind, "ahead": ahead,
+            "changes": [ln for ln in log.splitlines() if ln], "current": VERSION}
+    if action == "check":
+        return info
+    if action != "apply":
+        raise ValueError("unknown action")
+    if not behind:
+        return dict(info, updated=False)
+    if _git("status", "--porcelain", "--untracked-files=no"):
+        raise ValueError("This checkout has local changes; commit or stash them, then update.")
+    if ahead:
+        raise ValueError(f"This checkout has {ahead} commit(s) not on {up}; update it with git.")
+    try:
+        _git("merge", "--ff-only", "--quiet", up, timeout=30)
+    except RuntimeError as e:
+        raise ValueError(f"Update failed: {e}")
+    threading.Thread(target=_restart, daemon=True).start()
+    return dict(info, updated=True, restarting=True)
+
+
+def _restart():
+    """Re-exec this process on the new code once the response has gone out."""
+    time.sleep(0.8)
+    try:
+        with _refresh_lock, _lock:
+            save_cache()
+    except Exception as e:                      # never lose the restart over the cache
+        sys.stderr.write(f"[update] cache save before restart failed: {e}\n")
+    sys.stderr.write("[update] restarting on the new version\n")
+    os.execv(sys.executable, [sys.executable, *sys.argv])
+
 _dirty = {"v": True}          # cache is only rewritten when a file actually changed
 # Only one refresh at a time: the background timer and the Rebuild button can now
 # collide, and `gone = [p for p in files ...]` iterating while another thread
@@ -233,7 +319,11 @@ def build_payload():
     ai_lines = {}     # date -> Cursor's suggested/accepted line counts
     activity = {}     # (date, source, model, category, project, ide) -> turn counts + cost
     mcp_inv = {}      # server -> set of tool names Claude Code offered
-    mcp_loaded = {}   # (date, server) -> sessions it was offered in
+    mcp_loaded = {}   # (date, server, project) -> sessions it was offered in
+    mcp_calls = {}    # (date, server, project) -> calls
+    reads = {}        # (date, source, project) -> [reads, re-reads, junk, re-read tok, junk tok]
+    used_ext = {}     # (date, kind, name) -> uses of an installed skill / agent
+    cwds = set()      # (source family, cwd) — where instruction files are looked for
 
     with _lock:
         items = list(_state["files"].items())
@@ -301,8 +391,22 @@ def build_payload():
         if not agg.get("subagent"):
             for server, e in (agg.get("mcp_offered") or {}).items():
                 mcp_inv.setdefault(server, set()).update(e.get("tools") or ())
-                k = (e.get("d") or "", server)
+                k = (e.get("d") or "", server, project)
                 mcp_loaded[k] = mcp_loaded.get(k, 0) + 1
+        for tk, c in agg.get("tools", {}).items():
+            date, _, name = tk.partition("\t")
+            if name.startswith("mcp__"):
+                k = (date, name[5:].split("__", 1)[0], project)
+                mcp_calls[k] = mcp_calls.get(k, 0) + c
+        for date, e in (agg.get("reads") or {}).items():
+            slot = reads.setdefault((date, source, project), [0, 0, 0, 0, 0])
+            for i, v in enumerate(e[:5]):
+                slot[i] += v
+        for k, c in (agg.get("used_ext") or {}).items():
+            date, kind, name = (k.split("\t") + ["", "", ""])[:3]
+            used_ext[(date, kind, name)] = used_ext.get((date, kind, name), 0) + c
+        if agg.get("cwd") and source in ("claude", "claude-desktop", "codex") and not agg.get("archived"):
+            cwds.add(("codex" if source == "codex" else "claude", agg["cwd"]))
         for sk, v in agg.get("skills", {}).items():
             date, _, name = sk.partition("\t")
             if not name:
@@ -430,6 +534,8 @@ def build_payload():
         "generated_at": time.time(),
         "meta": dict(_meta),
         "device": DEVICE,
+        "version": VERSION,
+        "home": P.HOME,        # to show instruction-file paths as ~/...
         "mcp_servers": _mcp_servers(),
         # Real per-1M rates for the models THIS user actually ran, so the client can
         # cost a "what if this had run on X" without any hardcoded model list.
@@ -441,8 +547,19 @@ def build_payload():
                       **{k: (round(x, 6) if isinstance(x, float) else x) for k, x in v.items()}}
                      for (d, src, m, c, pj, i), v in activity.items()],
         "mcp_inventory": {"servers": {sv: {"tools": sorted(t)} for sv, t in mcp_inv.items()},
-                          "loaded": [{"date": d, "server": sv, "sessions": n}
-                                     for (d, sv), n in sorted(mcp_loaded.items())]},
+                          "loaded": [{"date": d, "server": sv, "project": pj, "sessions": n}
+                                     for (d, sv, pj), n in sorted(mcp_loaded.items())],
+                          "calls": [{"date": d, "server": sv, "project": pj, "calls": n}
+                                    for (d, sv, pj), n in sorted(mcp_calls.items())]},
+        # reads that added tokens for nothing (Claude Code) — see parser.py READ HYGIENE
+        "reads": [{"date": d, "source": src, "project": pj, "reads": v[0], "rereads": v[1],
+                   "junk": v[2], "reread_tok": v[3], "junk_tok": v[4]}
+                  for (d, src, pj), v in reads.items()],
+        # sizes of the CLAUDE.md / AGENTS.md files each request carries
+        "context_files": _context_files(cwds),
+        "installed": {"items": _installed(cwds),
+                      "used": [{"date": d, "kind": k, "name": n, "n": c}
+                               for (d, k, n), c in used_ext.items()]},
         "ctx": [{"date": d, "bucket": b, "source": src, **v} for (d, b, src), v in ctxb.items()],
         "records": rec_list,
         "tools": tool_list,
@@ -584,6 +701,101 @@ def _write_claude_settings(data):
 
 
 _mcp_cache = {"at": 0.0, "data": None}
+
+
+_ctxfile_cache = {"at": 0.0, "key": None, "data": None}
+
+
+def _context_files(cwds):
+    """SIZES (never contents) of the instruction files each agent puts into every
+    request: CLAUDE.md for Claude Code (the project dir and each parent up to home,
+    plus ~/.claude/CLAUDE.md) and AGENTS.md for Codex (the same walk, plus
+    ~/.codex/AGENTS.md). `cwds` is {(source, cwd)} from the parsed sessions."""
+    key = tuple(sorted(cwds))
+    if (time.time() - _ctxfile_cache["at"] < 60 and _ctxfile_cache["key"] == key
+            and _ctxfile_cache["data"] is not None):
+        return _ctxfile_cache["data"]
+    names = {"claude": ("CLAUDE.md", "CLAUDE.local.md", os.path.join(".claude", "CLAUDE.md")),
+             "codex": ("AGENTS.md", "AGENTS.override.md")}
+    out, seen = [], set()
+
+    def add(source, project, path):
+        if (source, project, path) in seen:
+            return
+        seen.add((source, project, path))
+        try:
+            if os.path.isfile(path):
+                out.append({"source": source, "project": project, "file": path,
+                            "bytes": os.path.getsize(path)})
+        except OSError as e:
+            sys.stderr.write(f"[context files] {path}: {e}\n")
+
+    add("claude", "*", os.path.join(P.HOME, ".claude", "CLAUDE.md"))
+    add("codex", "*", os.path.join(P.HOME, ".codex", "AGENTS.md"))
+    home = os.path.normpath(P.HOME)
+    for source, cwd in list(key)[:300]:
+        d = os.path.normpath(cwd)
+        if not os.path.isdir(d):
+            continue
+        project = P._leaf(cwd) or cwd
+        for _ in range(8):                      # the dir, then its parents up to home
+            if d == home or os.path.dirname(d) == d:
+                break
+            for n in names.get(source, ()):
+                add(source, project, os.path.join(d, n))
+            d = os.path.dirname(d)
+    _ctxfile_cache.update(at=time.time(), key=key, data=out)
+    return out
+
+
+_installed_cache = {"at": 0.0, "key": None, "data": None}
+
+
+def _frontmatter_desc_len(path):
+    """Length of a skill/agent file's `description:` — what Claude Code lists in
+    every session. Only the length leaves this function."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            head = f.read(8192)
+    except OSError as e:
+        sys.stderr.write(f"[installed] {path}: {e}\n")
+        return 0, None
+    m = re.match(r"---\s*\n(.*?)\n---", head, re.S)
+    if not m:
+        return 0, None
+    fm = m.group(1)
+    name = re.search(r"^name:\s*(.+)$", fm, re.M)
+    desc = re.search(r"^description:\s*(.*(?:\n[ \t]+.*)*)", fm, re.M)
+    return (len(desc.group(1).strip()) if desc else 0,
+            name.group(1).strip().strip("'\"") if name else None)
+
+
+def _installed(cwds):
+    """Claude Code skills and subagents installed for the user (~/.claude) or a
+    project (<cwd>/.claude), with how big a description each adds to every session."""
+    key = tuple(sorted(c for s_, c in cwds if s_ == "claude"))
+    if (time.time() - _installed_cache["at"] < 60 and _installed_cache["key"] == key
+            and _installed_cache["data"] is not None):
+        return _installed_cache["data"]
+    out = []
+    roots = [("user", "*", os.path.join(P.HOME, ".claude"))]
+    roots += [("project", P._leaf(c) or c, os.path.join(c, ".claude")) for c in key[:300]
+              if os.path.normpath(c) != os.path.normpath(P.HOME)]
+    seen = set()
+    for scope, project, root in roots:
+        for kind, pattern in (("skill", os.path.join(root, "skills", "*", "SKILL.md")),
+                              ("agent", os.path.join(root, "agents", "*.md"))):
+            for path in glob.glob(pattern):
+                if path in seen or not os.path.isfile(path):   # a dangling symlink
+                    continue
+                seen.add(path)
+                n, fm_name = _frontmatter_desc_len(path)
+                name = fm_name or (os.path.basename(os.path.dirname(path)) if kind == "skill"
+                                   else os.path.splitext(os.path.basename(path))[0])
+                out.append({"kind": kind, "name": name, "scope": scope, "project": project,
+                            "desc_chars": n})
+    _installed_cache.update(at=time.time(), key=key, data=out)
+    return out
 
 
 def _mcp_servers():
@@ -966,7 +1178,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         route = self.path.split("?")[0]
-        if route in ("/api/settings", "/api/cache"):
+        if route in ("/api/settings", "/api/cache", "/api/update"):
             if not self._csrf_ok():
                 self._send(403, json.dumps({"error": "cross-site request refused"}))
                 return
@@ -980,6 +1192,8 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 if route == "/api/cache":
                     result = cache_action(body.get("action"))
+                elif route == "/api/update":
+                    result = update_action(body.get("action"))
                 else:
                     result = save_claude_cleanup_days(body.get("cleanupPeriodDays"))
                 self._send(200, json.dumps(result))

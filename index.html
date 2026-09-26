@@ -27,7 +27,8 @@
     <symbol id="i-storage" viewBox="0 0 16 16"><ellipse cx="8" cy="3.9" rx="5.2" ry="1.9"/><path d="M2.8 3.9v8.2c0 1.1 2.3 1.9 5.2 1.9s5.2-.8 5.2-1.9V3.9M2.8 8c0 1.1 2.3 1.9 5.2 1.9s5.2-.8 5.2-1.9"/></symbol>
     <symbol id="i-refresh" viewBox="0 0 16 16"><path d="M13.2 8a5.2 5.2 0 1 1-1.6-3.8"/><path d="M13.2 2.6v2.9h-2.9"/></symbol>
     <symbol id="i-theme" viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.6"/><path d="M8 2.4v11.2a5.6 5.6 0 0 0 0-11.2z" fill="currentColor" stroke="none"/></symbol>
-    <symbol id="i-settings" viewBox="0 0 16 16"><circle cx="8" cy="8" r="2.3"/><path d="M8 1.8v1.7M8 12.5v1.7M1.8 8h1.7M12.5 8h1.7M3.6 3.6l1.2 1.2M11.2 11.2l1.2 1.2M3.6 12.4l1.2-1.2M11.2 4.8l1.2-1.2"/></symbol>
+    <symbol id="i-settings" viewBox="0 0 16 16"><path d="M12.76 6.86 L14.34 7.15 L14.34 8.85 L12.76 9.14 L12.18 10.56 L13.09 11.88 L11.88 13.09 L10.56 12.18 L9.14 12.76 L8.85 14.34 L7.15 14.34 L6.86 12.76 L5.44 12.18 L4.12 13.09 L2.91 11.88 L3.82 10.56 L3.24 9.14 L1.66 8.85 L1.66 7.15 L3.24 6.86 L3.82 5.44 L2.91 4.12 L4.12 2.91 L5.44 3.82 L6.86 3.24 L7.15 1.66 L8.85 1.66 L9.14 3.24 L10.56 3.82 L11.88 2.91 L13.09 4.12 L12.18 5.44Z" stroke-linejoin="round"/><circle cx="8" cy="8" r="2.1"/></symbol>
+    <symbol id="i-sidebar" viewBox="0 0 16 16"><rect x="2" y="2.6" width="12" height="10.8" rx="1.8"/><path d="M6.2 2.6v10.8"/><path d="M4 5.4h.6M4 7.4h.6M4 9.4h.6"/></symbol>
     <symbol id="i-filter" viewBox="0 0 16 16"><path d="M2.3 3.2h11.4L9.3 8.5v4.3l-2.6 1.3V8.5z"/></symbol>
     <symbol id="i-device" viewBox="0 0 16 16"><rect x="3" y="3.3" width="10" height="7" rx="1.1"/><path d="M1.4 12.8h13.2"/></symbol>
     <symbol id="i-table" viewBox="0 0 16 16"><rect x="2" y="2.6" width="12" height="10.8" rx="1.6"/><path d="M2 6.3h12M2 9.8h12M6.4 2.6v10.8"/></symbol>
@@ -39,7 +40,7 @@
   </defs>
 </svg>
 
-<div class="app">
+<div class="app" id="app">
 
   <aside class="side" id="side">
     <div class="side-top">
@@ -47,6 +48,7 @@
         <svg class="mark" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8" class="mark-bg"/><path d="M5.5 18h4.2l2.8-7.5 4.6 13 3.2-8.5h2.2" class="mark-line"/><circle cx="25.2" cy="15" r="2.9" class="mark-dot"/></svg>
         <span>AgentTelemetry</span>
       </a>
+      <button class="icon-btn side-toggle" id="sideToggle" title="Collapse sidebar ([)" aria-label="Collapse sidebar" aria-expanded="true"><svg class="ic"><use href="#i-sidebar"/></svg></button>
       <div class="device" id="device" title="This machine">
         <svg class="ic"><use href="#i-device"/></svg>
         <div class="device-txt"><div class="device-name" id="devName">This computer</div><div class="device-os" id="devOs">local</div></div>
@@ -73,31 +75,25 @@
         <button class="icon-btn" id="themeBtn" title="Theme (t)" aria-label="Theme"><svg class="ic"><use href="#i-theme"/></svg></button>
         <button class="icon-btn" id="settingsBtn" title="Settings" aria-label="Settings"><svg class="ic"><use href="#i-settings"/></svg></button>
       </div>
-      <div class="side-note" id="coverage">Local only — nothing leaves this machine.</div>
+      <div class="side-note" id="coverage"></div>
+      <div class="side-note side-ver" id="version"></div>
     </div>
   </aside>
 
   <div class="main">
     <header class="page-head" id="filters">
-      <div class="ph-row">
-        <div class="ph-title">
-          <h1 id="pageTitle">Overview</h1>
-          <div class="ph-sub" id="rangeText">&nbsp;</div>
+      <h1 id="pageTitle">Overview</h1>
+      <!-- The controls read as a sentence: what is measured, for which tools, over
+           which period. Each bold phrase opens its menu; ‹ › step the period. -->
+      <div class="q" id="query" role="group" aria-label="What this page shows">
+        <div class="dd q-dd" id="ddMetric">
+          <button class="q-word" data-dd="toggle" id="qMetric" aria-haspopup="true">Tokens</button>
+          <div class="dd-panel q-panel" id="metricPanel"></div>
         </div>
-        <div class="ph-controls">
-          <div class="seg" id="periodSeg" role="group" aria-label="Period">
-            <button data-p="today">Today</button><button data-p="7d">7D</button><button data-p="30d" class="on">30D</button><button data-p="90d">90D</button><button data-p="all">All</button>
-          </div>
-          <div class="dd" id="ddRange">
-            <button class="btn" data-dd="toggle" id="rangeMore"><span id="rangeLabel">More</span><svg class="ic sm"><use href="#i-chev"/></svg></button>
-            <div class="dd-panel right" id="rangePanel"></div>
-          </div>
-          <div class="seg" id="metricSeg" role="group" aria-label="Measure">
-            <button data-m="cost" class="on">Cost</button><button data-m="tokens">Tokens</button><button data-m="time">Time</button>
-          </div>
-          <div class="dd" id="ddFilters">
-            <button class="btn" data-dd="toggle" id="filtersBtn"><svg class="ic sm"><use href="#i-filter"/></svg><span>Filters</span><span class="btn-count" id="filterCount"></span></button>
-            <div class="dd-panel right filters-panel" id="filtersPanel">
+        <span class="q-t">from</span>
+        <div class="dd q-dd" id="ddFilters">
+          <button class="q-word" data-dd="toggle" id="filtersBtn" aria-haspopup="true"><span id="qTools">all tools</span><span class="q-count" id="filterCount"></span></button>
+          <div class="dd-panel filters-panel" id="filtersPanel">
               <div class="fp-grid">
                 <section class="fp-sec"><div class="fp-h"><span>Tools</span><span><a href="#" data-fall="tools">all</a> · <a href="#" data-fnone="tools">none</a></span></div><div class="fp-list" id="toolsPanel"></div></section>
                 <section class="fp-sec"><div class="fp-h"><span>Providers</span><a href="#" data-fclear="provs">clear</a></div><div class="fp-list" id="provPanel"></div></section>
@@ -109,9 +105,18 @@
                   <div class="fp-note">Hides tools whose token counts are estimates.</div></section>
               </div>
               <div class="fp-foot"><button class="btn" id="filtersReset">Reset all filters</button></div>
-            </div>
           </div>
         </div>
+        <span class="q-t" id="qOver">over</span>
+        <div class="dd q-dd" id="ddRange">
+          <button class="q-word" data-dd="toggle" id="rangeMore" aria-haspopup="true"><span id="rangeLabel">the last 30 days</span></button>
+          <div class="dd-panel q-panel" id="rangePanel"></div>
+        </div>
+        <span class="q-step">
+          <button class="q-arrow" id="stepBack" title="Previous period (,)" aria-label="Previous period"><svg class="ic sm"><use href="#i-chev"/></svg></button>
+          <button class="q-arrow fwd" id="stepFwd" title="Next period (.)" aria-label="Next period"><svg class="ic sm"><use href="#i-chev"/></svg></button>
+        </span>
+        <span class="q-dates" id="rangeText">&nbsp;</span>
       </div>
       <div class="pills" id="pills"></div>
     </header>

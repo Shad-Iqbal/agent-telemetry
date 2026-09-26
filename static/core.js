@@ -101,7 +101,7 @@ const S = {
   ides:new Set(),        // which IDE / surface the work ran in
   search:"",
   exactOnly:false,
-  metric:"cost", rateMetric:"all",
+  metric:"tokens", rateMetric:"all",   // tokens lead; cost is an estimate
   tableView:new Set(),   // chart ids currently shown as their table twin
   live:true,
   muted:{},             // chartId -> Set of muted series labels
@@ -319,8 +319,34 @@ document.addEventListener("keydown", e=>{
   if(map[e.key]){ S.preset=map[e.key]; syncRangeUI(); renderAll(); }
   if(e.key==="t") cycleTheme();
   if(e.key==="r") document.getElementById("refreshBtn").click();
+  if(e.key==="[") toggleSide();
+  if(e.key===",") stepPeriod(-1);
+  if(e.key===".") stepPeriod(1);
+  const mk={"T":"tokens","C":"cost","M":"messages","A":"time"}[e.key];   // shift+letter
+  if(mk){ S.metric=mk; renderAll(); }
   if(e.key==="/"){ const box=document.querySelector(".view.on .search-in");
     if(box){ e.preventDefault(); box.focus(); } }
+});
+
+/* ---------- collapsible sidebar (remembered per browser) ---------- */
+function setSide(collapsed){
+  document.getElementById("app").classList.toggle("side-collapsed", collapsed);
+  const b = document.getElementById("sideToggle");
+  if(b){ const l = collapsed ? "Expand sidebar ([)" : "Collapse sidebar ([)";
+    b.title = l; b.setAttribute("aria-label", l.replace(" ([)","")); b.setAttribute("aria-expanded", String(!collapsed)); }
+  try{ localStorage.setItem("aiu.side", collapsed ? "collapsed" : "open"); }catch(e){}
+}
+function toggleSide(){ setSide(!document.getElementById("app").classList.contains("side-collapsed")); }
+document.addEventListener("DOMContentLoaded", () => {
+  // each nav item's label doubles as its tooltip when the rail hides the text
+  for(const b of document.querySelectorAll("#tabs button"))
+    if(!b.title) b.title = (b.querySelector("span")||{}).textContent || "";
+  const t = document.getElementById("sideToggle");
+  if(t) t.addEventListener("click", toggleSide);
+  let saved = null; try{ saved = localStorage.getItem("aiu.side"); }catch(e){}
+  const qs = new URLSearchParams(location.search).get("side");   // ?side= presets it (screenshots)
+  if(qs === "collapsed" || qs === "open") setSide(qs === "collapsed");
+  else if(saved === "collapsed") setSide(true);
 });
 
 /* ---------- drawer ---------- */

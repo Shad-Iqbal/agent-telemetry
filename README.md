@@ -75,10 +75,12 @@ Models table lists each `model × tool` row separately.
 Eight views in a left-hand sidebar, light + dark theme, everything date-filterable, and the
 **name of this machine** at the top — so a screenshot always says which computer it came from.
 
-One control row sits above every view: the **period** (Today · 7D · 30D · 90D · All, plus
-*More* for this week / month / quarter / year, last month and a custom range), the **measure**
-(**Cost · Tokens · Time** — every chart and ranking switches together), and a single
-**Filters** panel (tool, provider, model, project, IDE / surface, and *exact tokens only*).
+The controls read as a sentence above every view — "**Tokens** from **all tools** over
+**the last 30 days** ‹ ›" — click a bold phrase to change it; the arrows step back and
+forward a period at a time. Inside them: the **measure** (**Tokens · Cost · Messages · Time**
+— tokens by default; every chart and ranking switches together), the **period** (today, the
+last 7–365 days, this week / month / quarter / year, last month, all time, or a custom
+range), and a single **Filters** panel (tool, provider, model, project, IDE / surface, and *exact tokens only*).
 Active filters show as removable chips. Every figure is compared with the equal-length
 period just before it, and every chart has a **table view** (the grid icon) so nothing is
 readable only by hovering.
@@ -116,12 +118,20 @@ tool calls, active time, cache % — search, sort, and click any row for a detai
 **Optimize** — suggestions derived from your own logs, ranked by what they'd save: sessions
 re-reading a very large context, thinking share, tool-heavy sessions that never delegated,
 cache written but never read, a costly model doing light work, what each **Skill** costs,
-MCP servers you connected but never call, Codex reasoning effort. Nothing is shown unless
+edits that needed a retry, oversized **CLAUDE.md / AGENTS.md**, sessions that open heavier
+than your leanest ones, wasted file reads, installed skills and agents you never use, and
+MCP servers you never call, barely use, or load everywhere but use in one project. Nothing is shown unless
 your data supports it, and because the estimates overlap they are never summed.
 
 **Storage** — see below.
 
-**Keyboard** — `1`/`7`/`3`/`9`/`a` ranges, `m` month-to-date, `/` search, `t` theme, `r` refresh.
+**Keyboard** — `1`/`7`/`3`/`9`/`a` ranges, `m` month-to-date, `,` / `.` previous / next
+period, `Shift`+`T`/`C`/`M`/`A` tokens / cost / messages / active time, `[` sidebar, `/`
+search, `t` theme, `r` refresh.
+
+**Version and updates** — the sidebar footer shows the running version. *Check for updates*
+asks GitHub (the only time the dashboard goes online, and only when you click); *Update*
+fast-forwards your checkout and restarts the server. It refuses if you have local edits.
 
 ---
 

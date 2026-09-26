@@ -27,16 +27,39 @@ const metricTitle = k => ({cost:"Est. spend", tokens:"Tokens", time:"Active time
 const hasPrev = () => S.preset !== "all";
 const prevLabel = () => { const n = rangeDays(); return n === 1 ? "previous day" : `previous ${n} days`; };
 
-/* ---------------- period ---------------- */
-const SEG_PRESETS = ["today","7d","30d","90d","all"];
+/* ---------------- the query sentence ----------------
+   "Tokens from all tools over the last 30 days ‹ ›" — each bold phrase opens its
+   menu, and the arrows step the period back or forward by its own length. */
+const MEASURES = [
+  ["tokens","Tokens","everything the models read and wrote, cache included"],
+  ["cost","Cost","estimated at API list prices — not what a subscription charges"],
+  ["messages","Messages","replies the assistants sent"],
+  ["time","Time","active time, counting only gaps under 5 minutes"],
+];
+const PERIOD_GROUPS = [
+  ["Recent", ["today","yesterday","7d","14d","30d","90d"]],
+  ["Calendar", ["wtd","mtd","lastmonth","qtd","ytd"]],
+  ["Longer", ["180d","365d","all"]],
+];
+/* the period as it reads mid-sentence, and the word that introduces it */
+function periodPhrase(){
+  const p = S.preset;
+  if(p==="custom"){ const r = range(), same = r.from.slice(0,4)===r.to.slice(0,4);
+    return ["from", r.from===r.to ? fmtDay(r.from,true) : fmtDay(r.from,!same)+" – "+fmtDay(r.to,true)]; }
+  if(p==="today"||p==="yesterday") return ["", p];
+  if(p==="all") return ["across", "all time"];
+  if(p==="lastmonth") return ["in", "last month"];
+  if(["wtd","mtd","qtd","ytd"].includes(p)) return ["", presetLabel(p).toLowerCase()];
+  return ["over", "the " + presetLabel(p).toLowerCase()];
+}
 function buildRangePanel(){
   const p = document.getElementById("rangePanel");
   const r = range();
-  const more = PRESETS.filter(([k])=>!SEG_PRESETS.includes(k));
-  p.innerHTML = `<div class="dd-head">Period</div>` +
-    more.map(([k,l])=>`<div class="dd-item${S.preset===k?" sel":""}" data-preset="${k}">
-        <span>${l}</span><span class="chk">${S.preset===k?"✓":""}</span></div>`).join("") +
-    `<div class="dd-pin">
+  p.innerHTML = `<div class="q-periods">` + PERIOD_GROUPS.map(([g, keys]) =>
+      `<div class="q-pgroup"><div class="dd-head">${g}</div>` + keys.map(k =>
+        `<button class="q-chip${S.preset===k?" sel":""}" data-preset="${k}">${esc(presetLabel(k))}</button>`).join("") + `</div>`).join("")
+    + `</div>
+     <div class="dd-pin">
        <div class="dd-head">Custom range</div>
        <div class="dd-item" style="gap:6px;cursor:default">
          <input type="date" class="field" id="dFrom" value="${r.from}" style="flex:1;min-width:0">
@@ -45,6 +68,11 @@ function buildRangePanel(){
        </div>
        <button class="btn primary" data-apply="1" style="width:100%;justify-content:center;margin-top:6px">Apply custom range</button>
      </div>`;
+}
+function buildMetricPanel(){
+  document.getElementById("metricPanel").innerHTML = `<div class="dd-head">Measure everything in</div>` +
+    MEASURES.map(([k,l,d],i) => `<button class="q-opt${S.metric===k?" sel":""}" data-m="${k}">
+      <span class="q-opt-l">${l}<kbd>${"TCMA"[i]}</kbd></span><span class="q-opt-d">${esc(d)}</span></button>`).join("");
 }
 function fmtDay(k, withYear){
   const d = new Date(k+"T00:00:00");
@@ -57,16 +85,32 @@ function rangeText(){
   return (S.preset==="custom" ? "Custom range" : presetLabel(S.preset)) + " · " + span;
 }
 function syncRangeUI(){
-  const inSeg = SEG_PRESETS.includes(S.preset);
-  document.querySelectorAll("#periodSeg button").forEach(b=>b.classList.toggle("on", b.dataset.p===S.preset));
-  document.getElementById("rangeLabel").textContent =
-    inSeg ? "More" : (S.preset==="custom" ? "Custom" : presetLabel(S.preset));
-  document.getElementById("rangeMore").classList.toggle("on", !inSeg);
-  document.getElementById("rangeText").textContent = rangeText();
+  const [over, phrase] = periodPhrase(), r = range();
+  document.getElementById("qOver").textContent = over;
+  document.getElementById("qOver").hidden = !over;
+  document.getElementById("rangeLabel").textContent = phrase;
+  // the dates themselves, unless the phrase already is the dates
+  const span = r.from===r.to ? fmtDay(r.from,true) : fmtDay(r.from, r.from.slice(0,4)!==r.to.slice(0,4)) + " – " + fmtDay(r.to,true);
+  document.getElementById("rangeText").textContent = S.preset==="custom" ? "" : span;
+  document.getElementById("stepFwd").disabled = r.to >= dkey(new Date());
+  document.getElementById("stepBack").disabled = S.preset==="all";
   if(!document.getElementById("ddRange").classList.contains("open")) buildRangePanel();
 }
 function syncMetricUI(){
-  document.querySelectorAll("#metricSeg button").forEach(b=>b.classList.toggle("on", b.dataset.m===S.metric));
+  document.getElementById("qMetric").textContent = metricTitle().replace("Est. spend","Cost");
+  buildMetricPanel();
+}
+/* Move the whole window back or forward by its own length: last 30 days → the 30
+   before them. The result is a custom range; forward stops at today. */
+function stepPeriod(dir){
+  if(S.preset==="all") return;
+  const r = range(), len = Math.round((new Date(r.to+"T00:00:00")-new Date(r.from+"T00:00:00"))/86400000)+1;
+  const shift = k => { const d = new Date(k+"T00:00:00"); d.setDate(d.getDate()+dir*len); return dkey(d); };
+  const today = dkey(new Date());
+  let from = shift(r.from), to = shift(r.to);
+  if(dir > 0 && r.to >= today) return;
+  if(to > today){ to = today; }
+  S.preset = "custom"; S.from = from; S.to = to; renderAll();
 }
 
 /* ---------------- filters ---------------- */
@@ -112,7 +156,14 @@ function buildFilterPanels(){
     Object.entries(tokByIde).sort((a,b)=>b[1]-a[1]).map(([k,v])=>({key:k,label:k,value:fmtTok(v)})), S.ides);
   const n = (S.tools.size!==ORDER.length?1:0) + (S.provs.size?1:0) + (S.models.size?1:0)
           + (S.projs.size?1:0) + (S.ides.size?1:0) + (S.exactOnly?1:0);
-  document.getElementById("filterCount").textContent = n || "";
+  // the tools phrase: "all tools", "Claude Code", "Claude Code & Codex", "3 tools";
+  // any other filter shows as a count beside it
+  const picked = ORDER.filter(x => S.tools.has(x) && seen.has(x)), all = ORDER.filter(x => seen.has(x));
+  document.getElementById("qTools").textContent = picked.length===all.length ? "all tools"
+    : !picked.length ? "no tools" : picked.length<=2 ? picked.map(x=>SRC[x].label).join(" & ")
+    : `${picked.length} tools`;
+  const other = n - (S.tools.size!==ORDER.length?1:0);
+  document.getElementById("filterCount").textContent = other ? `+${other} filter${other>1?"s":""}` : "";
   document.getElementById("filtersBtn").classList.toggle("on", n>0);
   document.getElementById("reliableBtn").checked = S.exactOnly;
 }
@@ -188,7 +239,7 @@ function viewOverview(d){
   const activeDays = t.days.size;
 
   // hero — the one number this view leads with, in the measure the user picked
-  const big = S.metric==="cost" ? fmtUSD2(cur) : S.metric==="time" ? fmtDur(cur) : fmtTok(cur);
+  const big = S.metric==="cost" ? fmtUSD2(cur) : fmtOf()(cur);
   document.getElementById("ovHero").innerHTML = heroHTML({
     label: metricTitle() + (S.metric==="cost" ? " at API list prices" : ""),
     value: big,
@@ -226,7 +277,7 @@ function viewOverview(d){
   if(S.metric!=="time"){ const a = d.recs.reduce((x,r)=>x+(r.active||0),0), pa = pd ? pd.recs.reduce((x,r)=>x+(r.active||0),0) : null;
     tiles.push(tile("Active time", a, pa, r=>r.active||0, fmtDur, false)); }
   tiles.push(tile("Your prompts", t.user, pt&&pt.user, r=>r.user||0, fmtNum));
-  tiles.push(tile("Assistant replies", t.msgs, pt&&pt.msgs, r=>r.asst||0, fmtNum));
+  if(S.metric!=="messages") tiles.push(tile("Assistant replies", t.msgs, pt&&pt.msgs, r=>r.asst||0, fmtNum));
   tiles.push({l:"Sessions", v:fmtNum(d.sessions.length), d: pd ? deltaHTML(d.sessions.length, pd.sessions.length) : ""});
   const ctx = t.in+t.cr+t.cc, pctx = pt ? pt.in+pt.cr+pt.cc : 0;
   tiles.push({l:"Cache hit rate", v: ctx ? fmtPct(t.cr/ctx) : "—",
@@ -850,6 +901,54 @@ function openSession(i){
     ${s.archived?'<div class="warnbar">This log has been pruned from disk; its numbers are kept from an earlier scan.</div>':""}
   `);
 }
+
+/* ---------------- VERSION + UPDATE ----------------
+   The running version comes from the checkout's git metadata. Checking for an
+   update is the one action that contacts the network, and only on a click. */
+let UPD = null;              // last check result, or {busy|error}
+function versionLabel(v){
+  if(!v || !v.git) return "Unknown build";
+  const m = /^(v[\d.]+)(?:-(\d+)-g[0-9a-f]+)?$/.exec(v.describe||"");
+  return m ? `${m[1]}${m[2]?` +${m[2]}`:""} · ${v.commit}` : v.commit;
+}
+function renderVersion(){
+  const el = document.getElementById("version"); if(!el) return;
+  const v = RAW.version || {};
+  const title = v.git ? `${v.describe||v.commit} · ${v.branch} · committed ${v.date}` : "not a git checkout";
+  let action = "";
+  if(!v.git) action = "";
+  else if(UPD && UPD.busy) action = `<span class="dim">${esc(UPD.busy)}</span>`;
+  else if(UPD && UPD.error) action = `<span class="ver-err" title="${esc(UPD.error)}">${esc(UPD.error)}</span> <button class="link" data-upd="check">Retry</button>`;
+  else if(UPD && UPD.behind) action = `<button class="btn sm primary" data-upd="apply" title="${esc(UPD.changes.join("\n"))}">Update · ${UPD.behind} new</button>`;
+  else if(UPD) action = `<span class="dim">Up to date</span>`;
+  else action = `<button class="link" data-upd="check">Check for updates</button>`;
+  el.innerHTML = `<span class="ver" title="${esc(title)}">${esc(versionLabel(v))}</span>${action?`<span class="ver-a">${action}</span>`:""}`;
+}
+async function updateAction(action){
+  UPD = {busy: action==="apply" ? "Updating…" : "Checking…"}; renderVersion();
+  try{
+    const r = await fetch("/api/update",{method:"POST",
+      headers:{"Content-Type":"application/json"}, body:JSON.stringify({action})});
+    const out = await r.json();
+    if(!r.ok) throw new Error(out.error||"request failed");
+    if(out.restarting){
+      UPD = {busy:"Restarting…"}; renderVersion();
+      const was = (RAW.version||{}).commit;
+      for(let i=0;i<60;i++){                  // wait for the new process, then reload
+        await new Promise(res=>setTimeout(res,1000));
+        try{ const x = await (await fetch("/api/data",{cache:"no-store"})).json();
+          if(x.version && x.version.commit!==was && !x.meta.building){ location.reload(); return; } }catch(e){}
+      }
+      UPD = {error:"Restart is taking long — reload the page"}; renderVersion(); return;
+    }
+    UPD = out;
+  }catch(e){ UPD = {error: String(e.message||e)}; }
+  renderVersion();
+}
+document.addEventListener("click", e => {
+  const b = e.target.closest("[data-upd]"); if(!b) return;
+  e.preventDefault(); updateAction(b.dataset.upd);
+});
 
 /* ---------------- STORAGE ---------------- */
 function viewStorage(){
@@ -1499,10 +1598,166 @@ function findRetryTax(d){
   };
 }
 
+/* ---- setup checks: what every request carries before any work starts ---- */
+const inRangeD = (x, d) => x.date>=d.r.from && x.date<=d.r.to;
+/* requests and what one more token costs on each, for records matching fn */
+function perTokenCost(d, fn, useReq){
+  let n = 0, per = 0;
+  for(const r of d.recs){ if(r.model==="(user)" || !fn(r)) continue;
+    const calls = useReq ? (r.req||r.asst||0) : (r.asst||0);
+    n += calls; per += calls * ((RAW.prices && RAW.prices[r.model]) || priceOf(r.model, r.date))[4] / 1e6; }
+  return {n, per};           // per = $ for one extra token on every one of those requests
+}
+const famOf = src => src==="codex" ? "codex" : (src==="claude"||src==="claude-desktop") ? "claude" : null;
+
+/* CLAUDE.md / AGENTS.md ride along on every request (cached, so at the cache-read
+   rate). Priced from this user's own request count and rates in range. */
+function findInstructionFiles(d){
+  const files = (RAW.context_files||[]).filter(f => f.bytes > 8192);
+  if(!files.length) return null;
+  const rows = []; let impact = 0; const tools = new Set();
+  for(const f of files){
+    const tok = f.bytes/4;
+    const {n, per} = perTokenCost(d, r => famOf(r.source)===f.source && (f.project==="*" || r.project===f.project), f.source==="codex");
+    if(!n) continue;
+    const cost = tok * per, save = cost * (f.bytes-4096)/f.bytes;
+    impact += save; tools.add(f.source==="codex" ? "codex" : "claude");
+    rows.push([f.file.replace(RAW.home||"~","~"), `${fmtBytes(f.bytes)} · ~${fmtTok(tok)} tokens`,
+      `${fmtNum(n)} requests`, fmtUSD(cost)]);
+  }
+  if(!rows.length || impact < 0.5) return null;
+  return {
+    id:"instruction-files", impact, sev: impact>20?"high":"low", tools:[...tools],
+    title:`${rows.length} instruction file${rows.length>1?"s are":" is"} over 8 KB and sent with every request`,
+    body:`CLAUDE.md and AGENTS.md are loaded into the context of <b>every</b> request in that project — `
+      +`cheap per request because they're cached, but it adds up. Trimmed to 4 KB, these would cost about `
+      +`<b>${fmtUSD(impact)}</b> less over the range.`,
+    todo:"Keep only what the agent needs on every turn: commands, conventions, gotchas. Move long "
+      +"reference material into separate files the agent reads when relevant.",
+    rows
+  };
+}
+
+/* The first request of a session carries the fixed opening load: system prompt,
+   tool definitions, instruction files, memory. Compared with the user's OWN leanest
+   sessions (10th percentile), not with a guessed baseline. */
+function findHeavyOpeners(d){
+  const out = [], tools = [];
+  let impact = 0;
+  for(const src of ["claude","codex"]){
+    const ss = d.sessions.filter(s => famOf(s.source)===src && !s.subagent && s.open_ctx);
+    if(ss.length < 5) continue;
+    const v = ss.map(s=>s.open_ctx).sort((a,b)=>a-b);
+    const lean = v[Math.floor(v.length*0.1)], med = v[Math.floor(v.length/2)];
+    if(med < lean*1.3 || med < 20000) continue;
+    const {n, per} = perTokenCost(d, r => famOf(r.source)===src, src==="codex");
+    const reqPerSess = n / Math.max(1, ss.length);
+    const extra = ss.reduce((a,s)=>a+Math.max(0, s.open_ctx-lean),0) * reqPerSess * (per/Math.max(1,n));
+    if(extra <= 0) continue;
+    impact += extra; tools.push(src);
+    out.push([src==="codex"?"Codex":"Claude Code", `median ${fmtTok(med)} tokens`, `leanest ${fmtTok(lean)}`, `${fmtUSD(extra)} over the range`]);
+  }
+  if(!out.length || impact < 1) return null;
+  return {
+    id:"heavy-openers", impact, sev: impact>30?"high":"low", tools,
+    title:"Sessions start heavier than they need to",
+    body:`Before you type anything, a session already carries its system prompt, tool definitions, `
+      +`instruction files and memory — and every later request re-reads them. Your typical session opens well `
+      +`above your leanest ones; the difference costs about <b>${fmtUSD(impact)}</b> in this range.`,
+    todo:"Disconnect MCP servers and plugins you don't use in this project, trim CLAUDE.md / AGENTS.md, "
+      +"and prune stale memory. Compare a fresh session's first request after each change.",
+    rows: out
+  };
+}
+
+/* Re-reading an unchanged file, or reading generated / vendored folders, adds tokens
+   to context for nothing. Lower-bound cost: each such token written to cache once. */
+function findReadWaste(d){
+  const rs = (RAW.reads||[]).filter(x => passSrc(x.source) && passProj(x.project) && inRangeD(x, d));
+  const t = rs.reduce((a,x)=>({rr:a.rr+x.rereads, j:a.j+x.junk, rt:a.rt+x.reread_tok, jt:a.jt+x.junk_tok, n:a.n+x.reads}), {rr:0,j:0,rt:0,jt:0,n:0});
+  const tok = t.rt + t.jt;
+  if(tok < 20000) return null;
+  const recs = d.recs.filter(r => famOf(r.source)==="claude" && r.model!=="(user)");
+  const top = recs.sort((a,b)=>(b.cost||0)-(a.cost||0))[0];
+  const cw = top ? ((RAW.prices && RAW.prices[top.model]) || priceOf(top.model))[2] : 0;
+  const impact = tok * cw / 1e6;
+  return {
+    id:"read-waste", impact, sev:"low", tools:["claude"],
+    title:`${fmtTok(tok)} tokens of reads that added nothing new`,
+    body:`${fmtNum(t.rr)} of ${fmtNum(t.n)} file reads re-read a file that hadn't changed since the last `
+      +`read (${fmtTok(t.rt)} tokens), and ${fmtNum(t.j)} read generated or dependency folders — `
+      +`node_modules, dist, build, lockfiles (${fmtTok(t.jt)} tokens). Each stays in context for the rest `
+      +`of the session.`,
+    todo:"Point the agent at source, not build output: add those folders to .gitignore / a "
+      +"permissions deny list, and ask for a specific range when a file is large.",
+    rows: []
+  };
+}
+
+/* Installed skills and subagents are described in every session's context whether
+   used or not. Only judged over at least two weeks, so a quiet week isn't "unused". */
+function findUnusedInstalled(d){
+  const inst = (RAW.installed||{}).items||[];
+  if(!inst.length || !passSrc("claude") || rangeDays() < 14) return null;
+  const norm = x => String(x||"").toLowerCase().replace(/^.*:/,"");
+  const used = new Set();
+  for(const u of (RAW.installed.used||[])) if(inRangeD(u, d)) used.add(u.kind+"\t"+norm(u.name));
+  for(const x of (RAW.skills||[])) if(inRangeD(x, d)) used.add("skill\t"+norm(x.name));
+  const idle = inst.filter(i => !used.has(i.kind+"\t"+norm(i.name)));
+  if(!idle.length) return null;
+  const {n, per} = perTokenCost(d, r => famOf(r.source)==="claude", false);
+  const tok = idle.reduce((a,i)=>a+i.desc_chars/4, 0);
+  const impact = tok * per;
+  return {
+    id:"unused-installed", impact, sev:"info", tools:["claude"],
+    title:`${idle.length} installed skill${idle.length>1?"s":""} or agent${idle.length>1?"s":""} never used in this range`,
+    body:`Each installed skill and subagent is listed, with its description, in every Claude Code session — `
+      +`about ${fmtTok(tok)} tokens for these ${idle.length} across ${fmtNum(n)} requests.`,
+    todo:"Remove the ones you don't reach for from ~/.claude/skills and ~/.claude/agents (or the "
+      +"project's .claude/), or move project-specific ones into that project.",
+    rows: idle.slice(0,8).map(i => [i.name, i.kind, i.scope==="user"?"all projects":i.project,
+      i.desc_chars ? `~${fmtTok(i.desc_chars/4)} tokens` : "no description"])
+  };
+}
+
+/* MCP servers whose tools are mostly unused, and servers used in one project but
+   loaded in many — both from what Claude Code offered each session. */
+function findMcpShape(d){
+  const inv = RAW.mcp_inventory; if(!inv || !passSrc("claude")) return null;
+  const loaded = {}, calls = {}, projL = {}, projC = {};
+  for(const x of inv.loaded) if(inRangeD(x, d)){ loaded[x.server]=(loaded[x.server]||0)+x.sessions;
+    (projL[x.server]=projL[x.server]||new Set()).add(x.project); }
+  for(const x of (inv.calls||[])) if(inRangeD(x, d)){ calls[x.server]=(calls[x.server]||0)+x.calls;
+    (projC[x.server]=projC[x.server]||new Set()).add(x.project); }
+  const usedTools = {};
+  for(const t of toolCounts(d.r)){ if(!t.name.startsWith("mcp__")) continue;
+    const sv = t.name.slice(5).split("__")[0]; usedTools[sv]=(usedTools[sv]||0)+1; }
+  const rows = [];
+  for(const sv in loaded){
+    const offered = ((inv.servers[sv]||{}).tools||[]).length, used = usedTools[sv]||0;
+    const nl = (projL[sv]||new Set()).size, nc = (projC[sv]||new Set()).size;
+    if(loaded[sv] >= 3 && offered >= 10 && used && used/offered <= 0.1)
+      rows.push([sv, `${used} of ${offered} tools used`, `${fmtNum(loaded[sv])} sessions`, "mostly unused"]);
+    else if(nc === 1 && nl >= 3 && calls[sv])
+      rows.push([sv, `used only in ${[...projC[sv]][0]}`, `loaded in ${nl} projects`, "scope it"]);
+  }
+  if(!rows.length) return null;
+  return {
+    id:"mcp-shape", impact:0, sev:"info", tools:["claude"],
+    title:`${rows.length} MCP server${rows.length>1?"s":""} loaded far more widely than they're used`,
+    body:`Every session a server is loaded in starts it and offers its tools to the model. These are either `
+      +`used for a sliver of what they offer, or only ever used in one project while loaded in several.`,
+    todo:"For a one-project server, move it from ~/.claude.json into that project's .mcp.json. For a "
+      +"mostly-unused one, check whether a lighter server or a plain CLI covers the few tools you call.",
+    rows
+  };
+}
+
 const OPT_FINDERS = [findBigContext, findCacheWaste, findModelFit, findContextTax,
                      findSubagents, findSubagentShare, findSkills, findCodexEffort,
                      d => findIdleMCP(d, "claude"), d => findIdleMCP(d, "codex"),
-                     findThinking, findLowCache, findRetryTax];
+                     findThinking, findLowCache, findRetryTax, findInstructionFiles,
+                     findHeavyOpeners, findReadWaste, findUnusedInstalled, findMcpShape];
 
 /* Say plainly when a suggestion only applies to one tool — the MCP, Skills and
    /compact advice is Claude Code's, and a Codex or Cursor user should not read it
@@ -1635,13 +1890,22 @@ function setView(v){
 async function load(){
   try{
     const r=await fetch("/api/data"); RAW=await r.json();
+  }catch(e){
+    console.error(e);
+    document.getElementById("statusText").innerHTML='<span style="color:var(--bad)">cannot reach /api/data — is dashboard.py running?</span>';
+    document.getElementById("livedot").classList.add("off");
+    return;
+  }
+  // a render failure is a bug, not a dead server — say so, and let the headless
+  // sweep see it (data-js-error) instead of reporting "cannot reach"
+  try{
     const dates=RAW.records.map(x=>x.date).filter(x=>x!=="0000-00-00");
     const lo=dates.length?dates.reduce((a,b)=>a<b?a:b):"—";
     const hi=dates.length?dates.reduce((a,b)=>a>b?a:b):"—";
     const fresh=new Date(RAW.meta.last_refresh*1000).toLocaleTimeString([], {hour:"2-digit", minute:"2-digit"});
     document.getElementById("statusText").textContent = (S.live ? "Live" : "Paused") + " · updated " + fresh;
-    document.getElementById("coverage").textContent =
-      `${fmtNum(RAW.meta.files)} logs · ${lo} → ${hi}. Local only — nothing leaves this machine.`;
+    document.getElementById("coverage").textContent = `${fmtNum(RAW.meta.files)} logs · ${lo} → ${hi}`;
+    renderVersion();
     const dev = RAW.device || {};
     document.getElementById("devName").textContent = dev.name || "This computer";
     document.getElementById("devOs").textContent = dev.os || "";
@@ -1650,8 +1914,8 @@ async function load(){
     renderAll();
   }catch(e){
     console.error(e);
-    document.getElementById("statusText").innerHTML='<span style="color:var(--bad)">cannot reach /api/data — is dashboard.py running?</span>';
-    document.getElementById("livedot").classList.add("off");
+    document.documentElement.dataset.jsError = "load: " + (e && e.message || e);
+    document.getElementById("statusText").innerHTML='<span style="color:var(--bad)">display error — see the console</span>';
   }
 }
 async function loadStorage(){
@@ -1665,10 +1929,8 @@ document.getElementById("tabs").addEventListener("click",e=>{
 });
 document.querySelector(".brand").addEventListener("click",e=>{ e.preventDefault(); setView("overview"); });
 addEventListener("hashchange",()=>{ const v=location.hash.slice(1); if(v!==S.view && VIEW_TITLES[v]) setView(v); });
-document.getElementById("periodSeg").addEventListener("click",e=>{
-  const b=e.target.closest("button[data-p]"); if(!b) return;
-  S.preset=b.dataset.p; renderAll();
-});
+document.getElementById("stepBack").addEventListener("click",()=>stepPeriod(-1));
+document.getElementById("stepFwd").addEventListener("click",()=>stepPeriod(1));
 document.getElementById("rangePanel").addEventListener("click",e=>{
   const it=e.target.closest("[data-preset]");
   if(it){ S.preset=it.dataset.preset; closeDD(); renderAll(); return; }
@@ -1677,9 +1939,9 @@ document.getElementById("rangePanel").addEventListener("click",e=>{
     if(a&&b){ S.preset="custom"; S.from=a<b?a:b; S.to=a<b?b:a; closeDD(); renderAll(); }
   }
 });
-document.getElementById("metricSeg").addEventListener("click",e=>{
+document.getElementById("metricPanel").addEventListener("click",e=>{
   const b=e.target.closest("button[data-m]"); if(!b) return;
-  S.metric=b.dataset.m; renderAll();
+  S.metric=b.dataset.m; closeDD(); renderAll();
 });
 document.getElementById("rateSeg").addEventListener("click",e=>{
   const b=e.target.closest("button[data-r]"); if(!b) return;
@@ -1783,7 +2045,7 @@ const QP=new URLSearchParams(location.search);
 { let saved="auto"; try{ saved=localStorage.getItem("aiu.theme")||"auto"; }catch(e){}
   applyTheme(QP.get("theme")||saved); }
 if(QP.get("range")) S.preset=QP.get("range");
-if(QP.get("metric") && ["cost","tokens","time"].includes(QP.get("metric"))) S.metric=QP.get("metric");
+if(QP.get("metric") && ["cost","tokens","time","messages"].includes(QP.get("metric"))) S.metric=QP.get("metric");
 if(location.hash && VIEW_TITLES[location.hash.slice(1)]) S.view=location.hash.slice(1);
 load().then(()=>{ if(S.view==="storage") loadStorage(); });
 setTimeout(loadStorage, 1200);

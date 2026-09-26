@@ -856,6 +856,70 @@ def activity_of(agg):
 
 
 # ===========================================================================
+# READ HYGIENE — reads that put tokens into context for nothing (Claude Code)
+# ===========================================================================
+# A file read again with no edit to it since (and no /compact in between) adds
+# the same tokens to context a second time; a read inside generated or vendored
+# folders is rarely what anyone meant. Counted per day, with the size of what
+# each such read returned (chars / 4) — never the content itself.
+_JUNK_PATH = re.compile(
+    r"(^|[/\\])(node_modules|dist|build|out|\.next|\.nuxt|\.svelte-kit|target|vendor|"
+    r"__pycache__|\.venv|venv|\.git|coverage|\.cache|\.turbo|Pods|DerivedData)([/\\]|$)"
+    r"|\.min\.(js|css)$|(^|[/\\])(package-lock\.json|yarn\.lock|pnpm-lock\.yaml|"
+    r"poetry\.lock|Cargo\.lock|Gemfile\.lock)$")
+
+
+def _read_hygiene(agg, date, name, inp, tool_id):
+    st = agg["state"]
+    seen, ids = st.setdefault("rd", {}), st.setdefault("rid", {})
+    kind = _tool_kind(name)
+    if kind == "edit":
+        p = inp.get("file_path") or inp.get("notebook_path")
+        if p:
+            for k in [k for k in seen if k.split("\t", 1)[0] == p]:
+                del seen[k]      # changed: reading it again is how you see the change
+        return
+    if name not in ("Read", "Grep"):
+        return
+    p = str(inp.get("file_path") or inp.get("path") or "")
+    # [reads, re-reads, junk reads, re-read tokens, junk tokens]
+    e = agg.setdefault("reads", {}).setdefault(date, [0, 0, 0, 0, 0])
+    flag = None
+    if name == "Read" and p:
+        e[0] += 1
+        key = f"{p}\t{inp.get('offset')}\t{inp.get('limit')}"   # a different slice is new
+        if key in seen:
+            e[1] += 1
+            flag = 1
+        seen[key] = 1
+        if len(seen) > 512:
+            seen.clear()
+    if p and _JUNK_PATH.search(p):
+        e[2] += 1
+        flag = 2
+    if flag and tool_id:
+        ids[tool_id] = [date, flag]
+        while len(ids) > 64:
+            ids.pop(next(iter(ids)))
+
+
+def _result_chars(c):
+    if isinstance(c, str):
+        return len(c)
+    if isinstance(c, list):
+        return sum(len(b.get("text") or "") for b in c if isinstance(b, dict))
+    return 0
+
+
+def _read_result(agg, blk):
+    """A tool_result: if it answers a flagged read, book the tokens it returned."""
+    hit = agg["state"].get("rid", {}).pop(blk.get("tool_use_id"), None)
+    if hit:
+        e = agg.setdefault("reads", {}).setdefault(hit[0], [0, 0, 0, 0, 0])
+        e[2 + hit[1]] += _result_chars(blk.get("content")) // 4
+
+
+# ===========================================================================
 # CLAUDE CODE
 # ===========================================================================
 def _is_subagent_path(path):
@@ -907,6 +971,10 @@ def parse_claude(agg, lines):
         cwd = o.get("cwd")
         if cwd:
             project = _leaf(cwd) or cwd
+            agg["cwd"] = cwd
+        # after a compaction the old reads are gone from context; re-reading is fine
+        if o.get("isCompactSummary") or (o.get("type") == "system" and o.get("subtype") == "compact_boundary"):
+            agg["state"].get("rd", {}).clear()
         # session metadata Claude Code writes on every entry
         if o.get("gitBranch"):
             agg["branch"] = o["gitBranch"]
@@ -992,6 +1060,18 @@ def parse_claude(agg, lines):
                             _tool(agg, _buckets(dt)[0], blk.get("name", "tool"))
                             tools += 1
                             inp_ = blk.get("input") if isinstance(blk.get("input"), dict) else {}
+                            nm_ = blk.get("name", "tool")
+                            _read_hygiene(agg, _buckets(dt)[0], nm_, inp_, blk.get("id"))
+                            # which installed agents and skills get used, by name
+                            if nm_ in ("Agent", "Task") and isinstance(inp_.get("subagent_type"), str):
+                                k_ = f"{_buckets(dt)[0]}\tagent\t{inp_['subagent_type']}"
+                            elif nm_ == "Skill" and isinstance(inp_.get("skill"), str):
+                                k_ = f"{_buckets(dt)[0]}\tskill\t{inp_['skill']}"
+                            else:
+                                k_ = None
+                            if k_:
+                                iu = agg.setdefault("used_ext", {})
+                                iu[k_] = iu.get(k_, 0) + 1
                             _turn_tool(agg, blk.get("name", "tool"),
                                        file=inp_.get("file_path") or inp_.get("notebook_path"),
                                        cmd=inp_.get("command") if isinstance(inp_.get("command"), str) else None)
@@ -1014,6 +1094,10 @@ def parse_claude(agg, lines):
                 # sent, cached or not. Long conversations cost more even when cached.
                 # Taken from the full record, not the delta a later block adds.
                 ctx = full[0] + full[2] + full[3]
+                # what the session's first request carried before any work: system
+                # prompt, tool definitions, CLAUDE.md, memory — the fixed cost of opening one
+                if first and not side and agg.get("open_ctx") is None:
+                    agg["open_ctx"] = ctx
                 b = ("0-50k" if ctx < 50_000 else "50-150k" if ctx < 150_000
                      else "150-400k" if ctx < 400_000 else "400k+")
                 ck = f"{date0}\t{b}"
@@ -1046,6 +1130,10 @@ def parse_claude(agg, lines):
             content = msg.get("content")
             is_tool_result = isinstance(content, list) and any(
                 isinstance(b, dict) and b.get("type") == "tool_result" for b in content)
+            if is_tool_result and agg["state"].get("rid"):
+                for b in content:
+                    if isinstance(b, dict) and b.get("type") == "tool_result":
+                        _read_result(agg, b)
             org = o.get("origin")
             not_typed = (bool(o.get("isMeta")) or bool(o.get("isCompactSummary"))
                          or (isinstance(org, dict) and org.get("kind", "human") != "human")
@@ -1159,6 +1247,11 @@ def _codex_usage(agg, dt, u, model):
     ce["tok"] += inp + out; ce["n"] += 1
     T = agg["totals"]
     _turn_usage(agg, model, fresh, out, cached, written, 0)
+    # the first request's full input: the fixed cost of opening a session (not for
+    # a fork, whose first request carries its parent's whole history)
+    if (agg.get("open_ctx") is None and not agg.get("subagent")
+            and "replay_last" not in agg["state"] and model != "codex-auto-review"):
+        agg["open_ctx"] = inp
     T["in"] += fresh; T["cr"] += cached
     T["cc"] += written; T["cc5"] += written
     T["out"] += out; T["reason"] += reason; T["req"] += 1
@@ -1250,6 +1343,7 @@ def parse_codex(agg, lines):
             cwd = pl.get("cwd")
             if cwd:
                 project = _leaf(cwd) or cwd
+                agg["cwd"] = cwd
             if pl.get("originator"):
                 agg["entry"] = pl["originator"]
             if pl.get("cli_version"):
@@ -1277,6 +1371,7 @@ def parse_codex(agg, lines):
             cwd = pl.get("cwd")
             if cwd:
                 project = _leaf(cwd) or cwd
+                agg["cwd"] = cwd
         elif t == "token_usage_record":
             # Newer Codex builds (seen from 2026-09) log one of these per model
             # response. They are the better usage source: token_count below logs
@@ -2835,6 +2930,7 @@ def _finalize_session(agg, source, path):
         # "started" markers this Codex session's own file recorded. 0 for anyone
         # who didn't spawn any, so it renders identically to Cursor's absence case.
         "subagents": agg.get("_spawned", 0),
+        "open_ctx": agg.get("open_ctx"),
         "ide": _ide_of(source, agg),
         "active": round(active_total, 1),
         "bytes": agg.get("size", 0), "archived": bool(agg.get("archived")),
