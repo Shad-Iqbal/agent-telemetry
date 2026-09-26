@@ -3,352 +3,385 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="theme-color" content="#3987e5">
+<meta name="theme-color" content="#111317">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="AI Usage">
-<title>AI Usage Analytics</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2032%2032%22%3E%3Crect%20width%3D%2232%22%20height%3D%2232%22%20rx%3D%227%22%20fill%3D%22%230b0e13%22%2F%3E%3Crect%20x%3D%225.5%22%20y%3D%2217%22%20width%3D%225%22%20height%3D%229%22%20rx%3D%222.5%22%20fill%3D%22%233987e5%22%2F%3E%3Crect%20x%3D%2213.5%22%20y%3D%2211%22%20width%3D%225%22%20height%3D%2215%22%20rx%3D%222.5%22%20fill%3D%22%23199e70%22%2F%3E%3Crect%20x%3D%2221.5%22%20y%3D%225%22%20width%3D%225%22%20height%3D%2221%22%20rx%3D%222.5%22%20fill%3D%22%23d95926%22%2F%3E%3Ccircle%20cx%3D%2224%22%20cy%3D%225%22%20r%3D%223.4%22%20fill%3D%22%230b0e13%22%2F%3E%3Ccircle%20cx%3D%2224%22%20cy%3D%225%22%20r%3D%222.2%22%20fill%3D%22%23e9eef5%22%2F%3E%3C%2Fsvg%3E">
+<meta name="apple-mobile-web-app-title" content="AgentTelemetry">
+<title>AgentTelemetry</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2032%2032%22%3E%3Crect%20width%3D%2232%22%20height%3D%2232%22%20rx%3D%228%22%20fill%3D%22%23111317%22%2F%3E%3Cpath%20d%3D%22M5.5%2018h4.2l2.8-7.5%204.6%2013%203.2-8.5h2.2%22%20fill%3D%22none%22%20stroke%3D%22%23f2f4f7%22%20stroke-width%3D%222.6%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%2F%3E%3Ccircle%20cx%3D%2225.2%22%20cy%3D%2215%22%20r%3D%222.9%22%20fill%3D%22%233fb96f%22%2F%3E%3C%2Fsvg%3E">
 <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
 <link rel="manifest" href="/manifest.json">
 <link rel="stylesheet" href="/static/app.css">
 <script src="/chart.js"></script>
 </head>
 <body>
-<div class="wrap">
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-overview" viewBox="0 0 16 16"><rect x="2.2" y="2.2" width="4.8" height="4.8" rx="1.2"/><rect x="9" y="2.2" width="4.8" height="4.8" rx="1.2"/><rect x="2.2" y="9" width="4.8" height="4.8" rx="1.2"/><rect x="9" y="9" width="4.8" height="4.8" rx="1.2"/></symbol>
+    <symbol id="i-cost" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6"/><path d="M10 5.9c-.4-.6-1.1-.9-2-.9-1.2 0-2 .6-2 1.5 0 2 4 1 4 3 0 .9-.9 1.6-2.1 1.6-.9 0-1.7-.4-2.1-1M8 3.7v1.2M8 11.1v1.2"/></symbol>
+    <symbol id="i-models" viewBox="0 0 16 16"><path d="M8 1.9 13.4 5v6L8 14.1 2.6 11V5z"/><path d="M2.6 5 8 8.1 13.4 5M8 8.1v6"/></symbol>
+    <symbol id="i-tools" viewBox="0 0 16 16"><path d="M10.3 2.3a3.2 3.2 0 0 0-3.9 4.1l-4 4a1.4 1.4 0 0 0 2 2l4-4a3.2 3.2 0 0 0 4.1-3.9l-1.9 1.9-1.6-.4-.4-1.6z"/></symbol>
+    <symbol id="i-projects" viewBox="0 0 16 16"><path d="M2 4.6c0-.8.6-1.4 1.4-1.4h2.8l1.4 1.6h5c.8 0 1.4.6 1.4 1.4v5.4c0 .8-.6 1.4-1.4 1.4H3.4c-.8 0-1.4-.6-1.4-1.4z"/></symbol>
+    <symbol id="i-sessions" viewBox="0 0 16 16"><path d="M6 4h7.5M6 8h7.5M6 12h7.5"/><path d="M2.6 4h.8M2.6 8h.8M2.6 12h.8"/></symbol>
+    <symbol id="i-optimize" viewBox="0 0 16 16"><path d="M8 1.9l1.4 4.2 4.3 1.4-4.3 1.4L8 13.2 6.6 8.9 2.3 7.5l4.3-1.4z"/></symbol>
+    <symbol id="i-storage" viewBox="0 0 16 16"><ellipse cx="8" cy="3.9" rx="5.2" ry="1.9"/><path d="M2.8 3.9v8.2c0 1.1 2.3 1.9 5.2 1.9s5.2-.8 5.2-1.9V3.9M2.8 8c0 1.1 2.3 1.9 5.2 1.9s5.2-.8 5.2-1.9"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 16 16"><path d="M13.2 8a5.2 5.2 0 1 1-1.6-3.8"/><path d="M13.2 2.6v2.9h-2.9"/></symbol>
+    <symbol id="i-theme" viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.6"/><path d="M8 2.4v11.2a5.6 5.6 0 0 0 0-11.2z" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-settings" viewBox="0 0 16 16"><circle cx="8" cy="8" r="2.3"/><path d="M8 1.8v1.7M8 12.5v1.7M1.8 8h1.7M12.5 8h1.7M3.6 3.6l1.2 1.2M11.2 11.2l1.2 1.2M3.6 12.4l1.2-1.2M11.2 4.8l1.2-1.2"/></symbol>
+    <symbol id="i-filter" viewBox="0 0 16 16"><path d="M2.3 3.2h11.4L9.3 8.5v4.3l-2.6 1.3V8.5z"/></symbol>
+    <symbol id="i-device" viewBox="0 0 16 16"><rect x="3" y="3.3" width="10" height="7" rx="1.1"/><path d="M1.4 12.8h13.2"/></symbol>
+    <symbol id="i-table" viewBox="0 0 16 16"><rect x="2" y="2.6" width="12" height="10.8" rx="1.6"/><path d="M2 6.3h12M2 9.8h12M6.4 2.6v10.8"/></symbol>
+    <symbol id="i-chart" viewBox="0 0 16 16"><path d="M2.5 13.5h11"/><path d="M4.5 11V8M8 11V4.5M11.5 11V6.5"/></symbol>
+    <symbol id="i-chev" viewBox="0 0 16 16"><path d="M4.5 6.2 8 9.8l3.5-3.6"/></symbol>
+    <symbol id="i-search" viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.4"/><path d="m10.3 10.3 3.3 3.3"/></symbol>
+    <symbol id="i-pause" viewBox="0 0 16 16"><path d="M6 4v8M10 4v8"/></symbol>
+    <symbol id="i-play" viewBox="0 0 16 16"><path d="M5.5 3.8v8.4L12 8z"/></symbol>
+  </defs>
+</svg>
 
-  <header class="top">
-    <div>
-      <div class="brand"><span class="livedot" id="livedot"></span><h1>AI Usage Analytics</h1></div>
-      <div class="sub" id="subtitle">loading local logs…</div>
-    </div>
-    <div class="hdr-actions">
-      <button class="btn icon" id="themeBtn" title="Theme (t)">◐</button>
-      <button class="btn" id="liveBtn" title="Auto-refresh">live</button>
-      <button class="btn icon" id="refreshBtn" title="Refresh now (r)">↻</button>
-      <button class="btn icon" id="settingsBtn" title="Settings">⚙</button>
-    </div>
-  </header>
+<div class="app">
 
-  <nav class="tabs" id="tabs">
-    <button data-v="overview" class="on">Overview</button>
-    <button data-v="cost">Cost</button>
-    <button data-v="models">Models &amp; Providers</button>
-    <button data-v="tools">Tools &amp; Agents</button>
-    <button data-v="projects">Projects</button>
-    <button data-v="sessions">Sessions</button>
-    <button data-v="storage">Storage</button>
-    <span class="tab-gap"></span>
-    <button data-v="optimize" class="tab-special" title="Suggestions derived from your own usage">
-      <span class="spark">✦</span>Optimize</button>
-  </nav>
-
-  <div class="filters" id="filters">
-    <div class="frow">
-      <div class="dd" id="ddRange">
-        <button class="btn" data-dd="toggle"><span id="rangeLabel">Last 30 days</span> ▾</button>
-        <div class="dd-panel" id="rangePanel"></div>
+  <aside class="side" id="side">
+    <div class="side-top">
+      <a class="brand" href="#overview" data-v="overview" aria-label="AgentTelemetry — overview">
+        <svg class="mark" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8" class="mark-bg"/><path d="M5.5 18h4.2l2.8-7.5 4.6 13 3.2-8.5h2.2" class="mark-line"/><circle cx="25.2" cy="15" r="2.9" class="mark-dot"/></svg>
+        <span>AgentTelemetry</span>
+      </a>
+      <div class="device" id="device" title="This machine">
+        <svg class="ic"><use href="#i-device"/></svg>
+        <div class="device-txt"><div class="device-name" id="devName">This computer</div><div class="device-os" id="devOs">local</div></div>
       </div>
-      <div class="seg" id="cmpSeg" title="Compare with the preceding period">
-        <button data-c="0" class="on">No compare</button>
-        <button data-c="1">vs prev period</button>
-      </div>
-      <div class="dd" id="ddTools">
-        <button class="btn" data-dd="toggle"><span id="toolsLabel">All tools</span> ▾</button>
-        <div class="dd-panel" id="toolsPanel"></div>
-      </div>
-      <div class="dd" id="ddProv">
-        <button class="btn" data-dd="toggle"><span id="provLabel">All providers</span> ▾</button>
-        <div class="dd-panel" id="provPanel"></div>
-      </div>
-      <div class="dd" id="ddIde">
-        <button class="btn" data-dd="toggle"><span id="ideLabel">All IDEs</span> ▾</button>
-        <div class="dd-panel" id="idePanel"></div>
-      </div>
-      <div class="dd" id="ddProj">
-        <button class="btn" data-dd="toggle"><span id="projLabel">All projects</span> ▾</button>
-        <div class="dd-panel" id="projPanel"></div>
-      </div>
-      <div class="dd" id="ddModel">
-        <button class="btn" data-dd="toggle"><span id="modelLabel">All models</span> ▾</button>
-        <div class="dd-panel" id="modelPanel"></div>
-      </div>
-      <input type="search" class="field" id="search" placeholder="Search sessions / projects…">
-      <div class="spacer"></div>
-      <button class="btn" id="reliableBtn" title="Exclude sources whose token counts are estimated (Copilot, Cursor)">exact tokens only</button>
     </div>
-    <div class="pills" id="pills"></div>
+
+    <nav class="nav" id="tabs" aria-label="Views">
+      <button data-v="overview" class="on"><svg class="ic"><use href="#i-overview"/></svg><span>Overview</span></button>
+      <button data-v="cost"><svg class="ic"><use href="#i-cost"/></svg><span>Cost</span></button>
+      <button data-v="models"><svg class="ic"><use href="#i-models"/></svg><span>Models</span></button>
+      <button data-v="tools"><svg class="ic"><use href="#i-tools"/></svg><span>Tools &amp; agents</span></button>
+      <button data-v="projects"><svg class="ic"><use href="#i-projects"/></svg><span>Projects</span></button>
+      <button data-v="sessions"><svg class="ic"><use href="#i-sessions"/></svg><span>Sessions</span></button>
+      <button data-v="optimize"><svg class="ic"><use href="#i-optimize"/></svg><span>Optimize</span><span class="nav-count" id="optCount"></span></button>
+      <button data-v="storage"><svg class="ic"><use href="#i-storage"/></svg><span>Storage</span></button>
+    </nav>
+
+    <div class="side-foot">
+      <button class="status" id="liveBtn" title="Auto-refresh on — click to pause">
+        <span class="livedot" id="livedot"></span><span id="statusText">connecting…</span>
+      </button>
+      <div class="side-actions">
+        <button class="icon-btn" id="refreshBtn" title="Refresh now (r)" aria-label="Refresh now"><svg class="ic"><use href="#i-refresh"/></svg></button>
+        <button class="icon-btn" id="themeBtn" title="Theme (t)" aria-label="Theme"><svg class="ic"><use href="#i-theme"/></svg></button>
+        <button class="icon-btn" id="settingsBtn" title="Settings" aria-label="Settings"><svg class="ic"><use href="#i-settings"/></svg></button>
+      </div>
+      <div class="side-note" id="coverage">Local only — nothing leaves this machine.</div>
+    </div>
+  </aside>
+
+  <div class="main">
+    <header class="page-head" id="filters">
+      <div class="ph-row">
+        <div class="ph-title">
+          <h1 id="pageTitle">Overview</h1>
+          <div class="ph-sub" id="rangeText">&nbsp;</div>
+        </div>
+        <div class="ph-controls">
+          <div class="seg" id="periodSeg" role="group" aria-label="Period">
+            <button data-p="today">Today</button><button data-p="7d">7D</button><button data-p="30d" class="on">30D</button><button data-p="90d">90D</button><button data-p="all">All</button>
+          </div>
+          <div class="dd" id="ddRange">
+            <button class="btn" data-dd="toggle" id="rangeMore"><span id="rangeLabel">More</span><svg class="ic sm"><use href="#i-chev"/></svg></button>
+            <div class="dd-panel right" id="rangePanel"></div>
+          </div>
+          <div class="seg" id="metricSeg" role="group" aria-label="Measure">
+            <button data-m="cost" class="on">Cost</button><button data-m="tokens">Tokens</button><button data-m="time">Time</button>
+          </div>
+          <div class="dd" id="ddFilters">
+            <button class="btn" data-dd="toggle" id="filtersBtn"><svg class="ic sm"><use href="#i-filter"/></svg><span>Filters</span><span class="btn-count" id="filterCount"></span></button>
+            <div class="dd-panel right filters-panel" id="filtersPanel">
+              <div class="fp-grid">
+                <section class="fp-sec"><div class="fp-h"><span>Tools</span><span><a href="#" data-fall="tools">all</a> · <a href="#" data-fnone="tools">none</a></span></div><div class="fp-list" id="toolsPanel"></div></section>
+                <section class="fp-sec"><div class="fp-h"><span>Providers</span><a href="#" data-fclear="provs">clear</a></div><div class="fp-list" id="provPanel"></div></section>
+                <section class="fp-sec"><div class="fp-h"><span>Models</span><a href="#" data-fclear="models">clear</a></div><div class="fp-list tall" id="modelPanel"></div></section>
+                <section class="fp-sec"><div class="fp-h"><span>Projects</span><a href="#" data-fclear="projs">clear</a></div><div class="fp-list tall" id="projPanel"></div></section>
+                <section class="fp-sec"><div class="fp-h"><span>IDE / surface</span><a href="#" data-fclear="ides">clear</a></div><div class="fp-list" id="idePanel"></div></section>
+                <section class="fp-sec"><div class="fp-h"><span>Accuracy</span></div>
+                  <label class="switch"><input type="checkbox" id="reliableBtn"><span>Exact tokens only</span></label>
+                  <div class="fp-note">Hides tools whose token counts are estimates.</div></section>
+              </div>
+              <div class="fp-foot"><button class="btn" id="filtersReset">Reset all filters</button></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="pills" id="pills"></div>
+    </header>
+
+    <main id="views">
+
+      <!-- ================= OVERVIEW ================= -->
+      <section class="view on" id="v-overview">
+        <div class="grid">
+          <div class="card hero col-12">
+            <div class="hero-grid">
+              <div class="hero-main" id="ovHero"></div>
+              <div class="hero-chart">
+                <div class="card-h">
+                  <div><h3 id="dailyTitle">Per day, by tool</h3></div>
+                  <div class="card-a"><button class="tv" data-tv="dailyChart" title="Show as table" aria-label="Show as table"><svg class="ic"><use href="#i-table"/></svg></button></div>
+                </div>
+                <div class="legend" id="dailyLegend"></div>
+                <div class="chartbox" style="height:230px"><canvas id="dailyChart"></canvas></div>
+                <div class="tv-table" id="tv-dailyChart" hidden></div>
+              </div>
+            </div>
+          </div>
+          <div class="tiles col-12" id="kpis"></div>
+          <div class="card col-5">
+            <div class="card-h"><div><h3>By tool</h3><p class="card-sub" id="toolShareSub">share of the selected range</p></div></div>
+            <div id="toolShare"></div>
+          </div>
+          <div class="card col-7">
+            <div class="card-h"><div><h3>Top models</h3></div><div class="card-a"><a class="link" href="#models" data-go="models">All models</a></div></div>
+            <div class="tbl-wrap"><table id="topModels"></table></div>
+          </div>
+          <div class="card col-7">
+            <div class="card-h"><div><h3>Top projects</h3></div><div class="card-a"><a class="link" href="#projects" data-go="projects">All projects</a></div></div>
+            <div class="tbl-wrap"><table id="topProjects"></table></div>
+          </div>
+          <div class="card col-5">
+            <div class="card-h"><div><h3>Highlights</h3></div></div>
+            <div class="facts" id="highlights"></div>
+          </div>
+          <div class="card col-7">
+            <div class="card-h">
+              <div><h3>When you work</h3><p class="card-sub" id="hmHint">local hour × weekday, by tokens</p></div>
+              <div class="scale-legend">Less<span class="cell" style="background:var(--seq-1)"></span><span class="cell" style="background:var(--seq-3)"></span><span class="cell" style="background:var(--seq-5)"></span><span class="cell" style="background:var(--seq-6)"></span>More</div>
+            </div>
+            <div class="hm-wrap" id="heatmap"></div>
+          </div>
+          <div class="card col-5">
+            <div class="card-h"><div><h3>Token mix</h3><p class="card-sub">what each tool's tokens were spent on</p></div></div>
+            <div id="tokenMix"></div>
+          </div>
+          <div class="card col-12">
+            <div class="card-h">
+              <div><h3>Activity</h3><p class="card-sub" id="calHint">last 12 months · click a day to zoom in</p></div>
+              <div class="scale-legend">Less<span class="cell" style="background:var(--seq-0)"></span><span class="cell" style="background:var(--seq-2)"></span><span class="cell" style="background:var(--seq-4)"></span><span class="cell" style="background:var(--seq-6)"></span>More</div>
+            </div>
+            <div class="cal-wrap" id="calWrap"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ================= COST ================= -->
+      <section class="view" id="v-cost">
+        <div class="grid">
+          <div class="card hero col-12">
+            <div class="hero-grid">
+              <div class="hero-main" id="costHero"></div>
+              <div class="hero-chart">
+                <div class="card-h">
+                  <div><h3>Cumulative spend</h3><p class="card-sub" id="cumHint">running total by tool · dashed = previous period</p></div>
+                  <div class="card-a"><button class="tv" data-tv="cumChart" title="Show as table" aria-label="Show as table"><svg class="ic"><use href="#i-table"/></svg></button></div>
+                </div>
+                <div class="legend" id="cumLegend"></div>
+                <div class="chartbox" style="height:230px"><canvas id="cumChart"></canvas></div>
+                <div class="tv-table" id="tv-cumChart" hidden></div>
+              </div>
+            </div>
+          </div>
+          <div class="tiles col-12" id="costStats"></div>
+          <div class="card col-6">
+            <div class="card-h"><div><h3>Spend by model</h3></div></div>
+            <div id="costByModel"></div>
+          </div>
+          <div class="card col-6">
+            <div class="card-h"><div><h3>Spend by project</h3></div></div>
+            <div id="costByProj"></div>
+          </div>
+          <div class="card col-5">
+            <div class="card-h"><div><h3>Spend by token type</h3><p class="card-sub" id="costByKindSub">what each kind of token cost you</p></div></div>
+            <div id="costByKind"></div>
+          </div>
+          <div class="card col-7">
+            <div class="card-h">
+              <div><h3>Prompt-cache hit rate</h3><p class="card-sub">cache reads as a share of context tokens</p></div>
+              <div class="card-a"><button class="tv" data-tv="cacheChart" title="Show as table" aria-label="Show as table"><svg class="ic"><use href="#i-table"/></svg></button></div>
+            </div>
+            <div class="chartbox" style="height:230px"><canvas id="cacheChart"></canvas></div>
+            <div class="tv-table" id="tv-cacheChart" hidden></div>
+          </div>
+          <div class="card col-6">
+            <div class="card-h">
+              <div><h3>Effective rate by model</h3><p class="card-sub" id="rateHint">cost per 1M tokens</p></div>
+              <div class="seg sm" id="rateSeg" title="Which token count to divide the cost by">
+                <button data-r="all" class="on">All tokens</button><button data-r="out">Per output</button>
+              </div>
+            </div>
+            <div id="rateList"></div>
+          </div>
+          <div class="card col-6">
+            <div class="card-h">
+              <div><h3>Daily spend</h3><p class="card-sub">stacked by tool</p></div>
+              <div class="card-a"><button class="tv" data-tv="dailyCost" title="Show as table" aria-label="Show as table"><svg class="ic"><use href="#i-table"/></svg></button></div>
+            </div>
+            <div class="legend" id="dailyCostLegend"></div>
+            <div class="chartbox" style="height:230px"><canvas id="dailyCost"></canvas></div>
+            <div class="tv-table" id="tv-dailyCost" hidden></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ================= MODELS ================= -->
+      <section class="view" id="v-models">
+        <div class="grid">
+          <div class="col-12 prov-cards" id="provH2H"></div>
+          <div class="card col-12">
+            <div class="card-h"><div><h3>Models</h3><p class="card-sub">click a header to sort · a model used in several tools expands into its per-tool split</p></div></div>
+            <div class="tbl-wrap"><table id="modelTable"></table></div>
+          </div>
+          <div class="card col-7">
+            <div class="card-h">
+              <div><h3>Model timeline</h3><p class="card-sub">top 8 models per day</p></div>
+              <div class="card-a"><button class="tv" data-tv="modelTL" title="Show as table" aria-label="Show as table"><svg class="ic"><use href="#i-table"/></svg></button></div>
+            </div>
+            <div class="legend" id="modelTLLegend"></div>
+            <div class="chartbox" style="height:260px"><canvas id="modelTL"></canvas></div>
+            <div class="tv-table" id="tv-modelTL" hidden></div>
+          </div>
+          <div class="card col-5">
+            <div class="card-h">
+              <div><h3>Provider share</h3><p class="card-sub">100% of each day</p></div>
+              <div class="card-a"><button class="tv" data-tv="provShare" title="Show as table" aria-label="Show as table"><svg class="ic"><use href="#i-table"/></svg></button></div>
+            </div>
+            <div class="legend" id="provShareLegend"></div>
+            <div class="chartbox" style="height:260px"><canvas id="provShare"></canvas></div>
+            <div class="tv-table" id="tv-provShare" hidden></div>
+          </div>
+          <div class="card col-12">
+            <div class="card-h"><div><h3>Provider × tool</h3><p class="card-sub">where each maker's models actually ran</p></div></div>
+            <div class="tbl-wrap"><table id="provMatrix"></table></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ================= TOOLS & AGENTS ================= -->
+      <section class="view" id="v-tools">
+        <div class="grid">
+          <div class="tiles col-12" id="agentStats"></div>
+          <div class="card col-7">
+            <div class="card-h"><div><h3>Top tool calls</h3><p class="card-sub">dot = the tool that called it most</p></div></div>
+            <div id="toolList"></div>
+          </div>
+          <div class="card col-5">
+            <div class="card-h"><div><h3>What the agents do</h3><p class="card-sub">tool calls by category</p></div></div>
+            <div id="catList"></div>
+          </div>
+          <div class="card col-12">
+            <div class="card-h"><div><h3>Where you work</h3><p class="card-sub" id="ideHint">which IDE or surface each tool ran in</p></div></div>
+            <div class="tbl-wrap" id="ideMatrix"></div>
+          </div>
+          <div class="card col-6">
+            <div class="card-h"><div><h3>MCP servers</h3><p class="card-sub">calls into connected MCP servers</p></div></div>
+            <div class="tbl-wrap" style="max-height:320px"><table id="mcpTable"></table></div>
+          </div>
+          <div class="card col-6">
+            <div class="card-h"><div><h3>Skills</h3><p class="card-sub">requests a Skill drove (Claude Code)</p></div></div>
+            <div class="tbl-wrap" style="max-height:320px"><table id="skillTable"></table></div>
+          </div>
+          <div class="card col-12">
+            <div class="card-h"><div><h3>All tool calls</h3><p class="card-sub">click a header to sort</p></div></div>
+            <div class="tbl-wrap" style="max-height:420px"><table id="toolTable"></table></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ================= PROJECTS ================= -->
+      <section class="view" id="v-projects">
+        <div class="grid">
+          <div class="card col-8">
+            <div class="card-h"><div><h3>Projects</h3><p class="card-sub" id="projSub">by working directory</p></div></div>
+            <div id="projList"></div>
+          </div>
+          <div class="col-4 tiles stack" id="projStats"></div>
+          <div class="card col-12">
+            <div class="card-h">
+              <div><h3>Project detail</h3><p class="card-sub">click a row to see its sessions</p></div>
+              <div class="card-a"><label class="search"><svg class="ic sm"><use href="#i-search"/></svg><input type="search" class="search-in" id="projSearch" placeholder="Filter projects…" aria-label="Filter projects"></label></div>
+            </div>
+            <div class="tbl-wrap"><table id="projTable"></table></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ================= SESSIONS ================= -->
+      <section class="view" id="v-sessions">
+        <div class="grid">
+          <div class="card col-12">
+            <div class="card-h">
+              <div><h3>Sessions</h3><p class="card-sub" id="sessHint">click a row for detail</p></div>
+              <div class="card-a"><label class="search"><svg class="ic sm"><use href="#i-search"/></svg><input type="search" class="search-in" id="sessSearch" placeholder="Search sessions…  ( / )" aria-label="Search sessions"></label></div>
+            </div>
+            <div class="tbl-wrap" style="max-height:none"><table id="sessTable"></table></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ================= OPTIMIZE ================= -->
+      <section class="view" id="v-optimize">
+        <div class="grid">
+          <div class="card hero col-12"><div class="hero-main wide" id="optHero"></div></div>
+          <div class="col-12" id="optFindings"></div>
+        </div>
+      </section>
+
+      <!-- ================= STORAGE ================= -->
+      <section class="view" id="v-storage">
+        <div class="grid">
+          <div class="card hero col-12" id="diskCard">
+            <div class="hero-main wide" id="stHero"></div>
+            <div id="diskMeter"></div>
+          </div>
+          <div class="tiles col-12" id="stStats"></div>
+          <div class="card col-6">
+            <div class="card-h"><div><h3>Log bytes by tool</h3><p class="card-sub">live files on disk right now</p></div></div>
+            <div id="stByTool"></div>
+          </div>
+          <div class="card col-6">
+            <div class="card-h"><div><h3>Bytes per 1M tokens</h3><p class="card-sub">how expensively each tool stores its history</p></div></div>
+            <div id="stEff"></div>
+          </div>
+          <div class="card col-12">
+            <div class="card-h">
+              <div><h3>Storage over time</h3><p class="card-sub">cumulative bytes by the day each log was last written</p></div>
+              <div class="card-a"><button class="tv" data-tv="stGrowth" title="Show as table" aria-label="Show as table"><svg class="ic"><use href="#i-table"/></svg></button></div>
+            </div>
+            <div class="legend" id="stGrowthLegend"></div>
+            <div class="chartbox" style="height:240px"><canvas id="stGrowth"></canvas></div>
+            <div class="tv-table" id="tv-stGrowth" hidden></div>
+          </div>
+          <div class="card col-7">
+            <div class="card-h"><div><h3>Largest logs</h3><p class="card-sub" id="stBigHint">the files actually taking the space</p></div></div>
+            <div class="tbl-wrap" style="max-height:400px"><table id="stFiles"></table></div>
+          </div>
+          <div class="card col-5">
+            <div class="card-h"><div><h3>Related data not analysed</h3><p class="card-sub">AI data on disk that isn't turned into analytics</p></div></div>
+            <div class="tbl-wrap" style="max-height:none"><table id="stExtras"></table></div>
+            <div id="cleanup"></div>
+          </div>
+        </div>
+      </section>
+
+    </main>
+
+    <details class="note" id="pricingBox"><summary>How these numbers are computed, and what to distrust</summary>
+      <div id="pricingNote"></div></details>
   </div>
-
-  <main id="views">
-
-    <!-- ================= OVERVIEW ================= -->
-    <section class="view on" id="v-overview">
-      <div class="kpis" id="kpis"></div>
-      <div class="grid">
-        <div class="card col-12">
-          <div class="head"><div><h3>Highlights</h3><div class="hint" id="hlHint">notable moments in the selected range</div></div></div>
-          <div class="hl" id="highlights"></div>
-        </div>
-        <div class="card col-12">
-          <div class="head">
-            <div><h3>Activity calendar</h3><div class="hint" id="calHint">last 12 months · click a day to zoom to it</div></div>
-            <div class="cal-legend">Less
-              <span class="cell" style="background:var(--seq-0)"></span>
-              <span class="cell" style="background:var(--seq-1)"></span>
-              <span class="cell" style="background:var(--seq-2)"></span>
-              <span class="cell" style="background:var(--seq-4)"></span>
-              <span class="cell" style="background:var(--seq-6)"></span>More</div>
-          </div>
-          <div class="cal-wrap" id="calWrap"></div>
-        </div>
-        <div class="card col-8">
-          <div class="head">
-            <div><h3>Daily activity</h3><div class="hint" id="dailyHint">stacked by tool</div></div>
-            <div class="seg" id="metricSeg">
-              <button data-m="tokens" class="on">Tokens</button>
-              <button data-m="cost">Cost</button>
-              <button data-m="messages">Msgs</button>
-            </div>
-          </div>
-          <div class="legend" id="dailyLegend"></div>
-          <div class="chartbox" style="height:290px"><canvas id="dailyChart"></canvas></div>
-        </div>
-        <div class="card col-4">
-          <div class="head"><div><h3>Share by tool</h3><div class="hint">of the selected range</div></div></div>
-          <div id="toolShare"></div>
-        </div>
-        <div class="card col-7">
-          <div class="head">
-            <div><h3>When you work</h3><div class="hint" id="hmHint">local hour × weekday, by tokens</div></div>
-            <div class="cal-legend">Less
-              <span class="cell" style="background:var(--seq-0)"></span>
-              <span class="cell" style="background:var(--seq-2)"></span>
-              <span class="cell" style="background:var(--seq-3)"></span>
-              <span class="cell" style="background:var(--seq-5)"></span>
-              <span class="cell" style="background:var(--seq-6)"></span>More</div>
-          </div>
-          <div class="hm-wrap" id="heatmap"></div>
-        </div>
-        <div class="card col-5">
-          <div class="head"><div><h3>Token composition</h3><div class="hint">prompt · cache read/write · output · thinking</div></div></div>
-          <div class="legend" id="compLegend"></div>
-          <div class="chartbox" style="height:230px"><canvas id="compChart"></canvas></div>
-        </div>
-      </div>
-    </section>
-
-    <!-- ================= COST ================= -->
-    <section class="view" id="v-cost">
-      <div class="grid">
-        <div class="card col-12">
-          <div class="head"><div><h3>Cost economics</h3><div class="hint">estimated at API list prices — see the note at the bottom</div></div></div>
-          <div class="stat-row" id="costStats"></div>
-        </div>
-        <div class="card col-8">
-          <div class="head"><div><h3>Cumulative est. cost</h3><div class="hint" id="cumHint">running total by tool</div></div></div>
-          <div class="legend" id="cumLegend"></div>
-          <div class="chartbox" style="height:300px"><canvas id="cumChart"></canvas></div>
-        </div>
-        <div class="card col-4">
-          <div class="head"><div><h3>Cost by project</h3><div class="hint">where the money went, selected range</div></div></div>
-          <div class="chartbox" style="height:300px"><canvas id="costTool"></canvas></div>
-        </div>
-        <div class="card col-7">
-          <div class="head"><div><h3>Prompt-cache efficiency</h3><div class="hint">cache reads as a share of context tokens, and what they saved</div></div></div>
-          <div class="chartbox" style="height:250px"><canvas id="cacheChart"></canvas></div>
-        </div>
-        <div class="card col-5">
-          <div class="head">
-            <div><h3>Blended rate</h3><div class="hint" id="rateHint">a <em>rate</em>, not a total &mdash; multiply by a model's tokens to get its cost</div></div>
-            <div class="seg" id="rateSeg" title="Which token count to divide the cost by">
-              <button data-m="all" class="on">All tokens</button>
-              <button data-m="out">Per output</button>
-            </div>
-          </div>
-          <div class="chartbox" style="height:250px"><canvas id="rateChart"></canvas></div>
-        </div>
-        <div class="card col-12">
-          <div class="head"><div><h3>Daily cost</h3><div class="hint" id="dcHint">stacked by tool</div></div></div>
-          <div class="chartbox" style="height:230px"><canvas id="dailyCost"></canvas></div>
-        </div>
-      </div>
-    </section>
-
-    <!-- ================= MODELS & PROVIDERS ================= -->
-    <section class="view" id="v-models">
-      <div class="grid">
-        <div class="card col-12">
-          <div class="head">
-            <div><h3>Provider head-to-head</h3><div class="hint" id="provHint">who made the model — independent of which tool you ran it in</div></div>
-            <div class="seg" id="provMetricSeg">
-              <button data-m="cost" class="on">Cost</button>
-              <button data-m="tokens">Tokens</button>
-              <button data-m="messages">Msgs</button>
-            </div>
-          </div>
-          <div class="hl" id="provH2H"></div>
-        </div>
-        <div class="card col-5">
-          <div class="head"><div><h3>Provider → model</h3><div class="hint" data-donut>inner ring provider · outer ring model</div></div></div>
-          <div class="chartbox" style="height:300px"><canvas id="provDonut"></canvas></div>
-          <div class="legend" id="provDonutLegend"></div>
-        </div>
-        <div class="card col-7">
-          <div class="head"><div><h3>Provider share over time</h3><div class="hint">100% of the selected metric, by day</div></div></div>
-          <div class="legend" id="provShareLegend"></div>
-          <div class="chartbox" style="height:300px"><canvas id="provShare"></canvas></div>
-        </div>
-        <div class="card col-7">
-          <div class="head"><div><h3>Model timeline</h3><div class="hint">adoption &amp; migration, top 8 models</div></div></div>
-          <div class="legend" id="modelTLLegend"></div>
-          <div class="chartbox" style="height:280px"><canvas id="modelTL"></canvas></div>
-        </div>
-        <div class="card col-5">
-          <div class="head"><div><h3>Provider × tool</h3><div class="hint">where each provider's models actually ran</div></div></div>
-          <div class="tbl-wrap"><table id="provMatrix"></table></div>
-        </div>
-        <div class="card col-12">
-          <div class="head"><div><h3>Models</h3><div class="hint">one row per model · click a header to sort, or a model used in several tools to split it out</div></div></div>
-          <div class="tbl-wrap"><table id="modelTable"></table></div>
-        </div>
-      </div>
-    </section>
-
-    <!-- ================= TOOLS & AGENTS ================= -->
-    <section class="view" id="v-tools">
-      <div class="grid">
-        <div class="card col-12">
-          <div class="head"><div><h3>Agent behaviour</h3><div class="hint">how much machinery each of your prompts sets off</div></div></div>
-          <div class="stat-row" id="agentStats"></div>
-        </div>
-        <div class="card col-12">
-          <div class="head">
-            <div><h3>Where you work</h3><div class="hint" id="ideHint">which IDE / surface each tool ran in</div></div>
-            <div class="seg" id="ideMetricSeg">
-              <button data-m="tokens" class="on">Tokens</button>
-              <button data-m="cost">Cost</button>
-              <button data-m="messages">Msgs</button>
-              <button data-m="time">Time</button>
-            </div>
-          </div>
-          <div id="ideMatrix" class="tbl-wrap"></div>
-        </div>
-        <div class="card col-7">
-          <div class="head"><div><h3>Top tool calls</h3><div class="hint">function / tool invocations, coloured by the tool that called them</div></div></div>
-          <div class="chartbox" style="height:340px"><canvas id="toolChart"></canvas></div>
-        </div>
-        <div class="card col-5">
-          <div class="head"><div><h3>What the agents do</h3><div class="hint">tool calls by category</div></div></div>
-          <div class="chartbox" style="height:230px"><canvas id="catChart"></canvas></div>
-          <div class="legend" id="catLegend"></div>
-        </div>
-        <div class="card col-6">
-          <div class="head"><div><h3>MCP servers</h3><div class="hint">calls into connected MCP servers</div></div></div>
-          <div class="tbl-wrap" style="max-height:300px"><table id="mcpTable"></table></div>
-        </div>
-        <div class="card col-6">
-          <div class="head"><div><h3>All tool calls</h3><div class="hint">full list · click a header to sort</div></div></div>
-          <div class="tbl-wrap" style="max-height:300px"><table id="toolTable"></table></div>
-        </div>
-      </div>
-    </section>
-
-    <!-- ================= PROJECTS ================= -->
-    <section class="view" id="v-projects">
-      <div class="grid">
-        <div class="card col-8">
-          <div class="head">
-            <div><h3>Projects</h3><div class="hint">by working directory / workspace</div></div>
-            <div class="seg" id="projMetricSeg">
-              <button data-m="tokens" class="on">Tokens</button>
-              <button data-m="cost">Cost</button>
-              <button data-m="messages">Msgs</button>
-            </div>
-          </div>
-          <div class="chartbox" style="height:360px"><canvas id="projChart"></canvas></div>
-        </div>
-        <div class="card col-4">
-          <div class="head"><div><h3>Concentration</h3><div class="hint">how spread out the work is</div></div></div>
-          <div class="stat-row" id="projStats"></div>
-        </div>
-        <div class="card col-12">
-          <div class="head"><div><h3>Project detail</h3><div class="hint">click a row to filter everything to that project</div></div></div>
-          <div class="tbl-wrap"><table id="projTable"></table></div>
-        </div>
-      </div>
-    </section>
-
-    <!-- ================= SESSIONS ================= -->
-    <section class="view" id="v-sessions">
-      <div class="grid">
-        <div class="card col-12">
-          <div class="head"><div><h3>Sessions</h3><div class="hint" id="sessHint">click a row for detail · click a header to sort</div></div></div>
-          <div class="tbl-wrap" style="max-height:none"><table id="sessTable"></table></div>
-        </div>
-      </div>
-    </section>
-
-    <!-- ================= OPTIMIZE ================= -->
-    <section class="view" id="v-optimize">
-      <div class="grid">
-        <div class="card col-12">
-          <div class="head"><div><h3>What this is costing you</h3>
-            <div class="hint" id="optHint">findings from your own usage in the selected range</div></div></div>
-          <div class="stat-row" id="optStats"></div>
-        </div>
-        <div class="card col-12">
-          <div class="head"><div><h3>Suggestions</h3>
-            <div class="hint">ranked by what they'd save · each one lists the evidence it came from</div></div></div>
-          <div id="optFindings"></div>
-        </div>
-      </div>
-    </section>
-
-    <!-- ================= STORAGE ================= -->
-    <section class="view" id="v-storage">
-      <div class="grid">
-        <div class="card col-12" id="diskCard">
-          <div class="head"><div><h3>Disk footprint</h3><div class="hint" id="stHint">what these interaction logs cost you in drive space (all-time, not date-filtered)</div></div></div>
-          <div class="stat-row" id="stStats"></div>
-          <div style="margin-top:14px" id="diskMeter"></div>
-        </div>
-        <div class="card col-6">
-          <div class="head"><div><h3>Log bytes by tool</h3><div class="hint">live files on disk right now</div></div></div>
-          <div class="chartbox" style="height:250px"><canvas id="stByTool"></canvas></div>
-        </div>
-        <div class="card col-6">
-          <div class="head"><div><h3>Bytes per 1M tokens</h3><div class="hint">how expensively each tool stores its history</div></div></div>
-          <div class="chartbox" style="height:250px"><canvas id="stEff"></canvas></div>
-        </div>
-        <div class="card col-12">
-          <div class="head">
-            <div><h3>Storage accumulation</h3><div class="hint">cumulative bytes by the day each log was last written</div></div>
-          </div>
-          <div class="legend" id="stGrowthLegend"></div>
-          <div class="chartbox" style="height:250px"><canvas id="stGrowth"></canvas></div>
-        </div>
-        <div class="card col-7">
-          <div class="head"><div><h3>Largest logs</h3><div class="hint" id="stBigHint">the files actually eating the space</div></div></div>
-          <div class="tbl-wrap" style="max-height:380px"><table id="stFiles"></table></div>
-        </div>
-        <div class="card col-5">
-          <div class="head"><div><h3>Related data not counted above</h3><div class="hint">AI data on disk the dashboard does not turn into analytics</div></div></div>
-          <div class="tbl-wrap" style="max-height:none"><table id="stExtras"></table></div>
-          <div id="cleanup"></div>
-        </div>
-      </div>
-    </section>
-
-  </main>
-
-  <details class="note" id="pricingBox"><summary style="cursor:pointer;font-weight:600;color:var(--text-2)">ⓘ How these numbers are computed (and what to distrust)</summary>
-    <div id="pricingNote" style="margin-top:9px"></div></details>
 </div>
 
 <div class="scrim" id="scrim"></div>
-<aside class="drawer" id="drawer"><button class="x" id="drawerX">×</button><div id="drawerBody"></div></aside>
-<div id="tip"></div>
+<aside class="drawer" id="drawer" aria-label="Detail"><button class="x" id="drawerX" aria-label="Close">×</button><div id="drawerBody"></div></aside>
+<div id="tip" role="tooltip"></div>
 
 <script>
 /* surface any uncaught error on the root element so headless checks (and the
@@ -357,7 +390,7 @@ addEventListener("error",e=>{document.documentElement.dataset.jsError=
   (e.message||"error")+" @ "+(e.filename||"").split("/").pop()+":"+(e.lineno||0);});
 addEventListener("unhandledrejection",e=>{document.documentElement.dataset.jsError=
   "unhandled promise: "+(e.reason&&e.reason.message||e.reason);});
-/* Offline app (service worker) is OPT-IN — see the gear menu. A service worker
+/* Offline app (service worker) is OPT-IN — see Settings. A service worker
    claims this origin until it is explicitly unregistered, and localhost ports get
    reused by other tools, so it is never registered without the user asking. */
 try {

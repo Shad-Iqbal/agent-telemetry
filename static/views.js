@@ -1,55 +1,92 @@
 /* ==========================================================================
-   views.js — filter controls, the seven views, and the boot sequence.
+   views.js — controls, the eight views, and the boot sequence.
    ========================================================================== */
 
-/* ---------------- filter bar ---------------- */
+const VIEW_TITLES = {overview:"Overview", cost:"Cost", models:"Models", tools:"Tools & agents",
+  projects:"Projects", sessions:"Sessions", optimize:"Optimize", storage:"Storage"};
+
+/* ---------------- measure (one switch for every view) ---------------- */
+function metricOf(kind){
+  kind = kind || S.metric;
+  return kind==="cost" ? (r=>r.cost||0)
+       : kind==="messages" ? (r=>r.asst||0)
+       : kind==="time" ? (r=>r.active||0)
+       : (r=>recTokens(r));
+}
+function fmtOf(kind){
+  kind = kind || S.metric;
+  return kind==="cost" ? fmtUSD : kind==="messages" ? fmtNum : kind==="time" ? fmtDur : fmtTok;
+}
+function tickOf(kind){
+  kind = kind || S.metric;
+  return kind==="cost" ? fmtUSDk : kind==="time" ? fmtDur : kind==="messages" ? fmtNum : fmtTok;
+}
+const metricNoun = k => ({cost:"est. spend", tokens:"tokens", time:"active time", messages:"messages"})[k||S.metric];
+const metricTitle = k => ({cost:"Est. spend", tokens:"Tokens", time:"Active time", messages:"Messages"})[k||S.metric];
+/* "All time" has no period before it, so a delta would compare against nothing. */
+const hasPrev = () => S.preset !== "all";
+const prevLabel = () => { const n = rangeDays(); return n === 1 ? "previous day" : `previous ${n} days`; };
+
+/* ---------------- period ---------------- */
+const SEG_PRESETS = ["today","7d","30d","90d","all"];
 function buildRangePanel(){
   const p = document.getElementById("rangePanel");
   const r = range();
-  p.innerHTML =
-    `<div class="dd-head">Range</div>` +
-    PRESETS.map(([k,l])=>`<div class="dd-item" data-preset="${k}">
-        <span>${l}</span>${S.preset===k?'<span class="v">●</span>':''}</div>`).join("") +
+  const more = PRESETS.filter(([k])=>!SEG_PRESETS.includes(k));
+  p.innerHTML = `<div class="dd-head">Period</div>` +
+    more.map(([k,l])=>`<div class="dd-item${S.preset===k?" sel":""}" data-preset="${k}">
+        <span>${l}</span><span class="chk">${S.preset===k?"✓":""}</span></div>`).join("") +
     `<div class="dd-pin">
-       <div class="dd-head">Custom</div>
-       <div class="dd-item" style="gap:6px">
-         <input type="date" class="field" id="dFrom" value="${r.from}" style="flex:1">
+       <div class="dd-head">Custom range</div>
+       <div class="dd-item" style="gap:6px;cursor:default">
+         <input type="date" class="field" id="dFrom" value="${r.from}" style="flex:1;min-width:0">
          <span class="dim">→</span>
-         <input type="date" class="field" id="dTo" value="${r.to}" style="flex:1">
+         <input type="date" class="field" id="dTo" value="${r.to}" style="flex:1;min-width:0">
        </div>
-       <div class="dd-item" data-apply="1" style="justify-content:center;color:var(--accent);font-weight:600">Apply custom range</div>
+       <button class="btn primary" data-apply="1" style="width:100%;justify-content:center;margin-top:6px">Apply custom range</button>
      </div>`;
 }
+function fmtDay(k, withYear){
+  const d = new Date(k+"T00:00:00");
+  return MONTHS[d.getMonth()]+" "+d.getDate()+(withYear?", "+d.getFullYear():"");
+}
+function rangeText(){
+  const r = range(), sameYear = r.from.slice(0,4) === r.to.slice(0,4);
+  const span = r.from === r.to ? fmtDay(r.from, true)
+    : fmtDay(r.from, !sameYear) + " – " + fmtDay(r.to, true);
+  return (S.preset==="custom" ? "Custom range" : presetLabel(S.preset)) + " · " + span;
+}
 function syncRangeUI(){
-  const r = range();
-  const label = S.preset==="custom" ? `${r.from} → ${r.to}` : presetLabel(S.preset);
-  document.getElementById("rangeLabel").textContent = label;
+  const inSeg = SEG_PRESETS.includes(S.preset);
+  document.querySelectorAll("#periodSeg button").forEach(b=>b.classList.toggle("on", b.dataset.p===S.preset));
+  document.getElementById("rangeLabel").textContent =
+    inSeg ? "More" : (S.preset==="custom" ? "Custom" : presetLabel(S.preset));
+  document.getElementById("rangeMore").classList.toggle("on", !inSeg);
+  document.getElementById("rangeText").textContent = rangeText();
   if(!document.getElementById("ddRange").classList.contains("open")) buildRangePanel();
 }
-/* An empty set means "no filter" for provider/project/model; the tool picker is
+function syncMetricUI(){
+  document.querySelectorAll("#metricSeg button").forEach(b=>b.classList.toggle("on", b.dataset.m===S.metric));
+}
+
+/* ---------------- filters ---------------- */
+/* An empty set means "no filter" for provider/project/model/IDE; the tool picker is
    different — it always holds an explicit selection of at least one tool. */
-function multiPanel(panelId, labelId, items, set, allLabel, isTools){
+function multiPanel(panelId, items, set, isTools){
   const p = document.getElementById(panelId);
   const on = k => isTools ? set.has(k) : (set.size===0 || set.has(k));
-  p.innerHTML = `<div class="dd-head"><span>${allLabel}</span>
-      <span><a href="#" data-all="1">${isTools?"all":"clear"}</a>${
-        isTools?' · <a href="#" data-none="1">none</a>':""}</span></div>` +
-    items.map(it=>`<div class="dd-item" data-k="${esc(it.key)}">
-        <input type="checkbox" ${on(it.key)?"checked":""}>
-        ${it.color?`<span class="sw" style="background:${it.color}"></span>`:""}
-        <span>${esc(it.label)}</span>
-        <span class="v">${it.value||""}</span><span class="only" data-only="1">only</span>
-      </div>`).join("") || `<div class="dd-item dim">nothing in this range</div>`;
-  const n = isTools ? set.size : (set.size || items.length);
-  const noun = allLabel.split(" ")[1] || "";
-  document.getElementById(labelId).textContent =
-    n >= items.length ? allLabel : `${n} of ${items.length} ${noun}`.trim();
+  p.innerHTML = items.map(it=>`<div class="dd-item" data-k="${esc(it.key)}">
+      <input type="checkbox" ${on(it.key)?"checked":""} tabindex="-1" aria-label="${esc(it.label)}">
+      ${it.color?`<span class="sw" style="background:${it.color}"></span>`:""}
+      <span class="t">${esc(it.label)}</span>
+      <span class="v">${it.value||""}</span><span class="only" data-only="1">only</span>
+    </div>`).join("") || `<div class="dd-item dim">nothing in this range</div>`;
 }
 function buildFilterPanels(){
   const r = range();
-  const tokBySrc = {}, tokByProv = {}, tokByProj = {}, tokByModel = {};
-  const tokByIde = {};
+  const tokBySrc = {}, tokByProv = {}, tokByProj = {}, tokByModel = {}, tokByIde = {}, seen = new Set();
   for(const x of RAW.records){
+    seen.add(x.source);
     if(x.date<r.from||x.date>r.to) continue;
     const t = recTokens(x);
     tokBySrc[x.source]=(tokBySrc[x.source]||0)+t;
@@ -60,87 +97,191 @@ function buildFilterPanels(){
     tokByProj[x.project||"(unknown)"]=(tokByProj[x.project||"(unknown)"]||0)+t;
     tokByIde[x.ide||"(unknown)"]=(tokByIde[x.ide||"(unknown)"]||0)+t;
   }
-  multiPanel("idePanel","ideLabel",
-    Object.entries(tokByIde).sort((a,b)=>b[1]-a[1])
-      .map(([k,v])=>({key:k,label:k,value:fmtTok(v)})),
-    S.ides, "All IDEs");
-  multiPanel("toolsPanel","toolsLabel",
-    ORDER.map(s=>({key:s,label:SRC[s].label,color:srcColor(s),value:fmtTok(tokBySrc[s]||0)})),
-    S.tools, "All tools", true);
-  multiPanel("provPanel","provLabel",
-    PROVIDERS.filter(p=>tokByProv[p]).map(p=>({key:p,label:p,color:provColor(p),value:fmtTok(tokByProv[p])})),
-    S.provs, "All providers");
-  multiPanel("projPanel","projLabel",
-    Object.entries(tokByProj).sort((a,b)=>b[1]-a[1]).slice(0,60)
-      .map(([k,v])=>({key:k,label:k,value:fmtTok(v)})),
-    S.projs, "All projects");
-  multiPanel("modelPanel","modelLabel",
-    Object.entries(tokByModel).sort((a,b)=>b[1]-a[1]).slice(0,40)
-      .map(([k,v])=>({key:k,label:k,color:modelColor(k),value:fmtTok(v)})),
-    S.models, "All models");
+  multiPanel("toolsPanel",
+    ORDER.filter(s=>seen.has(s)).map(s=>({key:s,label:SRC[s].label,color:srcColor(s),value:fmtTok(tokBySrc[s]||0)})),
+    S.tools, true);
+  multiPanel("provPanel",
+    PROVIDERS.filter(p=>tokByProv[p]).map(p=>({key:p,label:p,color:provColor(p),value:fmtTok(tokByProv[p])})), S.provs);
+  multiPanel("modelPanel",
+    Object.entries(tokByModel).sort((a,b)=>b[1]-a[1]).slice(0,60)
+      .map(([k,v])=>({key:k,label:k,color:modelColor(k),value:fmtTok(v)})), S.models);
+  multiPanel("projPanel",
+    Object.entries(tokByProj).sort((a,b)=>b[1]-a[1]).slice(0,80)
+      .map(([k,v])=>({key:k,label:k,value:fmtTok(v)})), S.projs);
+  multiPanel("idePanel",
+    Object.entries(tokByIde).sort((a,b)=>b[1]-a[1]).map(([k,v])=>({key:k,label:k,value:fmtTok(v)})), S.ides);
+  const n = (S.tools.size!==ORDER.length?1:0) + (S.provs.size?1:0) + (S.models.size?1:0)
+          + (S.projs.size?1:0) + (S.ides.size?1:0) + (S.exactOnly?1:0);
+  document.getElementById("filterCount").textContent = n || "";
+  document.getElementById("filtersBtn").classList.toggle("on", n>0);
+  document.getElementById("reliableBtn").checked = S.exactOnly;
 }
 function renderPills(){
   const out = [];
-  if(S.preset!=="30d"){ const r=range();
-    out.push(["range", S.preset==="custom"?`${r.from} → ${r.to}`:presetLabel(S.preset)]); }
   if(S.tools.size!==ORDER.length) out.push(["tools", [...S.tools].map(s=>SRC[s].label).join(", ")]);
   S.provs.forEach(p=>out.push(["prov:"+p, p]));
-  S.projs.forEach(p=>out.push(["proj:"+p, p]));
   S.models.forEach(m=>out.push(["model:"+m, m]));
+  S.projs.forEach(p=>out.push(["proj:"+p, p]));
   S.ides.forEach(i=>out.push(["ide:"+i, i]));
-  if(S.exactOnly) out.push(["exact","exact tokens only"]);
+  if(S.exactOnly) out.push(["exact","Exact tokens only"]);
   if(S.search) out.push(["search",`“${S.search}”`]);
-  if(S.compare) out.push(["cmp","comparing to previous period"]);
-  const el = document.getElementById("pills");
-  el.innerHTML = out.length
-    ? out.map(([k,l])=>`<span class="pill">${esc(l)}<button data-pill="${esc(k)}" title="remove">×</button></span>`).join("")
-      + (out.length>1?`<span class="pill" style="background:none;border-color:var(--border);color:var(--text-3)">
-          <button data-pill="__all" style="opacity:1">reset all</button></span>`:"")
-    : "";
+  document.getElementById("pills").innerHTML = out.map(([k,l])=>
+      `<span class="pill">${esc(l)}<button data-pill="${esc(k)}" title="Remove" aria-label="Remove ${esc(l)}">×</button></span>`).join("")
+    + (out.length>1 ? `<span class="pill reset"><button data-pill="__all" style="color:inherit;font-size:11.5px;padding:0">Clear all</button></span>` : "");
+}
+function resetFilters(){
+  S.tools = new Set(ORDER); S.provs.clear(); S.projs.clear(); S.models.clear(); S.ides.clear();
+  S.search = ""; S.exactOnly = false;
+  document.querySelectorAll(".search-in").forEach(x=>x.value="");
 }
 
-/* ---------------- KPIs ---------------- */
-function renderKPIs(d){
-  const t = totals(d.recs);
-  const prev = S.compare ? totals(slice(prevRange()).recs) : null;
-  const prevSess = S.compare ? slice(prevRange()).sessions.length : null;
-  const days = dateList(d.r);
-  const byDay = {};
-  for(const r of d.recs){ const s=byDay[r.date]||(byDay[r.date]={tok:0,cost:0,msgs:0,user:0});
-    s.tok+=recTokens(r); s.cost+=r.cost||0; s.msgs+=r.asst||0; s.user+=r.user||0; }
-  const series = f => days.map(x=>(byDay[x]||{})[f]||0);
-  const bySrc = {};
-  for(const r of d.recs){ const s=bySrc[r.source]||(bySrc[r.source]={tok:0,cost:0,msgs:0,user:0});
-    s.tok+=recTokens(r); s.cost+=r.cost||0; s.msgs+=r.asst||0;
-      // summed across BOTH conventions on purpose: Claude/Codex record prompts on a
-      // "(user)" marker row, Copilot/Cursor on the model row. Neither writes both.
-      s.user+=r.user||0; }
-  const split = f => ORDER.filter(s=>bySrc[s]&&bySrc[s][f])
-    .map(s=>`<span style="color:${srcColor(s)}">${f==="cost"?fmtUSD(bySrc[s][f]):fmtTok(bySrc[s][f])}</span>`)
-    .join("");
-  const acc = cssv("--accent");
-  const cards = [
-    {lab:"Tokens", val:fmtTok(t.tok), spark:series("tok"), prev:prev&&prev.tok, cur:t.tok, split:split("tok")},
-    {lab:"Est. cost", val:fmtUSD(t.cost), spark:series("cost"), prev:prev&&prev.cost, cur:t.cost,
-     split:split("cost"), invert:true},
-    {lab:"Your prompts", val:fmtNum(t.user), spark:series("user"), prev:prev&&prev.user,
-     cur:t.user, split:split("user")},
-    {lab:"Assistant msgs", val:fmtNum(t.msgs), spark:series("msgs"), prev:prev&&prev.msgs, cur:t.msgs, split:split("msgs")},
-    {lab:"Sessions", val:fmtNum(d.sessions.length), prev:prevSess, cur:d.sessions.length},
-    {lab:"Active days", val:fmtNum(t.days.size)+` <span class="dim" style="font-size:13px;font-weight:500">/ ${days.length}</span>`,
-     prev:prev&&prev.days.size, cur:t.days.size},
-  ];
-  document.getElementById("kpis").innerHTML = cards.map(c=>`
-    <div class="kpi">
-      <div class="lab">${c.lab}</div>
-      <div class="val num">${c.val}</div>
-      <div class="foot">${S.compare?deltaHTML(c.cur,c.prev,c.invert):""}
-        ${c.spark?`<span class="spark">${sparkline(c.spark,acc)}</span>`:""}</div>
-      ${c.split?`<div class="split num">${c.split}</div>`:""}
-    </div>`).join("");
+/* ---------------- shared bits ---------------- */
+function srcBadge(s){
+  return `<span class="badge"><span class="dot" style="background:${srcColor(s)}"></span>${esc((SRC[s]||{label:s}).label)}</span>`;
+}
+function domSource(srcMap){
+  let best=null,bv=-1; for(const k in srcMap) if(srcMap[k]>bv){bv=srcMap[k];best=k;}
+  return best;
+}
+const bySrcOrder = m => ORDER.filter(s => m[s]);
+const topSources = (m, n) => Object.entries(m).filter(([,v])=>v>0).sort((a,b)=>b[1]-a[1]).slice(0,n||3).map(([s])=>s);
+const shortDay = d => d.slice(5).replace("-","/");
+function sortRows(rows, st){
+  return rows.slice().sort((a,b)=>{
+    let av=a[st.key], bv=b[st.key];
+    if(typeof av==="string"||typeof bv==="string")
+      return st.dir*((""+(av==null?"":av)).localeCompare(""+(bv==null?"":bv)));
+    return st.dir*((av||0)-(bv||0));
+  });
+}
+const TEXTCOL=new Set(["model","source","project","name","prov","cat","server","tool",
+  "path","last","when","label","title","branch","entry","toolsKey","skill"]);
+function thead(cols, st, tag){
+  return "<thead><tr>"+cols.map(([k,l,title])=>
+    `<th data-k="${k}" data-t="${tag}" class="${TEXTCOL.has(k)?"":"r"}"${
+      title?` title="${esc(title)}"`:""}>${l}${
+      st.key===k?(st.dir<0?" ↓":" ↑"):""}</th>`).join("")+"</tr></thead>";
+}
+/* Today's rate — or, given a record's date, the rate in force that day, so a vendor
+   price cut never re-prices history (mirrors parser.price_of + PRICE_HISTORY). */
+function priceOf(m, date){
+  if(date) for(const [until,p] of (RAW.pricing_history && RAW.pricing_history[m]) || [])
+    if(date <= until) return p;
+  return (RAW.pricing && RAW.pricing[m]) || [0,0,0,0,0];
+}
+/* Per-day series for the metric, plus the same for the previous period (for tiles). */
+function dailySeries(recs, days, f){
+  const m = {}; for(const r of recs) m[r.date] = (m[r.date]||0) + f(r);
+  return days.map(x=>m[x]||0);
+}
+function sparkFor(vals){ return vals.length > 1 ? sparkline(vals, cssv("--text-3"), 72, 22) : ""; }
+
+/* ---------------- OVERVIEW ---------------- */
+function viewOverview(d){
+  const pd = hasPrev() ? slice(prevRange()) : null;
+  const days = dateList(d.r), val = metricOf(), fmt = fmtOf();
+  const t = totals(d.recs), pt = pd ? totals(pd.recs) : null;
+  const cur = d.recs.reduce((a,r)=>a+val(r),0);
+  const prev = pd ? pd.recs.reduce((a,r)=>a+val(r),0) : null;
+  const bySrc = {}; for(const r of d.recs) bySrc[r.source] = (bySrc[r.source]||0) + val(r);
+  const top = topSources(bySrc, 1)[0];
+  const activeDays = t.days.size;
+
+  // hero — the one number this view leads with, in the measure the user picked
+  const big = S.metric==="cost" ? fmtUSD2(cur) : S.metric==="time" ? fmtDur(cur) : fmtTok(cur);
+  document.getElementById("ovHero").innerHTML = heroHTML({
+    label: metricTitle() + (S.metric==="cost" ? " at API list prices" : ""),
+    value: big,
+    delta: pd ? deltaHTML(cur, prev, S.metric==="cost") : "",
+    note: pd ? `vs the ${prevLabel()}` : "",
+    facts: [
+      {l:"Daily average", v: fmt(activeDays ? cur/activeDays : 0), title:"per active day"},
+      {l:"Active days", v: `${fmtNum(activeDays)} <span class="dim" style="font-size:12px;font-weight:500">of ${fmtNum(days.length)}</span>`},
+      {l:"Previous period", v: pd ? fmt(prev) : "—"},
+      {l:"Top tool", v: top ? `${esc(SRC[top].label)} <span class="dim" style="font-size:12px;font-weight:500">${fmtPct(bySrc[top]/(cur||1))}</span>` : "—"},
+    ],
+  });
+
+  // per-day, stacked by tool
+  const srcs = ORDER.filter(s=>S.tools.has(s) && d.recs.some(r=>r.source===s));
+  document.getElementById("dailyTitle").textContent = metricTitle() + " per day, by tool";
+  const ds = srcs.filter(s=>!isMuted("dailyChart",SRC[s].label)).map(s=>
+    stackDS(SRC[s].label, dailySeries(d.recs.filter(r=>r.source===s), days, val).map(v=>+v.toFixed(4)), srcColor(s)));
+  document.getElementById("dailyLegend").innerHTML =
+    legendHTML("dailyChart", srcs.map(s=>({label:SRC[s].label,color:srcColor(s)})));
+  mk("dailyChart",{type:"bar", $fmt:fmt, $stacked:true,
+    data:{labels:days.map(shortDay),datasets:ds},
+    options:{interaction:{mode:"index",intersect:false},
+      scales:axes({x:{stacked:true},y:{stacked:true,ticks:{callback:v=>tickOf()(v)}}}),
+      plugins:{tooltip:{callbacks:{label:c=>" "+c.dataset.label+": "+fmt(c.parsed.y),
+        footer:it=>"Total "+fmt(it.reduce((a,x)=>a+x.parsed.y,0))}}}}});
+
+  // tiles — everything the hero isn't, each against the previous period
+  const ser = f => sparkFor(dailySeries(d.recs, days, f));
+  const tile = (l, curV, prevV, f, fmtV, invert, s) => ({l, v: fmtV(curV),
+    d: pd ? deltaHTML(curV, prevV, invert) : "", s, spark: ser(f)});
+  const tiles = [];
+  if(S.metric!=="cost") tiles.push(tile("Est. spend", t.cost, pt&&pt.cost, r=>r.cost||0, fmtUSD, true));
+  if(S.metric!=="tokens") tiles.push(tile("Tokens", t.tok, pt&&pt.tok, recTokens, fmtTok));
+  if(S.metric!=="time"){ const a = d.recs.reduce((x,r)=>x+(r.active||0),0), pa = pd ? pd.recs.reduce((x,r)=>x+(r.active||0),0) : null;
+    tiles.push(tile("Active time", a, pa, r=>r.active||0, fmtDur, false)); }
+  tiles.push(tile("Your prompts", t.user, pt&&pt.user, r=>r.user||0, fmtNum));
+  tiles.push(tile("Assistant replies", t.msgs, pt&&pt.msgs, r=>r.asst||0, fmtNum));
+  tiles.push({l:"Sessions", v:fmtNum(d.sessions.length), d: pd ? deltaHTML(d.sessions.length, pd.sessions.length) : ""});
+  const ctx = t.in+t.cr+t.cc, pctx = pt ? pt.in+pt.cr+pt.cc : 0;
+  tiles.push({l:"Cache hit rate", v: ctx ? fmtPct(t.cr/ctx) : "—",
+    d: pd && pctx && ctx ? deltaHTML(t.cr/ctx, pt.cr/pctx) : "", s: ctx ? "" : "no cached context"});
+  document.getElementById("kpis").innerHTML = tilesHTML(tiles.slice(0,6));
+
+  // by tool
+  document.getElementById("toolShareSub").textContent = "share of " + metricNoun();
+  const sBy = {}; for(const x of d.sessions) sBy[x.source]=(sBy[x.source]||0)+1;
+  const uBy = {}; for(const r of d.recs) uBy[r.source]=(uBy[r.source]||0)+(r.user||0);
+  barList("toolShare", bySrcOrder(bySrc).map(s=>({label:SRC[s].label, value:bySrc[s], color:srcColor(s),
+      sub:`${fmtNum(sBy[s]||0)} session${sBy[s]===1?"":"s"} · ${fmtNum(uBy[s]||0)} prompts`}))
+    .sort((a,b)=>b.value-a.value), {fmt});
+
+  // top models
+  const bm = {};
+  for(const r of d.recs){ if(r.model==="(user)") continue;
+    const e = bm[r.model] || (bm[r.model] = {model:r.model, v:0, cost:0, tok:0, src:{}});
+    e.v += val(r); e.cost += r.cost||0; e.tok += recTokens(r); e.src[r.source] = (e.src[r.source]||0) + recTokens(r)+ (r.cost||0); }
+  const models = Object.values(bm).filter(e=>e.v>0).sort((a,b)=>b.v-a.v);
+  const mTot = models.reduce((a,e)=>a+e.v,0) || 1;
+  document.getElementById("topModels").innerHTML = models.length
+    ? `<thead><tr><th class="nosort">Model</th><th class="nosort">Tools</th><th class="r nosort">Est. $</th><th class="r nosort">Tokens</th><th class="r nosort">Share</th></tr></thead><tbody>` +
+      models.slice(0,7).map(e=>`<tr><td class="name"><span class="sw" style="background:${modelColor(e.model)};margin-right:8px"></span>${esc(e.model)}${
+          priceOf(e.model)[0]===0 && e.tok && !e.cost ? '<span class="warn-ic" title="No price row for this model — its cost reads as $0">⚠</span>' : ""}</td>
+        <td>${topSources(e.src,3).map(toolDot).join(" ")}</td>
+        <td class="r">${fmtUSD(e.cost)}</td><td class="r">${fmtTok(e.tok)}</td><td class="r dim">${fmtPct(e.v/mTot)}</td></tr>`).join("") + "</tbody>"
+    : `<tbody><tr><td class="empty">Nothing in range.</td></tr></tbody>`;
+
+  // top projects
+  const bp = {};
+  for(const r of d.recs){ const p = r.project || "(unknown)";
+    const e = bp[p] || (bp[p] = {project:p, v:0, cost:0, tok:0, src:{}});
+    e.v += val(r); e.cost += r.cost||0; e.tok += recTokens(r); e.src[r.source] = (e.src[r.source]||0) + recTokens(r); }
+  const sess = {}; for(const s of d.sessions) sess[s.project||"(unknown)"] = (sess[s.project||"(unknown)"]||0) + 1;
+  const projs = Object.values(bp).filter(e=>e.v>0).sort((a,b)=>b.v-a.v);
+  document.getElementById("topProjects").innerHTML = projs.length
+    ? `<thead><tr><th class="nosort">Project</th><th class="nosort">Tools</th><th class="r nosort">Est. $</th><th class="r nosort">Tokens</th><th class="r nosort">Sessions</th></tr></thead><tbody>` +
+      projs.slice(0,7).map(e=>`<tr class="clickable" data-proj="${esc(e.project)}" title="Show this project's sessions"><td class="name">${esc(e.project)}</td>
+        <td>${topSources(e.src,3).map(toolDot).join(" ")}</td>
+        <td class="r">${fmtUSD(e.cost)}</td><td class="r">${fmtTok(e.tok)}</td><td class="r">${fmtNum(sess[e.project]||0)}</td></tr>`).join("") + "</tbody>"
+    : `<tbody><tr><td class="empty">Nothing in range.</td></tr></tbody>`;
+
+  renderHighlights(d);
+  renderHeat(d);
+  renderTokenMix(d);
+
+  const byDay={}; let max=0;
+  for(const r of RAW.records){
+    if(!passSrc(r.source)||!passModel(r.model)||!passProj(r.project)||!passIde(r.ide)) continue;
+    byDay[r.date]=(byDay[r.date]||0)+recTokens(r); max=Math.max(max,byDay[r.date]);
+  }
+  renderCalendar(byDay, max, day=>{ S.preset="custom"; S.from=day; S.to=day; renderAll(); });
 }
 
-/* ---------------- highlights ---------------- */
 function renderHighlights(d){
   const byDay={}, byProj={}, byHour={};
   for(const r of d.recs){ byDay[r.date]=(byDay[r.date]||0)+recTokens(r);
@@ -149,52 +290,21 @@ function renderHighlights(d){
   const top = o => Object.entries(o).sort((a,b)=>b[1]-a[1])[0];
   const bigDay=top(byDay), topProj=top(byProj), busiest=top(byHour);
   const pricey = d.sessions.slice().sort((a,b)=>(b.cost||0)-(a.cost||0))[0];
-  // longest run of consecutive active days inside the range
   const active = new Set(Object.keys(byDay).filter(k=>byDay[k]>0));
   let best=0, run=0, cur=0;
-  for(const day of dateList(d.r)){ if(active.has(day)){run++;best=Math.max(best,run);} else run=0; }
-  const days=dateList(d.r); for(let i=days.length-1;i>=0;i--){ if(active.has(days[i]))cur++; else break; }
+  const days=dateList(d.r);
+  for(const day of days){ if(active.has(day)){run++;best=Math.max(best,run);} else run=0; }
+  for(let i=days.length-1;i>=0;i--){ if(active.has(days[i]))cur++; else break; }
   const items=[
-    bigDay&&{l:"Biggest day",v:fmtTok(bigDay[1])+" tokens",s:bigDay[0]},
-    pricey&&{l:"Priciest session",v:fmtUSD(pricey.cost),s:(pricey.title||pricey.project||pricey.id)},
-    topProj&&{l:"Top project by cost",v:fmtUSD(topProj[1]),s:topProj[0]},
-    busiest&&{l:"Busiest hour",v:pad2(busiest[0])+":00",s:fmtTok(busiest[1])+" tokens"},
-    {l:"Longest streak",v:best+(best===1?" day":" days"),s:cur?`current streak ${cur}`:"not active today"},
+    bigDay&&{k:"Biggest day",v:fmtTok(bigDay[1])+" tokens",s:fmtDay(bigDay[0],true)},
+    pricey&&pricey.cost>0&&{k:"Priciest session",v:fmtUSD(pricey.cost),s:(pricey.title||pricey.project||pricey.id)},
+    topProj&&topProj[1]>0&&{k:"Top project by spend",v:fmtUSD(topProj[1]),s:topProj[0]},
+    busiest&&{k:"Busiest hour",v:pad2(busiest[0])+":00",s:fmtTok(busiest[1])+" tokens"},
+    {k:"Longest streak",v:best+(best===1?" day":" days"),s:cur?`current streak ${cur}`:"not active on the last day"},
   ].filter(Boolean);
   document.getElementById("highlights").innerHTML = items.map(i=>
-    `<div class="item"><div class="l">${i.l}</div><div class="v num" title="${esc(i.s)}">${i.v}</div>
-     <div class="s">${esc(i.s)}</div></div>`).join("") || `<div class="empty">Nothing in range.</div>`;
-}
-
-/* ---------------- overview charts ---------------- */
-function renderDaily(d){
-  const days = dateList(d.r);
-  const valOf = r => S.metric==="cost"?(r.cost||0) : S.metric==="messages"?(r.asst||0) : recTokens(r);
-  const srcs = ORDER.filter(s=>S.tools.has(s));
-  const ds = srcs.filter(s=>!isMuted("dailyChart",SRC[s].label)).map(s=>{
-    const m={}; for(const r of d.recs) if(r.source===s) m[r.date]=(m[r.date]||0)+valOf(r);
-    return stackDS(SRC[s].label, days.map(x=>+(m[x]||0).toFixed(4)), srcColor(s));
-  });
-  const fmt = S.metric==="cost"?fmtUSD:S.metric==="messages"?fmtNum:fmtTok;
-  document.getElementById("dailyLegend").innerHTML =
-    legendHTML("dailyChart", srcs.map(s=>({label:SRC[s].label,color:srcColor(s)})));
-  document.getElementById("dailyHint").textContent =
-    `${S.metric==="cost"?"est. cost":S.metric==="messages"?"assistant messages":"tokens"} per day, stacked by tool`;
-  mk("dailyChart",{type:"bar",data:{labels:days.map(shortDay),datasets:ds},
-    options:{scales:axes({x:{stacked:true},y:{stacked:true,ticks:{callback:v=>fmt(v)}}}),
-      plugins:{tooltip:{callbacks:{
-        label:c=>" "+c.dataset.label+": "+fmt(c.parsed.y),
-        footer:it=>"total "+fmt(it.reduce((a,x)=>a+x.parsed.y,0))}}}}});
-}
-const shortDay = d => d.slice(5).replace("-","/");
-
-function renderToolShare(d){
-  const valOf = r => S.metric==="cost"?(r.cost||0) : S.metric==="messages"?(r.asst||0) : recTokens(r);
-  const m={}; for(const r of d.recs) m[r.source]=(m[r.source]||0)+valOf(r);
-  const rows = ORDER.filter(s=>m[s]).map(s=>({label:SRC[s].label,value:m[s],color:srcColor(s)}))
-    .sort((a,b)=>b.value-a.value);
-  shareBars(document.getElementById("toolShare"), rows,
-    S.metric==="cost"?fmtUSD:S.metric==="messages"?fmtNum:fmtTok);
+    `<div class="fact"><span class="k">${i.k}</span><span class="x"><b class="num">${esc(i.v)}</b><div title="${esc(i.s)}">${esc(i.s)}</div></span></div>`).join("")
+    || `<div class="empty">Nothing in range.</div>`;
 }
 function renderHeat(d){
   const cells = Array.from({length:7},()=>Array(24).fill(0));
@@ -205,190 +315,149 @@ function renderHeat(d){
   }
   renderHeatmap(cells,max);
   document.getElementById("hmHint").textContent =
-    "local hour × weekday, by tokens" + (dimFiltered()?" · tool + date filters only":"");
+    "local hour × weekday, by tokens" + (dimFiltered()?" · tool and date filters only":"");
 }
-function renderComposition(d){
-  const KINDS=[["in","Input","--k-in"],["cr","Cache read","--k-cr"],
-               ["cc","Cache write","--k-cw"],["out","Output","--k-out"]];
-  const srcs = ORDER.filter(s=>S.tools.has(s));
-  const agg={}; let reason=0;
+const TOKEN_KINDS = () => [
+  {key:"in", label:"Input", color:cssv("--k-in")}, {key:"cr", label:"Cache read", color:cssv("--k-cr")},
+  {key:"cc", label:"Cache write", color:cssv("--k-cw")}, {key:"out", label:"Output", color:cssv("--k-out")}];
+function renderTokenMix(d){
+  const agg={};
   for(const r of d.recs){ const a=agg[r.source]||(agg[r.source]={in:0,cr:0,cc:0,out:0});
-    a.in+=r.in||0; a.cr+=r.cr||0; a.cc+=r.cc||0; a.out+=r.out||0; reason+=r.reason||0; }
-  const labels = srcs.filter(s=>agg[s]);
-  const ds = KINDS.filter(k=>!isMuted("compChart",k[1])).map(([k,lab,v])=>({
-    label:lab, data:labels.map(s=>agg[s][k]), backgroundColor:cssv(v), stack:"a",
-    borderColor:cssv("--surface"), borderWidth:{left:2}, borderRadius:3,
-    borderSkipped:false, maxBarThickness:26}));
-  document.getElementById("compLegend").innerHTML =
-    legendHTML("compChart", KINDS.map(([k,lab,v])=>({label:lab,color:cssv(v)})))
-    + (reason?`<span class="li dim" title="Reasoning tokens are already inside Output — shown here, not stacked, to avoid double counting">of which reasoning: ${fmtTok(reason)}</span>`:"");
-  mk("compChart",{type:"bar",
-    data:{labels:labels.map(s=>SRC[s].label),datasets:ds},
-    options:{indexAxis:"y",
-      scales:axes({x:{stacked:true,grid:{display:true,color:cssv("--grid")},ticks:{callback:v=>fmtTok(v)}},
-                   y:{stacked:true,grid:{display:false},ticks:{color:cssv("--text-2")}}}),
-      plugins:{tooltip:{callbacks:{label:c=>" "+c.dataset.label+": "+fmtTok(c.parsed.x),
-        footer:it=>"total "+fmtTok(it.reduce((a,x)=>a+x.parsed.x,0))}}}}});
-}
-
-function viewOverview(d){
-  renderKPIs(d); renderHighlights(d);
-  const byDay={}; let max=0;
-  for(const r of RAW.records){
-    if(!passSrc(r.source)||!passModel(r.model)||!passProj(r.project)) continue;
-    byDay[r.date]=(byDay[r.date]||0)+recTokens(r); max=Math.max(max,byDay[r.date]);
-  }
-  renderCalendar(byDay, max, day=>{ S.preset="custom"; S.from=day; S.to=day; syncRangeUI(); renderAll(); });
-  renderDaily(d); renderToolShare(d); renderHeat(d); renderComposition(d);
-}
-
-/* ---------------- helpers shared by the analytic views ---------------- */
-/* Today's rate — or, given a record's date, the rate in force that day, so a vendor
-   price cut never re-prices history (mirrors parser.price_of + PRICE_HISTORY). */
-function priceOf(m, date){
-  if(date) for(const [until,p] of (RAW.pricing_history && RAW.pricing_history[m]) || [])
-    if(date <= until) return p;
-  return (RAW.pricing && RAW.pricing[m]) || [0,0,0,0,0];
-}
-function metricOf(kind){
-  return kind==="cost" ? (r=>r.cost||0)
-       : kind==="messages" ? (r=>r.asst||0)
-       : kind==="time" ? (r=>r.active||0)
-       : (r=>recTokens(r));
-}
-function fmtOf(kind){
-  return kind==="cost" ? fmtUSD : kind==="messages" ? fmtNum : kind==="time" ? fmtDur : fmtTok;
-}
-function sortRows(rows, st){
-  return rows.slice().sort((a,b)=>{
-    let av=a[st.key], bv=b[st.key];
-    if(typeof av==="string"||typeof bv==="string")
-      return st.dir*((""+(av==null?"":av)).localeCompare(""+(bv==null?"":bv)));
-    return st.dir*((av||0)-(bv||0));
-  });
-}
-const TEXTCOL=new Set(["model","source","project","name","prov","cat","server","tool",
-  "path","last","when","label","title","branch","entry","toolsKey"]);
-function thead(cols, st, tag){
-  return "<thead><tr>"+cols.map(([k,l,title])=>
-    `<th data-k="${k}" data-t="${tag}" class="${TEXTCOL.has(k)?"":"r"}"${
-      title?` title="${esc(title)}"`:""}>${l}${
-      st.key===k?(st.dir<0?" ↓":" ↑"):""}</th>`).join("")+"</tr></thead>";
-}
-function srcBadge(s){
-  const c = srcColor(s);
-  return `<span class="badge" style="color:${c};border-color:${c}44;background:${c}1f">${SRC[s].label}</span>`;
-}
-function domSource(srcMap){
-  let best=null,bv=-1; for(const k in srcMap) if(srcMap[k]>bv){bv=srcMap[k];best=k;}
-  return best;
+    a.in+=r.in||0; a.cr+=r.cr||0; a.cc+=r.cc||0; a.out+=r.out||0; }
+  stackMeters("tokenMix", ORDER.filter(s=>agg[s] && (agg[s].in+agg[s].cr+agg[s].cc+agg[s].out)>0)
+    .map(s=>({label:SRC[s].label, color:srcColor(s), parts:agg[s]})), TOKEN_KINDS(), fmtTok);
 }
 
 /* ---------------- COST ---------------- */
 function viewCost(d){
-  const t = totals(d.recs);
+  const pd = hasPrev() ? slice(prevRange()) : null;
+  const t = totals(d.recs), pt = pd ? totals(pd.recs) : null;
+  const days = dateList(d.r), active = Math.max(1, t.days.size);
   let saved=0;
   for(const r of d.recs){ const p=priceOf(r.model, r.date); saved += (r.cr||0)*(p[0]-p[4])/1e6; }
-  const days = Math.max(1, t.days.size);
-  const perDay = t.cost/days;
-  const ctx = t.in+t.cr+t.cc;
-  const stats = [
-    {l:"Total est. cost", v:fmtUSD2(t.cost), s:`${rangeDays()} day window`},
-    {l:"Per active day", v:fmtUSD(perDay), s:`${days} active of ${rangeDays()}`},
-    {l:"30-day run rate", v:fmtUSD(perDay*30), s:"at the current pace"},
-    {l:"Per session", v:fmtUSD(d.sessions.length?t.cost/d.sessions.length:0), s:`${fmtNum(d.sessions.length)} sessions`},
-    {l:"Per prompt", v:fmtUSD(t.user?t.cost/t.user:0), s:`${fmtNum(t.user)} prompts`},
-    {l:"Cache hit rate", v:ctx?fmtPct(t.cr/ctx):"—", s:`${fmtTok(t.cr)} read from cache`},
-    {l:"Saved by caching", v:fmtUSD(saved), s:"vs. re-sending that context"},
-    {l:"Blended rate", v:t.tok?"$"+(t.cost/t.tok*1e6).toFixed(2):"—", s:"per 1M tokens"},
-    {l:"Output share", v:t.tok?fmtPct(t.out/t.tok):"—", s:`${fmtTok(t.out)} generated`},
-  ];
-  document.getElementById("costStats").innerHTML = stats.map(x=>
-    `<div class="stat"><div class="l">${x.l}</div><div class="v num">${x.v}</div><div class="s">${x.s}</div></div>`).join("");
+  document.getElementById("costHero").innerHTML = heroHTML({
+    label:"Est. spend at API list prices",
+    value: fmtUSD2(t.cost),
+    delta: pd ? deltaHTML(t.cost, pt.cost, true) : "",
+    note: pd ? `vs ${fmtUSD(pt.cost)} the ${prevLabel()}` : "",
+    facts:[
+      {l:"Per active day", v:fmtUSD(t.cost/active)},
+      {l:"30-day run rate", v:fmtUSD(t.cost/active*30), title:"at the current pace per active day"},
+      {l:"Per session", v:fmtUSD(d.sessions.length?t.cost/d.sessions.length:0)},
+      {l:"Per prompt", v:fmtUSD(t.user?t.cost/t.user:0)},
+    ]});
 
-  // cumulative cost by tool
-  const days2 = dateList(d.r);
-  const srcs = ORDER.filter(s=>S.tools.has(s));
+  // cumulative, by tool, with the previous period as a dashed reference
+  const srcs = ORDER.filter(s=>S.tools.has(s) && d.recs.some(r=>r.source===s));
   const ds = srcs.filter(s=>!isMuted("cumChart",SRC[s].label)).map(s=>{
-    const m={}; for(const r of d.recs) if(r.source===s) m[r.date]=(m[r.date]||0)+(r.cost||0);
     let run=0;
-    return areaDS(SRC[s].label, days2.map(x=>+(run+=(m[x]||0)).toFixed(2)), srcColor(s));
+    return areaDS(SRC[s].label, dailySeries(d.recs.filter(r=>r.source===s), days, r=>r.cost||0)
+      .map(v=>+(run+=v).toFixed(2)), srcColor(s));
   });
-  if(S.compare){
-    const pd = slice(prevRange());
-    const m={}; for(const r of pd.recs) m[r.date]=(m[r.date]||0)+(r.cost||0);
-    const pdays = dateList(prevRange()); let run=0, prevData;
-    ds.push({label:"Previous period (all tools)",
-      data:(prevData=pdays.map(x=>+(run+=(m[x]||0)).toFixed(2)).slice(0,days2.length)),
-      borderColor:cssv("--text-3"), borderDash:[5,4], borderWidth:1.5,
-      pointRadius:soloPoint(prevData), fill:false, tension:.25, stack:"b"});
+  if(pd){
+    let run=0; const prevData = dailySeries(pd.recs, dateList(prevRange()), r=>r.cost||0)
+      .map(v=>+(run+=v).toFixed(2)).slice(0, days.length);
+    ds.push({label:"Previous period (all tools)", data:prevData, borderColor:cssv("--text-3"),
+      borderDash:[5,4], borderWidth:1.5, pointRadius:soloPoint(prevData), fill:false, tension:.25, stack:"prev"});
   }
   document.getElementById("cumLegend").innerHTML =
     legendHTML("cumChart", srcs.map(s=>({label:SRC[s].label,color:srcColor(s)})));
-  mk("cumChart",{type:"line",data:{labels:days2.map(shortDay),datasets:ds},
+  mk("cumChart",{type:"line", $fmt:fmtUSD2, data:{labels:days.map(shortDay),datasets:ds},
     options:{interaction:{mode:"index",intersect:false},
-      scales:axes({y:{stacked:true,min:0,ticks:{callback:v=>fmtUSD(v)}}}),
+      scales:axes({y:{stacked:true,min:0,ticks:{callback:v=>fmtUSDk(v)}}}),
       plugins:{tooltip:{callbacks:{label:c=>" "+c.dataset.label+": "+fmtUSD2(c.parsed.y)}}}}});
 
-  // cost by project (cost by *tool* is already the Overview's share-by-tool card)
-  const byProj={}, projSrc={};
+  // tiles
+  const ctx = t.in+t.cr+t.cc, pctx = pt ? pt.in+pt.cr+pt.cc : 0;
+  const byDay = {}; for(const r of d.recs) byDay[r.date]=(byDay[r.date]||0)+(r.cost||0);
+  const topDay = Object.entries(byDay).sort((a,b)=>b[1]-a[1])[0];
+  const topSess = d.sessions.slice().sort((a,b)=>(b.cost||0)-(a.cost||0))[0];
+  const subCost = d.sessions.filter(s=>s.subagent).reduce((a,s)=>a+(s.cost||0),0);
+  document.getElementById("costStats").innerHTML = tilesHTML([
+    {l:"Cache hit rate", v:ctx?fmtPct(t.cr/ctx):"—", d:pd&&pctx&&ctx?deltaHTML(t.cr/ctx, pt.cr/pctx):"", s:`${fmtTok(t.cr)} read from cache`},
+    {l:"Saved by caching", v:fmtUSD(saved), s:"vs re-sending that context"},
+    {l:"Effective rate", v:t.tok?"$"+(t.cost/t.tok*1e6).toFixed(2):"—", s:"per 1M tokens, blended"},
+    {l:"Output share", v:t.tok?fmtPct(t.out/t.tok):"—", s:`${fmtTok(t.out)} generated`},
+    {l:"Priciest day", v:topDay?fmtUSD(topDay[1]):"—", s:topDay?fmtDay(topDay[0],true):""},
+    {l:subCost?"Spent in subagents":"Priciest session", v:subCost?fmtUSD(subCost):(topSess?fmtUSD(topSess.cost):"—"),
+     s:subCost?fmtPct(subCost/(t.cost||1))+" of spend":(topSess?(topSess.title||topSess.project||""):"")},
+  ]);
+
+  // spend by model / by project
+  const bm={}, bp={}, bpSrc={};
+  for(const r of d.recs){ if(!r.cost) continue;
+    if(r.model!=="(user)") bm[r.model]=(bm[r.model]||0)+r.cost;
+    const p=r.project||"(unknown)"; bp[p]=(bp[p]||0)+r.cost;
+    (bpSrc[p]=bpSrc[p]||{})[r.source]=(bpSrc[p][r.source]||0)+r.cost; }
+  barList("costByModel", Object.entries(bm).sort((a,b)=>b[1]-a[1])
+    .map(([m,v])=>({label:m, value:v, color:modelColor(m)})), {fmt:fmtUSD, total:t.cost, limit:10, more:"see Models"});
+  barList("costByProj", Object.entries(bp).sort((a,b)=>b[1]-a[1])
+    .map(([p,v])=>({label:p, value:v, dots:topSources(bpSrc[p],3), attr:`data-proj="${esc(p)}"`})),
+    {fmt:fmtUSD, total:t.cost, limit:10, more:"see Projects"});
+
+  // spend by token type — list price × tokens, per record's own date
+  const kinds = {in:0, cr:0, cw:0, out:0}; let priced = 0;
   for(const r of d.recs){
     if(!r.cost) continue;
-    byProj[r.project]=(byProj[r.project]||0)+r.cost;
-    (projSrc[r.project]=projSrc[r.project]||{})[r.source]=
-      (projSrc[r.project][r.source]||0)+r.cost;
+    const p = priceOf(r.model, r.date);
+    if(!p[0] && !p[1]) continue;
+    const cw5 = (r.cc5||r.cc1) ? (r.cc5||0) : (r.cc||0);
+    const parts = {in:(r.in||0)*p[0], out:(r.out||0)*p[1], cr:(r.cr||0)*p[4],
+      cw:cw5*(p[2]||p[0])+(r.cc1||0)*(p[3]||p[2]||p[0])};
+    const sum = parts.in+parts.out+parts.cr+parts.cw;
+    if(!sum) continue;
+    const scale = r.cost/(sum/1e6);        // match the record's real cost (logged-cost sources, multipliers)
+    for(const k in parts) kinds[k] += parts[k]/1e6*scale;
+    priced += r.cost;
   }
-  hbar("costTool", Object.entries(byProj).sort((a,b)=>b[1]-a[1]).slice(0,12)
-        .map(([p,v])=>({label:p,value:v,color:srcColor(domSource(projSrc[p]))})), {fmt:fmtUSD});
+  const K = TOKEN_KINDS(), kcol = {in:K[0].color, cr:K[1].color, cw:K[2].color, out:K[3].color};
+  barList("costByKind", [["in","Input"],["cr","Cache read"],["cw","Cache write"],["out","Output"]]
+    .map(([k,l])=>({label:l, value:kinds[k], color:kcol[k]})).sort((a,b)=>b.value-a.value), {fmt:fmtUSD, total:priced});
+  document.getElementById("costByKindSub").textContent = priced < t.cost - 0.01
+    ? `${fmtUSD(t.cost-priced)} can't be split — logged cost with no per-token price` : "what each kind of token cost you";
 
-  // cache hit rate over time (one series, one axis)
-  const cd={}; for(const r of d.recs){ const c=cd[r.date]||(cd[r.date]={cr:0,ctx:0});
-    c.cr+=r.cr||0; c.ctx+=ctxTokens(r); }
-  let cacheData;
-  mk("cacheChart",{type:"line",
-    data:{labels:days2.map(shortDay),datasets:[{
-      label:"Cache hit rate",
-      data:(cacheData=days2.map(x=>cd[x]&&cd[x].ctx?+(cd[x].cr/cd[x].ctx*100).toFixed(1):null)),
-      borderColor:cssv("--accent"), backgroundColor:cssv("--accent")+"22",
-      borderWidth:2, pointRadius:soloPoint(cacheData), pointHoverRadius:4,
-      tension:.3, fill:true, spanGaps:true}]},
-    options:{scales:axes({y:{min:0,max:100,ticks:{callback:v=>v+"%"}}}),
-      plugins:{tooltip:{callbacks:{label:c=>" cache hit "+c.parsed.y+"%"}}}}});
+  // cache hit rate over time
+  const cd={}; for(const r of d.recs){ const c=cd[r.date]||(cd[r.date]={cr:0,ctx:0}); c.cr+=r.cr||0; c.ctx+=ctxTokens(r); }
+  const cacheData = days.map(x=>cd[x]&&cd[x].ctx?+(cd[x].cr/cd[x].ctx*100).toFixed(1):null);
+  const ink = cssv("--bar");
+  mk("cacheChart",{type:"line", $fmt:v=>v.toFixed(1)+"%",
+    data:{labels:days.map(shortDay),datasets:[{label:"Cache hit rate", data:cacheData,
+      borderColor:ink, backgroundColor:ink+"1f", borderWidth:2, pointRadius:soloPoint(cacheData),
+      pointHoverRadius:4, tension:.3, fill:true, spanGaps:true}]},
+    options:{interaction:{mode:"index",intersect:false},scales:axes({y:{min:0,max:100,ticks:{callback:v=>v+"%"}}}),
+      plugins:{tooltip:{displayColors:false,callbacks:{label:c=>" cache hit "+c.parsed.y+"%"}}}}});
 
-  // blended rate by model.
-  //   "all" = cost / every token, cache reads included. Correct, but the divisor is
-  //     ~95% cache reads, so the bar mostly tracks how well-cached a model was and is
-  //     NOT comparable across providers (OpenAI bills no cache writes at all).
-  //   "out" = cost / output tokens — the whole cost over the work actually generated,
-  //     which is comparable across models and providers.
+  // effective rate by model.
+  //   "all" = cost / every token, cache reads included — mostly tracks how well-cached
+  //     a model was, NOT comparable across providers.
+  //   "out" = cost / output tokens — comparable across models and providers.
   const perOut = S.rateMetric==="out";
-  const bm={};
+  const rm={};
   for(const r of d.recs){ if(r.model==="(user)") continue;
-    const b=bm[r.model]||(bm[r.model]={tok:0,out:0,cost:0});
-    b.tok+=recTokens(r); b.out+=r.out||0; b.cost+=r.cost||0; }
-  const rows=Object.entries(bm)
-    .filter(([,v])=>perOut ? v.out>1000 : v.tok>10000)
-    .map(([m,v])=>({label:m,value:v.cost/(perOut?v.out:v.tok)*1e6,color:modelColor(m)}))
-    .sort((a,b)=>b.value-a.value).slice(0,12);
-  hbar("rateChart", rows, {fmt:v=>"$"+(v>=100?Math.round(v):v.toFixed(2))});
-  document.getElementById("rateHint").innerHTML = perOut
-    ? "total cost &divide; output tokens &mdash; comparable across models and providers"
-    : "a <em>rate</em>, not a total &mdash; multiply by a model's tokens to get its cost";
+    const b=rm[r.model]||(rm[r.model]={tok:0,out:0,cost:0}); b.tok+=recTokens(r); b.out+=r.out||0; b.cost+=r.cost||0; }
+  barList("rateList", Object.entries(rm).filter(([,v])=>v.cost>0 && (perOut ? v.out>1000 : v.tok>10000))
+    .map(([m,v])=>({label:m, value:v.cost/(perOut?v.out:v.tok)*1e6, color:modelColor(m)}))
+    .sort((a,b)=>b.value-a.value), {fmt:v=>"$"+(v>=100?Math.round(v).toLocaleString():v.toFixed(2)), share:false, limit:10});
+  document.getElementById("rateHint").textContent = perOut
+    ? "total cost ÷ output tokens — comparable across models and providers"
+    : "cost per 1M tokens of every kind — a rate, not a total";
+  document.querySelectorAll("#rateSeg button").forEach(b=>b.classList.toggle("on", b.dataset.r===S.rateMetric));
 
-  // daily cost stacked
-  const dsc = srcs.map(s=>{
-    const m={}; for(const r of d.recs) if(r.source===s) m[r.date]=(m[r.date]||0)+(r.cost||0);
-    return stackDS(SRC[s].label, days2.map(x=>+(m[x]||0).toFixed(3)), srcColor(s));
-  });
-  mk("dailyCost",{type:"bar",data:{labels:days2.map(shortDay),datasets:dsc},
-    options:{scales:axes({x:{stacked:true},y:{stacked:true,ticks:{callback:v=>fmtUSD(v)}}}),
+  // daily spend stacked
+  document.getElementById("dailyCostLegend").innerHTML =
+    legendHTML("dailyCost", srcs.map(s=>({label:SRC[s].label,color:srcColor(s)})));
+  mk("dailyCost",{type:"bar", $fmt:fmtUSD2, $stacked:true, data:{labels:days.map(shortDay),
+      datasets:srcs.filter(s=>!isMuted("dailyCost",SRC[s].label)).map(s=>
+        stackDS(SRC[s].label, dailySeries(d.recs.filter(r=>r.source===s), days, r=>r.cost||0).map(v=>+v.toFixed(3)), srcColor(s)))},
+    options:{interaction:{mode:"index",intersect:false},
+      scales:axes({x:{stacked:true},y:{stacked:true,ticks:{callback:v=>fmtUSDk(v)}}}),
       plugins:{tooltip:{callbacks:{label:c=>" "+c.dataset.label+": "+fmtUSD2(c.parsed.y),
-        footer:it=>"total "+fmtUSD2(it.reduce((a,x)=>a+x.parsed.y,0))}}}}});
+        footer:it=>"Total "+fmtUSD2(it.reduce((a,x)=>a+x.parsed.y,0))}}}}});
 }
 
-/* ---------------- MODELS & PROVIDERS ---------------- */
+/* ---------------- MODELS ---------------- */
 function viewModels(d){
-  const val = metricOf(S.provMetric), fmt = fmtOf(S.provMetric);
+  const val = metricOf(), fmt = fmtOf();
   const recs = d.recs.filter(r=>r.model!=="(user)");
   const prov={}, provModels={}, provTools={}, byModel={};
   for(const r of recs){
@@ -397,105 +466,27 @@ function viewModels(d){
     (provModels[p]=provModels[p]||{})[r.model]=(provModels[p][r.model]||0)+v;
     (provTools[p]=provTools[p]||{})[r.source]=(provTools[p][r.source]||0)+v;
     const e=byModel[r.model]||(byModel[r.model]={model:r.model,tok:0,cost:0,msgs:0,in:0,out:0,cr:0,cc:0,tools:{}});
-    e.tok+=tk; e.cost+=r.cost||0; e.msgs+=r.asst||0;
-    e.in+=r.in||0; e.out+=r.out||0; e.cr+=r.cr||0; e.cc+=r.cc||0;
+    e.tok+=tk; e.cost+=r.cost||0; e.msgs+=r.asst||0; e.in+=r.in||0; e.out+=r.out||0; e.cr+=r.cr||0; e.cc+=r.cc||0;
     const te=e.tools[r.source]||(e.tools[r.source]={source:r.source,tok:0,cost:0,msgs:0,in:0,out:0,cr:0,cc:0});
-    te.tok+=tk; te.cost+=r.cost||0; te.msgs+=r.asst||0;
-    te.in+=r.in||0; te.out+=r.out||0; te.cr+=r.cr||0; te.cc+=r.cc||0;
+    te.tok+=tk; te.cost+=r.cost||0; te.msgs+=r.asst||0; te.in+=r.in||0; te.out+=r.out||0; te.cr+=r.cr||0; te.cc+=r.cc||0;
   }
   const provs = PROVIDERS.filter(p=>prov[p]);
   const grand = provs.reduce((a,p)=>a+prov[p],0)||1;
 
-  // head-to-head
+  // provider cards
   document.getElementById("provH2H").innerHTML = provs.map(p=>{
     const models=Object.entries(provModels[p]).sort((a,b)=>b[1]-a[1]);
-    const tools=Object.entries(provTools[p]).sort((a,b)=>b[1]-a[1]);
-    return `<div class="item" style="flex:1 1 220px;background:var(--surface-2);border-radius:var(--radius-sm);padding:13px 15px;margin-bottom:0">
-      <div style="display:flex;align-items:center;gap:8px">
-        <span class="swatch" style="background:${provColor(p)};margin:0"></span>
-        <strong>${p}</strong><span class="dim num" style="margin-left:auto">${fmtPct(prov[p]/grand)}</span></div>
-      <div class="num" style="font-size:22px;font-weight:660;margin:6px 0 4px">${fmt(prov[p])}</div>
-      <div class="meter" style="margin-bottom:8px"><i style="width:${prov[p]/grand*100}%;background:${provColor(p)}"></i></div>
-      <div class="s dim" style="font-size:11.5px">${models.length} model${models.length>1?"s":""} · top ${esc(models[0][0])}</div>
-      <div class="s dim" style="font-size:11.5px">ran in ${tools.map(([s])=>SRC[s].label).join(", ")}</div>
+    const tools=Object.entries(provTools[p]).filter(([,v])=>v>0).sort((a,b)=>b[1]-a[1]);
+    return `<div class="prov">
+      <div class="prov-h"><span class="sw" style="background:${provColor(p)}"></span>${esc(p)}<span class="pct">${fmtPct(prov[p]/grand)}</span></div>
+      <div class="prov-v">${fmt(prov[p])}</div>
+      <div class="bar-track"><div class="bar-fill" style="width:${(prov[p]/grand*100).toFixed(1)}%;background:${provColor(p)}"></div></div>
+      <div class="prov-s">${models.length} model${models.length>1?"s":""} · top ${esc(models[0][0])}</div>
+      <div class="prov-s" style="margin-top:3px">ran in ${tools.map(([s])=>toolDot(s)+" "+esc(SRC[s].label)).join(" · ")}</div>
     </div>`;
-  }).join("") || `<div class="empty">Nothing in range.</div>`;
-  document.getElementById("provHint").textContent =
-    "who made the model — independent of which tool you ran it in" +
-    (S.provMetric==="tokens" ? " · Copilot/Cursor token counts are estimates, prefer Cost or Msgs" : "");
+  }).join("") || `<div class="card"><div class="empty">Nothing in range.</div></div>`;
 
-  // concentric doughnut: provider (inner) → model (outer)
-  const outer=[], outerC=[], outerL=[], outerM=[];
-  provs.forEach(p=>Object.entries(provModels[p]).sort((a,b)=>b[1]-a[1])
-    .filter(([,v])=>v>0)                       // $0 / 0-token models aren't slices
-    .forEach(([m,v])=>{
-      outer.push(+v.toFixed(4)); outerC.push(modelColor(m));
-      outerL.push(m+" · "+p); outerM.push(m); }));
-  const rings = [];
-  if(provs.length > 2)     // with 1–2 providers the ring only restates the cards above
-    rings.push({data:provs.map(p=>+prov[p].toFixed(4)), backgroundColor:provs.map(provColor),
-                _labels:provs, weight:.5, borderColor:cssv("--surface"), borderWidth:2});
-  rings.push({data:outer, backgroundColor:outerC, _labels:outerL, weight:1,
-              borderColor:cssv("--surface"), borderWidth:2});
-  mk("provDonut",{type:"doughnut",
-    data:{labels:outerL, datasets:rings},
-    options:{cutout:"46%",plugins:{tooltip:{itemSort:null,callbacks:{
-      label:c=>" "+c.dataset._labels[c.dataIndex]+": "+fmt(c.parsed)}}}}});
-
-  const donutHint = document.querySelector("#v-models .hint[data-donut]");
-  if(donutHint) donutHint.textContent = rings.length>1
-    ? "inner ring provider · outer ring model" : "models, coloured by provider";
-  document.getElementById("provDonutLegend").innerHTML = legendStatic(
-    rings.length>1 ? provs.map(p=>({label:p,color:provColor(p)}))
-                   : outerM.slice(0,10).map(m=>({label:m,color:modelColor(m)})));
-
-  // provider share over time (100%)
-  const days = dateList(d.r);
-  const per={}; for(const r of recs){ const p=providerOf(r.model);
-    (per[r.date]=per[r.date]||{})[p]=(per[r.date][p]||0)+val(r); }
-  const shareDS = provs.map(p=>{
-    const data=days.map(x=>{ const row=per[x]; if(!row) return null;
-      const tot=Object.values(row).reduce((a,b)=>a+b,0); return tot?+(100*(row[p]||0)/tot).toFixed(1):null; });
-    return {label:p,data,borderColor:provColor(p),backgroundColor:provColor(p)+"44",
-      borderWidth:1.5,pointRadius:soloPoint(data),pointHoverRadius:4,tension:.25,
-      fill:true,stack:"a",spanGaps:false};
-  });
-  // normalised to 100% — muting a provider would make the rest not add up
-  document.getElementById("provShareLegend").innerHTML =
-    legendStatic(provs.map(p=>({label:p,color:provColor(p)})));
-  mk("provShare",{type:"line",data:{labels:days.map(shortDay),datasets:shareDS},
-    options:{interaction:{mode:"index",intersect:false},
-      scales:axes({y:{stacked:true,min:0,max:100,ticks:{callback:v=>v+"%"}}}),
-      plugins:{tooltip:{callbacks:{label:c=>" "+c.dataset.label+": "+(c.parsed.y||0)+"%"}}}}});
-
-  // model timeline
-  const mtot={}; for(const r of recs) mtot[r.model]=(mtot[r.model]||0)+val(r);
-  const topM = Object.entries(mtot).filter(([,v])=>v>0)
-    .sort((a,b)=>b[1]-a[1]).slice(0,8).map(x=>x[0]);
-  const byDM={}; for(const r of recs){ if(!topM.includes(r.model)) continue;
-    (byDM[r.model]=byDM[r.model]||{})[r.date]=(byDM[r.model][r.date]||0)+val(r); }
-  const tlDS = topM.filter(m=>!isMuted("modelTL",m)).map(m=>
-    areaDS(m, days.map(x=>+((byDM[m]||{})[x]||0).toFixed(4)), modelColor(m)));
-  document.getElementById("modelTLLegend").innerHTML =
-    legendHTML("modelTL", topM.map(m=>({label:m,color:modelColor(m)})));
-  mk("modelTL",{type:"line",data:{labels:days.map(shortDay),datasets:tlDS},
-    options:{interaction:{mode:"index",intersect:false},
-      // a stacked area must start at zero: on a one-day range every stacked value sits
-      // near the total, so auto-scaling spans e.g. $17.00-$17.15 and each tick reads "$17"
-      scales:axes({y:{stacked:true,min:0,ticks:{callback:v=>fmt(v)}}}),
-      plugins:{tooltip:{callbacks:{label:c=>" "+c.dataset.label+": "+fmt(c.parsed.y)}}}}});
-
-  // provider x tool matrix
-  const srcs = ORDER.filter(s=>S.tools.has(s) && recs.some(r=>r.source===s));
-  let h = `<thead><tr><th>Provider</th>${srcs.map(s=>`<th class="r">${SRC[s].label}</th>`).join("")}<th class="r">Total</th></tr></thead><tbody>`;
-  for(const p of provs){
-    h += `<tr><td><span class="swatch" style="background:${provColor(p)}"></span>${p}</td>` +
-      srcs.map(s=>`<td class="num r">${(provTools[p]||{})[s]?fmt(provTools[p][s]):'<span class="dim">—</span>'}</td>`).join("") +
-      `<td class="num r"><strong>${fmt(prov[p])}</strong></td></tr>`;
-  }
-  document.getElementById("provMatrix").innerHTML = h+"</tbody>";
-
-  // model table — one row per model, tools it ran in shown side by side, expandable for a per-tool split
+  // model table — one row per model; several tools → expandable per-tool split
   const tokGrand = Object.values(byModel).reduce((a,x)=>a+x.tok,0) || 1;
   const rows = Object.values(byModel).filter(e=>e.tok||e.cost||e.msgs).map(e=>{
     const toolList = Object.values(e.tools).sort((a,b)=>b.tok-a.tok);
@@ -503,41 +494,76 @@ function viewModels(d){
       share:e.tok/tokGrand, rate:e.tok?e.cost/e.tok*1e6:0, prov:providerOf(e.model)};
   });
   const cols=[["model","Model"],["toolsKey","Tool"],["prov","Provider"],["tok","Tokens"],
-    ["out","Output"],["cr","Cache read"],["cost","Est. $"],["msgs","Msgs"],
-    ["rate","$/Mtok","effective blended rate"],["share","Share"]];
-  const sorted = sortRows(rows, S.modelSort);
+    ["out","Output"],["cr","Cache read"],["cost","Est. $"],["msgs","Replies"],
+    ["rate","$/Mtok","effective blended rate"],["share","Share","share of tokens"]];
   const subRow = t=>{
     const rate = t.tok?t.cost/t.tok*1e6:0;
-    return `<tr class="sub-row">
-      <td class="dim" colspan="2">└ ${srcBadge(t.source)}</td><td></td>
-      <td class="num r dim">${fmtTok(t.tok)}</td><td class="num r dim">${fmtTok(t.out)}</td>
-      <td class="num r dim">${fmtTok(t.cr)}</td><td class="num r dim">${fmtUSD(t.cost)}</td>
-      <td class="num r dim">${fmtNum(t.msgs)}</td><td class="num r dim">$${rate.toFixed(2)}</td>
-      <td></td></tr>`;
+    return `<tr class="sub-row"><td colspan="2" class="dim">└ ${srcBadge(t.source)}</td><td></td>
+      <td class="r dim">${fmtTok(t.tok)}</td><td class="r dim">${fmtTok(t.out)}</td>
+      <td class="r dim">${fmtTok(t.cr)}</td><td class="r dim">${fmtUSD(t.cost)}</td>
+      <td class="r dim">${fmtNum(t.msgs)}</td><td class="r dim">$${rate.toFixed(2)}</td><td></td></tr>`;
   };
   document.getElementById("modelTable").innerHTML = thead(cols,S.modelSort,"model")+"<tbody>"+
-    sorted.map(r=>{
-      const multi = r.toolList.length>1;
-      const expanded = multi && S.modelExpanded.has(r.model);
+    sortRows(rows, S.modelSort).map(r=>{
+      const multi = r.toolList.length>1, expanded = multi && S.modelExpanded.has(r.model);
       const main = `<tr class="${multi?"clickable":""}" ${multi?`data-model="${esc(r.model)}"`:""}>
-        <td>${multi?`<span class="caret">${expanded?"▾":"▸"}</span>`:""}<span class="swatch" style="background:${modelColor(r.model)}"></span>${esc(r.model)}
-          ${priceOf(r.model)[0]===0?'<span class="dim" title="no price row in PRICING — cost reads as $0">⚠</span>':''}</td>
-        <td>${r.toolList.map(t=>srcBadge(t.source)).join(" ")}</td><td class="dim">${r.prov}</td>
-        <td class="num r">${fmtTok(r.tok)}</td><td class="num r">${fmtTok(r.out)}</td>
-        <td class="num r">${fmtTok(r.cr)}</td><td class="num r">${fmtUSD(r.cost)}</td>
-        <td class="num r">${fmtNum(r.msgs)}</td><td class="num r">$${r.rate.toFixed(2)}</td>
-        <td class="num r">${fmtPct(r.share)}</td></tr>`;
+        <td class="name">${multi?`<span class="caret">${expanded?"▾":"▸"}</span>`:'<span class="caret"></span>'}<span class="sw" style="background:${modelColor(r.model)};margin-right:8px"></span>${esc(r.model)}${
+          priceOf(r.model)[0]===0 && r.tok && !r.cost ? '<span class="warn-ic" title="No price row for this model — its cost reads as $0">⚠</span>':''}</td>
+        <td>${r.toolList.map(t=>srcBadge(t.source)).join(" ")}</td><td class="dim">${esc(r.prov)}</td>
+        <td class="r">${fmtTok(r.tok)}</td><td class="r">${fmtTok(r.out)}</td>
+        <td class="r">${fmtTok(r.cr)}</td><td class="r"><b>${fmtUSD(r.cost)}</b></td>
+        <td class="r">${fmtNum(r.msgs)}</td><td class="r">$${r.rate.toFixed(2)}</td>
+        <td class="r dim">${fmtPct(r.share)}</td></tr>`;
       return expanded ? main+r.toolList.map(subRow).join("") : main;
     }).join("")+"</tbody>";
+
+  // model timeline
+  const days = dateList(d.r);
+  const mtot={}; for(const r of recs) mtot[r.model]=(mtot[r.model]||0)+val(r);
+  const topM = Object.entries(mtot).filter(([,v])=>v>0).sort((a,b)=>b[1]-a[1]).slice(0,8).map(x=>x[0]);
+  const byDM={}; for(const r of recs){ if(!topM.includes(r.model)) continue;
+    (byDM[r.model]=byDM[r.model]||{})[r.date]=(byDM[r.model][r.date]||0)+val(r); }
+  document.getElementById("modelTLLegend").innerHTML =
+    legendHTML("modelTL", topM.map(m=>({label:m,color:modelColor(m)})));
+  mk("modelTL",{type:"line", $fmt:fmt, $stacked:true, data:{labels:days.map(shortDay),
+      datasets:topM.filter(m=>!isMuted("modelTL",m)).map(m=>areaDS(m, days.map(x=>+((byDM[m]||{})[x]||0).toFixed(4)), modelColor(m)))},
+    options:{interaction:{mode:"index",intersect:false},
+      // a stacked area must start at zero, or a one-day range auto-scales to a sliver
+      scales:axes({y:{stacked:true,min:0,ticks:{callback:v=>tickOf()(v)}}}),
+      plugins:{tooltip:{callbacks:{label:c=>" "+c.dataset.label+": "+fmt(c.parsed.y)}}}}});
+
+  // provider share over time (100%) — muting would make the rest not add up, so a static legend
+  const per={}; for(const r of recs){ const p=providerOf(r.model); (per[r.date]=per[r.date]||{})[p]=(per[r.date][p]||0)+val(r); }
+  const shareDS = provs.map(p=>{
+    const data=days.map(x=>{ const row=per[x]; if(!row) return null;
+      const tot=Object.values(row).reduce((a,b)=>a+b,0); return tot?+(100*(row[p]||0)/tot).toFixed(1):null; });
+    return {label:p,data,borderColor:provColor(p),backgroundColor:provColor(p)+"3d",borderWidth:1.5,
+      pointRadius:soloPoint(data),pointHoverRadius:4,tension:.25,fill:true,stack:"a",spanGaps:false};
+  });
+  document.getElementById("provShareLegend").innerHTML = legendStatic(provs.map(p=>({label:p,color:provColor(p)})));
+  mk("provShare",{type:"line", $fmt:v=>v.toFixed(1)+"%", data:{labels:days.map(shortDay),datasets:shareDS},
+    options:{interaction:{mode:"index",intersect:false},
+      scales:axes({y:{stacked:true,min:0,max:100,ticks:{callback:v=>v+"%"}}}),
+      plugins:{tooltip:{callbacks:{label:c=>" "+c.dataset.label+": "+(c.parsed.y||0)+"%"}}}}});
+
+  // provider x tool matrix
+  const srcs = ORDER.filter(s=>S.tools.has(s) && recs.some(r=>r.source===s));
+  let h = `<thead><tr><th class="nosort">Provider</th>${srcs.map(s=>`<th class="r nosort">${esc(SRC[s].label)}</th>`).join("")}<th class="r nosort">Total</th></tr></thead><tbody>`;
+  for(const p of provs){
+    h += `<tr><td><span class="sw" style="background:${provColor(p)};margin-right:8px"></span>${esc(p)}</td>` +
+      srcs.map(s=>`<td class="r">${(provTools[p]||{})[s]?fmt(provTools[p][s]):'<span class="dim">—</span>'}</td>`).join("") +
+      `<td class="r"><b>${fmt(prov[p])}</b></td></tr>`;
+  }
+  document.getElementById("provMatrix").innerHTML = h+"</tbody>";
 }
 
 /* ---------------- TOOLS & AGENTS ---------------- */
 const CATS=[
-  ["Read / search", /^(read|glob|grep|ls|list_dir|read_file|file_search|semantic_search|codebase_search|grep_search|search|list_code_usages|toolsearch|view_image|view)/i],
+  ["Read / search", /^(read|glob|grep|ls|list_dir|read_file|file_search|semantic_search|codebase_search|grep_search|search|list_code_usages|toolsearch|tool_search|view_image|view)/i],
   ["Edit / write",  /^(edit|write|multiedit|notebookedit|apply_patch|str_replace|create_file|insert_edit|replace_string|create_directory|patch)/i],
-  ["Execute",       /^(bash|shell|exec|wait|run_in_terminal|run_command|execute|terminal|python|get_terminal|kill)/i],
+  ["Execute",       /^(bash|shell|exec|wait|run_in_terminal|run_command|execute|terminal|python|get_terminal|kill|write_stdin)/i],
   ["Web",           /^(webfetch|websearch|web_search|web_fetch|fetch|fetch_webpage|open_simple_browser)/i],
-  ["Agents / tasks",/^(task|agent|workflow|sendmessage|todowrite|update_plan|manage_todo|think|skill|askuserquestion|exitplanmode|enterplanmode)/i],
+  ["Agents / tasks",/^(task|agent|workflow|sendmessage|todowrite|update_plan|manage_todo|think|skill|askuserquestion|exitplanmode|enterplanmode|spawn_agent)/i],
 ];
 function categorize(name){
   if(/^mcp__|^mcp_/i.test(name)) return "MCP";
@@ -545,154 +571,118 @@ function categorize(name){
   return "Other";
 }
 function viewTools(d){
+  const tools = toolCounts(d.r), t = totals(d.recs);
+  const totalCalls = tools.reduce((a,x)=>a+x.count,0);
+  const side = d.sessions.reduce((a,s)=>a+(s.side||0),0);
+  const mcp = tools.filter(x=>categorize(x.name)==="MCP");
+  const web = tools.filter(x=>categorize(x.name)==="Web").reduce((a,x)=>a+x.count,0);
+  // Gap-capped (parser.py ACTIVE_GAP_CAP): a lower bound, not wall-clock length.
+  const activeSecs = d.recs.reduce((a,r)=>a+(r.active||0),0);
+  const prem = d.recs.reduce((a,r)=>a+(r.prem||0),0);
+  const al=(RAW.ai_lines||[]).filter(x=>x.date>=d.r.from&&x.date<=d.r.to);
+  const acc=al.reduce((a,x)=>a+x.tab_accepted+x.composer_accepted,0);
+  const sug=al.reduce((a,x)=>a+x.tab_suggested+x.composer_suggested,0);
+  document.getElementById("agentStats").innerHTML = tilesHTML([
+    {l:"Active time", v:activeSecs?fmtDur(activeSecs):"—", s:"gap-capped estimate", title:"Consecutive turns no more than 5 minutes apart — a lower bound, not wall-clock length"},
+    {l:"Tool calls", v:fmtNum(totalCalls), s:`${fmtNum(tools.length)} distinct tools`},
+    {l:"Calls per prompt", v:t.user?(totalCalls/t.user).toFixed(1):"—", s:`${fmtNum(t.user)} prompts`},
+    {l:"Tokens per prompt", v:t.user?fmtTok(t.tok/t.user):"—", s:"context amplification"},
+    {l:"Replies per session", v:d.sessions.length?(t.msgs/d.sessions.length).toFixed(1):"—", s:`${fmtNum(d.sessions.length)} sessions`},
+    {l:"Subagent tokens", v:t.tok?fmtPct(side/t.tok):"—", s:`${fmtTok(side)} in spawned agents`},
+    {l:"MCP calls", v:fmtNum(mcp.reduce((a,x)=>a+x.count,0)), s:`${mcp.length} MCP tools`},
+    {l:"Web lookups", v:fmtNum(web), s:"search / fetch calls"},
+    prem ? {l:"Premium requests", v:fmtNum(Math.round(prem)), s:"Copilot's billing unit"} : null,
+    al.length ? {l:"AI lines kept", v:fmtNum(acc), s:sug?`${fmtPct(acc/sug)} of ${fmtNum(sug)} · Cursor`:"Cursor"} : null,
+  ]);
 
-  // ---- IDE x tool matrix ------------------------------------------------
-  // The IDE is a real dimension now, so show it rather than only offering it as
-  // a filter. Copilot's is derived from which editor's storage the log came from;
-  // Claude/Codex stamp an entrypoint. Rows are IDEs, columns the tools run in them.
+  barList("toolList", tools.map(x=>({label:x.name, value:x.count, dots:[domSource(x.src)]})),
+    {fmt:fmtNum, total:totalCalls, limit:15, more:"full list below"});
+  const cat={}; for(const x of tools) cat[categorize(x.name)]=(cat[categorize(x.name)]||0)+x.count;
+  barList("catList", ["Read / search","Edit / write","Execute","Web","Agents / tasks","MCP","Other"]
+    .filter(c=>cat[c]).map(c=>({label:c, value:cat[c]})).sort((a,b)=>b.value-a.value), {fmt:fmtNum, total:totalCalls});
+
+  // IDE x tool matrix, in the global measure
   {
-    const val = metricOf(S.ideMetric), fmt = fmtOf(S.ideMetric);
+    const val = metricOf(), fmt = fmtOf();
     const byIde = {}, ideTot = {}, srcTot = {};
     for(const r of d.recs){
       const i = r.ide || "(unknown)", v = val(r);
       if(!v) continue;
       (byIde[i] = byIde[i] || {})[r.source] = (byIde[i][r.source] || 0) + v;
-      ideTot[i] = (ideTot[i] || 0) + v;
-      srcTot[r.source] = (srcTot[r.source] || 0) + v;
+      ideTot[i] = (ideTot[i] || 0) + v; srcTot[r.source] = (srcTot[r.source] || 0) + v;
     }
     const ides = Object.keys(ideTot).sort((a,b)=>ideTot[b]-ideTot[a]);
     const srcs = ORDER.filter(x => srcTot[x]);
     const grand = ides.reduce((a,i)=>a+ideTot[i],0) || 1;
-    let h = `<table><thead><tr><th>IDE / surface</th>${
-      srcs.map(x=>`<th class="r">${SRC[x].label}</th>`).join("")
-    }<th class="r">Total</th><th class="r">Share</th></tr></thead><tbody>`;
-    for(const i of ides){
-      h += `<tr><td>${esc(i)}</td>` + srcs.map(x =>
-        `<td class="num r">${byIde[i][x] ? fmt(byIde[i][x]) : '<span class="dim">—</span>'}</td>`
-      ).join("") + `<td class="num r"><strong>${fmt(ideTot[i])}</strong></td>`
-        + `<td class="num r dim">${fmtPct(ideTot[i]/grand)}</td></tr>`;
-    }
-    document.getElementById("ideMatrix").innerHTML = h + "</tbody></table>";
-    document.getElementById("ideHint").textContent = ides.length > 1
-      ? `${ides.length} surfaces in range · a VS Code extension logs "VS Code" whatever fork hosts it`
-      : "which IDE / surface each tool ran in";
+    document.getElementById("ideMatrix").innerHTML = ides.length ? `<table><thead><tr><th class="nosort">IDE / surface</th>${
+      srcs.map(x=>`<th class="r nosort">${esc(SRC[x].label)}</th>`).join("")}<th class="r nosort">Total</th><th class="r nosort">Share</th></tr></thead><tbody>` +
+      ides.map(i=>`<tr><td>${esc(i)}</td>` + srcs.map(x=>`<td class="r">${byIde[i][x] ? fmt(byIde[i][x]) : '<span class="dim">—</span>'}</td>`).join("")
+        + `<td class="r"><b>${fmt(ideTot[i])}</b></td><td class="r dim">${fmtPct(ideTot[i]/grand)}</td></tr>`).join("") + "</tbody></table>"
+      : `<div class="empty">Nothing in range.</div>`;
+    document.getElementById("ideHint").textContent = (ides.length > 1
+      ? `${ides.length} surfaces · a VS Code extension logs "VS Code" whatever fork hosts it`
+      : "which IDE or surface each tool ran in") + " · " + metricNoun();
   }
-  const tools = toolCounts(d.r);
-  const t = totals(d.recs);
-  const totalCalls = tools.reduce((a,x)=>a+x.count,0);
-  const side = d.sessions.reduce((a,s)=>a+(s.side||0),0);
-  const mcp = tools.filter(x=>categorize(x.name)==="MCP");
-  const web = tools.filter(x=>categorize(x.name)==="Web").reduce((a,x)=>a+x.count,0);
-  // Gap-capped: consecutive turns count as active only within 5 minutes of each
-  // other (parser.py's ACTIVE_GAP_CAP), so a session resumed after a day away
-  // doesn't count that day as "working". A lower bound, not wall-clock length.
-  const activeSecs = d.recs.reduce((a,r)=>a+(r.active||0),0);
-  const stats=[
-    {l:"Active time",v:activeSecs?fmtDur(activeSecs):"—",s:"est. — gap-capped, see the Sessions tab"},
-    {l:"Tool calls",v:fmtNum(totalCalls),s:`${tools.length} distinct tools`},
-    {l:"Per prompt",v:t.user?(totalCalls/t.user).toFixed(1):"—",s:`${fmtNum(t.user)} prompts`},
-    {l:"Per assistant msg",v:t.msgs?(totalCalls/t.msgs).toFixed(2):"—",s:`${fmtNum(t.msgs)} messages`},
-    {l:"Tokens per prompt",v:t.user?fmtTok(t.tok/t.user):"—",s:"context amplification"},
-    {l:"Msgs per session",v:d.sessions.length?(t.msgs/d.sessions.length).toFixed(1):"—",s:`${fmtNum(d.sessions.length)} sessions`},
-    {l:"Subagent tokens",v:t.tok?fmtPct(side/t.tok):"—",s:`${fmtTok(side)} in spawned agents`},
-    {l:"MCP calls",v:fmtNum(mcp.reduce((a,x)=>a+x.count,0)),s:`${mcp.length} MCP tools`},
-    {l:"Web lookups",v:fmtNum(web),s:"search / fetch calls"},
-  ];
-  // Copilot bills in premium requests, not tokens — its one exact usage number
-  const prem = d.recs.reduce((a,r)=>a+(r.prem||0),0);
-  if(prem) stats.push({l:"Premium requests",v:fmtNum(Math.round(prem)),
-    s:"Copilot's billing unit"});
-  // Cursor is the only tool that records how much of its output you kept
-  const al=(RAW.ai_lines||[]).filter(x=>x.date>=d.r.from&&x.date<=d.r.to);
-  if(al.length){
-    const acc=al.reduce((a,x)=>a+x.tab_accepted+x.composer_accepted,0);
-    const sug=al.reduce((a,x)=>a+x.tab_suggested+x.composer_suggested,0);
-    stats.push({l:"AI lines kept",v:fmtNum(acc),
-      s:sug?`${fmtPct(acc/sug)} of ${fmtNum(sug)} suggested · Cursor`:"Cursor"});
-  }
-  document.getElementById("agentStats").innerHTML = stats.map(x=>
-    `<div class="stat"><div class="l">${x.l}</div><div class="v num">${x.v}</div><div class="s">${x.s}</div></div>`).join("");
 
-  hbar("toolChart", tools.slice(0,18).map(x=>({label:x.name,value:x.count,
-    color:srcColor(domSource(x.src))})), {fmt:fmtNum, thick:13,
-    sub:r=>""});
-
-  const cat={}; for(const x of tools) cat[categorize(x.name)]=(cat[categorize(x.name)]||0)+x.count;
-  const catOrder=["Read / search","Edit / write","Execute","Web","Agents / tasks","MCP","Other"]
-    .filter(c=>cat[c]);
-  const catCols=["--k-in","--k-cr","--k-cw","--k-out","--k-think","--p-google","--text-3"];
-  const cmap={}; catOrder.forEach((c,i)=>cmap[c]=cssv(catCols[i%catCols.length]));
-  mk("catChart",{type:"doughnut",
-    data:{labels:catOrder,datasets:[{data:catOrder.map(c=>cat[c]),
-      backgroundColor:catOrder.map(c=>cmap[c]),borderColor:cssv("--surface"),borderWidth:2}]},
-    options:{cutout:"58%",plugins:{tooltip:{itemSort:null,callbacks:{
-      label:c=>" "+c.label+": "+fmtNum(c.parsed)+" ("+fmtPct(c.parsed/totalCalls)+")"}}}}});
-  document.getElementById("catLegend").innerHTML =
-    legendStatic(catOrder.map(c=>({label:c,color:cmap[c]})));
-
-  const mcpRows = mcp.map(x=>{
-    const parts=x.name.replace(/^mcp__/,"").split("__");
-    return {server:parts[0]||"?",tool:parts.slice(1).join("__")||x.name,count:x.count};
-  });
-  const byServer={}; for(const r of mcpRows){ const e=byServer[r.server]||(byServer[r.server]={server:r.server,count:0,tools:0});
-    e.count+=r.count; e.tools++; }
+  const byServer={};
+  for(const x of mcp){ const parts=x.name.replace(/^mcp__/,"").split("__");
+    const e=byServer[parts[0]||"?"]||(byServer[parts[0]||"?"]={server:parts[0]||"?",count:0,tools:0,src:{}});
+    e.count+=x.count; e.tools++; for(const s in x.src) e.src[s]=(e.src[s]||0)+x.src[s]; }
   const srv=Object.values(byServer).sort((a,b)=>b.count-a.count);
   document.getElementById("mcpTable").innerHTML = srv.length
-    ? `<thead><tr><th>Server</th><th class="r">Tools used</th><th class="r">Calls</th></tr></thead><tbody>`+
-      srv.map(r=>`<tr><td>${esc(r.server)}</td><td class="num r">${r.tools}</td>
-        <td class="num r">${fmtNum(r.count)}</td></tr>`).join("")+"</tbody>"
+    ? `<thead><tr><th class="nosort">Server</th><th class="nosort">Tools</th><th class="r nosort">Tools used</th><th class="r nosort">Calls</th></tr></thead><tbody>`+
+      srv.map(r=>`<tr><td class="name">${esc(r.server)}</td><td>${topSources(r.src,3).map(toolDot).join(" ")}</td>
+        <td class="r">${r.tools}</td><td class="r"><b>${fmtNum(r.count)}</b></td></tr>`).join("")+"</tbody>"
     : `<tbody><tr><td class="empty">No MCP tool calls in range.</td></tr></tbody>`;
 
-  const trows = tools.map(x=>({name:x.name,count:x.count,cat:categorize(x.name),
-    source:SRC[domSource(x.src)].label}));
-  const tcols=[["name","Tool"],["cat","Category"],["source","Mostly from"],["count","Calls"]];
-  document.getElementById("toolTable").innerHTML = thead(tcols,S.toolSort,"tool")+"<tbody>"+
-    sortRows(trows,S.toolSort).map(r=>`<tr><td class="name">${esc(r.name)}</td>
-      <td class="dim">${r.cat}</td><td class="dim">${r.source}</td>
-      <td class="num r">${fmtNum(r.count)}</td></tr>`).join("")+"</tbody>";
+  const sk={};
+  for(const x of (RAW.skills||[])){ if(x.date<d.r.from||x.date>d.r.to||!passSrc("claude")) continue;
+    const e=sk[x.name]||(sk[x.name]={skill:x.name,asst:0,tok:0,cost:0}); e.asst+=x.asst; e.tok+=x.tok; e.cost+=x.cost; }
+  const skills=Object.values(sk).sort((a,b)=>b.cost-a.cost);
+  document.getElementById("skillTable").innerHTML = skills.length
+    ? `<thead><tr><th class="nosort">Skill</th><th class="r nosort">Requests</th><th class="r nosort">Tokens</th><th class="r nosort">Est. $</th></tr></thead><tbody>`+
+      skills.map(r=>`<tr><td class="name">/${esc(r.skill)}</td><td class="r">${fmtNum(r.asst)}</td><td class="r">${fmtTok(r.tok)}</td><td class="r"><b>${fmtUSD(r.cost)}</b></td></tr>`).join("")+"</tbody>"
+    : `<tbody><tr><td class="empty">No Skill-driven requests in range.</td></tr></tbody>`;
+
+  const trows = tools.map(x=>({name:x.name,count:x.count,cat:categorize(x.name),source:SRC[domSource(x.src)].label,src:domSource(x.src)}));
+  document.getElementById("toolTable").innerHTML = thead([["name","Tool"],["cat","Category"],["source","Mostly from"],["count","Calls"]],S.toolSort,"tool")+"<tbody>"+
+    sortRows(trows,S.toolSort).map(r=>`<tr><td class="name">${esc(r.name)}</td><td class="dim">${r.cat}</td>
+      <td>${toolDot(r.src)} <span class="dim">${esc(r.source)}</span></td><td class="r">${fmtNum(r.count)}</td></tr>`).join("")+"</tbody>";
 }
 
 /* ---------------- PROJECTS ---------------- */
 function viewProjects(d){
-  const val = metricOf(S.projMetric), fmt = fmtOf(S.projMetric);
+  const val = metricOf(), fmt = fmtOf();
   const by={};
   for(const r of d.recs){
-    const e=by[r.project]||(by[r.project]={project:r.project,tokens:0,cost:0,messages:0,
-      prompts:0,tools:0,src:{}});
-    e.tokens+=recTokens(r); e.cost+=r.cost||0; e.messages+=r.asst||0;
-    e.prompts+=r.user||0; e.tools+=r.tools||0;
-    e.src[r.source]=(e.src[r.source]||0)+recTokens(r);
+    const p = r.project || "(unknown)";
+    const e=by[p]||(by[p]={project:p,tokens:0,cost:0,messages:0,prompts:0,tools:0,time:0,v:0,src:{}});
+    e.tokens+=recTokens(r); e.cost+=r.cost||0; e.messages+=r.asst||0; e.prompts+=r.user||0;
+    e.tools+=r.tools||0; e.time+=r.active||0; e.v+=val(r); e.src[r.source]=(e.src[r.source]||0)+recTokens(r);
   }
-  const sess={}; for(const s of d.sessions) sess[s.project]=(sess[s.project]||0)+1;
+  const sess={}; for(const s of d.sessions) sess[s.project||"(unknown)"]=(sess[s.project||"(unknown)"]||0)+1;
   const q=S.search.toLowerCase();
-  const rows=Object.values(by)
-    .filter(e=>!q||(e.project||"").toLowerCase().includes(q))
-    .map(e=>({...e,sessions:sess[e.project]||0,
-    value:S.projMetric==="cost"?e.cost:S.projMetric==="messages"?e.messages:e.tokens}));
-  const top=rows.slice().sort((a,b)=>b.value-a.value);
-  hbar("projChart", top.slice(0,16).map(r=>({label:r.project,value:r.value,
-    color:srcColor(domSource(r.src))})), {fmt});
-
-  const grand=top.reduce((a,r)=>a+r.value,0)||1;
-  const top3=top.slice(0,3).reduce((a,r)=>a+r.value,0);
-  document.getElementById("projStats").innerHTML=[
-    {l:"Projects",v:fmtNum(rows.length),s:"with activity in range"},
-    {l:"Top project",v:fmtPct((top[0]||{value:0}).value/grand),s:(top[0]||{}).project||"—"},
-    {l:"Top 3 share",v:fmtPct(top3/grand),s:"concentration of effort"},
-    {l:"Per project",v:fmt(grand/(rows.length||1)),s:"average"},
-  ].map(x=>`<div class="stat" style="flex:1 1 120px"><div class="l">${x.l}</div>
-      <div class="v num">${x.v}</div><div class="s">${esc(x.s)}</div></div>`).join("");
-
-  const cols=[["project","Project"],["tokens","Tokens"],["cost","Est. $"],["messages","Msgs"],
-    ["prompts","Prompts"],["tools","Tool calls"],["sessions","Sessions"]];
-  const maxTok=Math.max(...rows.map(r=>r.tokens),1);
+  const rows=Object.values(by).filter(e=>!q||(e.project||"").toLowerCase().includes(q)).map(e=>({...e,sessions:sess[e.project]||0}));
+  const top=rows.slice().sort((a,b)=>b.v-a.v);
+  document.getElementById("projSub").textContent = `by working directory · ${metricNoun()}` + (q?` · matching “${S.search}”`:"");
+  barList("projList", top.map(r=>({label:r.project, value:r.v, dots:topSources(r.src,3), attr:`data-proj="${esc(r.project)}"`})),
+    {fmt, limit:16, more:"see the table below"});
+  const grand=top.reduce((a,r)=>a+r.v,0)||1, top3=top.slice(0,3).reduce((a,r)=>a+r.v,0);
+  document.getElementById("projStats").innerHTML = tilesHTML([
+    {l:"Projects", v:fmtNum(rows.length), s:"with activity in range"},
+    {l:"Top project", v:fmtPct((top[0]||{v:0}).v/grand), s:(top[0]||{}).project||"—"},
+    {l:"Top 3 share", v:fmtPct(top3/grand), s:"concentration of effort"},
+    {l:"Per project", v:fmt(grand/(rows.length||1)), s:"average"},
+  ]);
+  const cols=[["project","Project"],["tokens","Tokens"],["cost","Est. $"],["messages","Replies"],
+    ["prompts","Prompts"],["tools","Tool calls"],["time","Time"],["sessions","Sessions"]];
   document.getElementById("projTable").innerHTML=thead(cols,S.projSort,"proj")+"<tbody>"+
     sortRows(rows,S.projSort).map(r=>`<tr class="clickable" data-proj="${esc(r.project)}">
-      <td class="name bar-cell"><span class="fill" style="width:${r.tokens/maxTok*100}%"></span>
-        <span><span class="swatch" style="background:${srcColor(domSource(r.src))}"></span>${esc(r.project)}</span></td>
-      <td class="num r">${fmtTok(r.tokens)}</td><td class="num r">${fmtUSD(r.cost)}</td>
-      <td class="num r">${fmtNum(r.messages)}</td><td class="num r">${fmtNum(r.prompts)}</td>
-      <td class="num r">${fmtNum(r.tools)}</td><td class="num r">${fmtNum(r.sessions)}</td></tr>`).join("")+"</tbody>";
+      <td class="name">${topSources(r.src,3).map(toolDot).join(" ")} <span style="margin-left:4px">${esc(r.project)}</span></td>
+      <td class="r">${fmtTok(r.tokens)}</td><td class="r"><b>${fmtUSD(r.cost)}</b></td>
+      <td class="r">${fmtNum(r.messages)}</td><td class="r">${fmtNum(r.prompts)}</td>
+      <td class="r">${fmtNum(r.tools)}</td><td class="r">${r.time?fmtDur(r.time):'<span class="dim">—</span>'}</td>
+      <td class="r">${fmtNum(r.sessions)}</td></tr>`).join("")+"</tbody>";
 }
 
 /* ---------------- SESSIONS ---------------- */
@@ -705,10 +695,11 @@ function sessionRows(d){
     name:s.title||s.project||s.id,
   })).filter(s=>!q || (s.name+" "+(s.project||"")+" "+(s.model||"")+" "+(s.branch||"")).toLowerCase().includes(q));
 }
+let SESS_CACHE=[];
 function viewSessions(d){
   const rows=sessionRows(d);
   const cols=[["when","When"],["source","Tool"],["name","Session"],["project","Project"],
-    ["model","Model"],["tok","Tokens"],["cost","Est. $"],["user","Prompts"],["asst","Msgs"],
+    ["model","Model"],["tok","Tokens"],["cost","Est. $"],["user","Prompts"],["asst","Replies"],
     ["tools","Tools"],
     ["active","Time","estimated active time — consecutive turns no more than 5 minutes apart, so a resumed session's idle days don't count"],
     ["cache","Cache %"]];
@@ -718,15 +709,15 @@ function viewSessions(d){
       <td class="dim">${s.when?s.when.slice(0,16).replace("T"," "):"—"}</td>
       <td>${srcBadge(s.source)}</td>
       <td class="name" title="${esc(s.title||"")}">${
-        s.clipped?`<span class="dim" style="margin-right:5px" title="This session also ran outside the selected range — the figures shown cover only its activity inside it (it spans ${s.span} days).">◔</span>`:""}${
-        s.subagent?`<span class="sub-badge" title="A subagent transcript — work this session's parent delegated to a Task agent.">sub</span>`:""}${esc(s.name)}</td>
+        s.clipped?`<span class="dim" style="margin-right:5px" title="This session also ran outside the selected range — the figures cover only its activity inside it (it spans ${s.span} days).">◔</span>`:""}${
+        s.subagent?`<span class="sub-badge" title="A subagent transcript — work its parent delegated.">sub</span>`:""}${esc(s.name)}</td>
       <td class="dim">${esc(s.project||"—")}</td>
       <td>${esc(s.model)}${s.nmodels>1?` <span class="dim" title="${esc((s.models||[]).join(" · "))}">+${s.nmodels-1}</span>`:""}</td>
-      <td class="num r">${fmtTok(s.tok)}</td><td class="num r">${fmtUSD(s.cost)}</td>
-      <td class="num r">${fmtNum(s.user)}</td><td class="num r">${fmtNum(s.asst||s.req)}</td>
-      <td class="num r">${fmtNum(s.tools)}</td>
-      <td class="num r">${s.active?fmtDur(s.active):'<span class="dim">—</span>'}</td>
-      <td class="num r">${s.cache?fmtPct(s.cache):'<span class="dim">—</span>'}</td></tr>`).join("")+"</tbody>";
+      <td class="r">${fmtTok(s.tok)}</td><td class="r"><b>${fmtUSD(s.cost)}</b></td>
+      <td class="r">${fmtNum(s.user)}</td><td class="r">${fmtNum(s.asst||s.req)}</td>
+      <td class="r">${fmtNum(s.tools)}</td>
+      <td class="r">${s.active?fmtDur(s.active):'<span class="dim">—</span>'}</td>
+      <td class="r">${s.cache?fmtPct(s.cache):'<span class="dim">—</span>'}</td></tr>`).join("")+"</tbody>";
   const capped = RAW.sessions_total && RAW.sessions_total > RAW.sessions.length;
   const clipped = rows.filter(x=>x.clipped).length;
   document.getElementById("sessHint").textContent =
@@ -737,22 +728,19 @@ function viewSessions(d){
     + " · click a row for detail";
   SESS_CACHE = sorted;
 }
-let SESS_CACHE=[];
 function openSession(i){
   const s=SESS_CACHE[i]; if(!s) return;
-  const row=(k,v)=>v==null||v===""?"":`<div class="r" style="display:flex;justify-content:space-between;gap:14px;padding:5px 0;border-bottom:1px solid var(--border)">
-      <span class="dim">${k}</span><span class="num" style="text-align:right">${v}</span></div>`;
+  const row=(k,v)=>v==null||v===""?"":`<div class="kv"><span class="k">${k}</span><span class="v">${v}</span></div>`;
   openDrawer(`
-    <div style="font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--text-3);font-weight:640">Session</div>
-    <h2 style="margin:4px 0 2px;font-size:17px;font-weight:650">${esc(s.title||s.project||s.id)}</h2>
-    <div style="margin-bottom:14px">${srcBadge(s.source)} <span class="dim">${esc(s.id)}</span></div>
+    <div class="eyebrow">Session</div>
+    <h2>${esc(s.title||s.project||s.id)}</h2>
+    <div style="margin-bottom:16px;display:flex;gap:8px;align-items:center">${srcBadge(s.source)} <span class="dim" style="font-size:12px">${esc(s.id)}</span></div>
     ${row("Project",esc(s.project||"—"))}
     ${row("Model",esc((s.models||[s.model]).join(" · ")))}
     ${row("Git branch",s.branch?esc(s.branch):null)}
     ${row("Entrypoint",s.entry?esc(s.entry):null)}
     ${row("Tool version",s.cliver?esc(s.cliver):null)}
-    ${s.clipped?`<div class="warnbar" style="margin:10px 0">Figures below cover the
-       selected range only — this session spans ${s.span} days in total.</div>`:""}
+    ${s.clipped?`<div class="warnbar">Figures below cover the selected range only — this session spans ${s.span} days in total.</div>`:""}
     ${row("Started",s.start?s.start.slice(0,19).replace("T"," "):"—")}
     ${row("Last activity",s.end?s.end.slice(0,19).replace("T"," "):"—")}
     ${row("Est. cost",fmtUSD2(s.cost))}
@@ -763,7 +751,7 @@ function openSession(i){
     ${row("· output",fmtNum(s.out))}
     ${row("Cache hit rate",s.cache?fmtPct(s.cache):"—")}
     ${row("Your prompts",fmtNum(s.user))}
-    ${row("Assistant msgs",fmtNum(s.asst||s.req))}
+    ${row("Assistant replies",fmtNum(s.asst||s.req))}
     ${row("Tool calls",fmtNum(s.tools))}
     ${row("Active time",s.active?fmtDur(s.active):null)}
     ${row("Mode",s.mode?esc(s.mode):null)}
@@ -774,10 +762,105 @@ function openSession(i){
     ${row("Subagents",s.subagents?fmtNum(s.subagents):null)}
     ${row("Subagent tokens",s.side?fmtNum(s.side):null)}
     ${row("Log size",s.bytes?fmtBytes(s.bytes):null)}
-    ${s.archived?'<div class="warnbar" style="margin-top:12px">This log has been pruned from disk; its numbers are retained from an earlier scan.</div>':""}
+    ${s.archived?'<div class="warnbar">This log has been pruned from disk; its numbers are kept from an earlier scan.</div>':""}
   `);
 }
 
+/* ---------------- STORAGE ---------------- */
+function viewStorage(){
+  if(!STORAGE){ document.getElementById("stHero").innerHTML='<div class="empty">Measuring…</div>'; return; }
+  const st=STORAGE;
+  const total=st.sources.reduce((a,s)=>a+s.bytes,0);
+  const files=st.sources.reduce((a,s)=>a+s.files,0);
+  const extras=st.extras.reduce((a,e)=>a+e.bytes,0);
+  const disk=st.disk||{total:0,free:0,used:0};
+  const biggest=st.files[0];
+  const plan = st.cleanup || {commands:[], days:90, shell:""};
+  const rc = (st.reclaimable||{})[String(plan.days)] || {files:0, bytes:0};
+  document.getElementById("stHero").innerHTML = `
+    <div class="hero-stat" style="min-width:220px"><div class="hero-label">AI logs on this disk</div>
+      <div class="hero-value">${fmtBytes(total)}</div>
+      <div class="hero-delta"><span>${fmtNum(files)} files across ${st.sources.length} tools · all-time, not date-filtered</span></div></div>
+    <div class="hero-stat"><div class="l">Share of drive</div><div class="v">${disk.total?fmtPct(total/disk.total):"—"}</div><div class="s">of ${fmtBytes(disk.total)}</div></div>
+    <div class="hero-stat"><div class="l">Free space</div><div class="v">${fmtBytes(disk.free)}</div><div class="s">${disk.total?fmtPct(disk.free/disk.total)+" free":""}</div></div>
+    <div class="hero-stat"><div class="l">Reclaimable</div><div class="v">${rc.files?fmtBytes(rc.bytes):"—"}</div><div class="s">${rc.files?`${fmtNum(rc.files)} logs untouched ${plan.days}+ days`:"nothing old enough"}</div></div>`;
+
+  const otherUsed=Math.max(0,(disk.used||0)-total-extras);
+  document.getElementById("diskMeter").innerHTML=`
+    <div class="meter" style="height:12px;margin-top:18px" role="img" aria-label="drive usage">
+      <i style="width:${disk.total?total/disk.total*100:0}%;background:var(--text)" title="AI logs ${fmtBytes(total)}"></i>
+      <i style="width:${disk.total?extras/disk.total*100:0}%;background:var(--warn)" title="related AI data ${fmtBytes(extras)}"></i>
+      <i style="width:${disk.total?otherUsed/disk.total*100:0}%;background:var(--border-2)" title="everything else ${fmtBytes(otherUsed)}"></i>
+    </div>
+    <div class="legend" style="margin-top:10px">
+      <span class="li static"><span class="sw" style="background:var(--text)"></span>AI logs ${fmtBytes(total)}</span>
+      <span class="li static"><span class="sw" style="background:var(--warn)"></span>related AI data ${fmtBytes(extras)}</span>
+      <span class="li static"><span class="sw" style="background:var(--border-2)"></span>everything else ${fmtBytes(otherUsed)}</span>
+      <span class="li static dim">free ${fmtBytes(disk.free)}</span>
+    </div>
+    ${disk.total && disk.free/disk.total < 0.1 ? `<div class="warnbar bad"><span>⚠</span><div><b>Only ${fmtBytes(disk.free)} free (${fmtPct(disk.free/disk.total)}).</b>
+      These logs alone are ${(total/Math.max(1,disk.free)).toFixed(1)}× your remaining headroom — the cleanup
+      commands below reclaim the oldest of them without losing any analytics.</div></div>`:""}`;
+
+  document.getElementById("stStats").innerHTML = tilesHTML([
+    {l:"Largest single log", v:biggest?fmtBytes(biggest.bytes):"—", s:biggest?(SRC[biggest.source]||{label:biggest.source}).label+" · "+biggest.project:""},
+    {l:"Related, not analysed", v:fmtBytes(extras), s:"see the panel below"},
+    {l:"Dashboard cache", v:fmtBytes(st.cache_bytes), s:".usage_cache.json"},
+    {l:"Live log files", v:fmtNum(st.files_total||st.files.length), s:"across every tool"},
+  ]);
+
+  barList("stByTool", st.sources.filter(s=>s.bytes).sort((a,b)=>b.bytes-a.bytes).map(s=>({
+    label:(SRC[s.source]||{label:s.source}).label, value:s.bytes, color:srcColor(s.source)})), {fmt:fmtBytes});
+  const tokBySrc={};
+  for(const r of RAW.records) tokBySrc[r.source]=(tokBySrc[r.source]||0)+recTokens(r);
+  barList("stEff", st.sources.filter(s=>s.bytes&&tokBySrc[s.source]>1e6).map(s=>({
+    label:(SRC[s.source]||{label:s.source}).label, value:s.bytes/(tokBySrc[s.source]/1e6), color:srcColor(s.source)}))
+    .sort((a,b)=>b.value-a.value), {fmt:fmtBytes, share:false, empty:"Needs at least 1M tokens per tool."});
+
+  const days=[...new Set(st.growth.map(g=>g.date))].filter(x=>x&&x!=="unknown").sort();
+  const srcs=[...new Set(st.growth.map(g=>g.source))].sort((a,b)=>ORDER.indexOf(a)-ORDER.indexOf(b));
+  const ds=srcs.filter(s=>!isMuted("stGrowth",(SRC[s]||{label:s}).label)).map(s=>{
+    const m={}; for(const g of st.growth) if(g.source===s) m[g.date]=(m[g.date]||0)+g.bytes;
+    let run=0; return areaDS((SRC[s]||{label:s}).label, days.map(x=>(run+=(m[x]||0))), srcColor(s));
+  });
+  document.getElementById("stGrowthLegend").innerHTML=
+    legendHTML("stGrowth", srcs.map(s=>({label:(SRC[s]||{label:s}).label,color:srcColor(s)})));
+  mk("stGrowth",{type:"line", $fmt:fmtBytes, $stacked:true, data:{labels:days.map(shortDay),datasets:ds},
+    options:{interaction:{mode:"index",intersect:false},
+      scales:axes({y:{stacked:true,min:0,ticks:{callback:v=>fmtBytes(v)}}}),
+      plugins:{tooltip:{callbacks:{label:c=>" "+c.dataset.label+": "+fmtBytes(c.parsed.y)}}}}});
+
+  const cols=[["bytes","Size"],["source","Tool"],["project","Project"],["last","Last written"],["path","Path"]];
+  const rows=sortRows(st.files,S.fileSort).slice(0,120);
+  document.getElementById("stFiles").innerHTML=thead(cols,S.fileSort,"file")+"<tbody>"+
+    rows.map(f=>`<tr><td class="r"><b>${fmtBytes(f.bytes)}</b></td>
+      <td>${srcBadge(f.source)}</td><td class="dim">${esc(f.project)}</td>
+      <td class="dim">${(f.last||"").slice(0,10)||"—"}</td>
+      <td class="name dim" title="${esc(f.path)}">…/${esc(shortPath(f.path))}</td></tr>`).join("")+"</tbody>";
+  const nTotal=st.files_total||st.files.length;
+  document.getElementById("stBigHint").textContent =
+    `showing ${Math.min(120,rows.length)} of ${fmtNum(nTotal)} live log files`
+    + (nTotal>st.files.length?` · sortable over the largest ${fmtNum(st.files.length)}`:"");
+
+  document.getElementById("stExtras").innerHTML=
+    `<thead><tr><th class="nosort">What</th><th class="r nosort">Size</th></tr></thead><tbody>`+
+    st.extras.map(e=>`<tr><td class="name" title="${esc(e.path)}">${esc(e.label)}
+      ${e.note?`<div class="dim" style="font-size:11.5px;white-space:normal">${esc(e.note)}</div>`:""}</td>
+      <td class="r">${fmtBytes(e.bytes)}</td></tr>`).join("")+"</tbody>";
+
+  // reclaimable + the commands are computed server-side, over every live file and
+  // for the shell this machine actually runs
+  document.getElementById("cleanup").innerHTML=`
+    <div class="hint" style="margin:16px 0 4px"><b>Reclaim space.</b> AgentTelemetry keeps every session it has
+      already parsed, so deleting old logs does <b>not</b> shrink your analytics.
+      ${rc.files?`<br><b>${fmtBytes(rc.bytes)}</b> sits in ${fmtNum(rc.files)} log(s) untouched for ${plan.days}+ days.`:""}</div>
+    ${plan.commands.length?`<div class="hint">Run in <b>${esc(plan.shell)}</b> — paths are this machine's:</div>
+      <code class="cmd">${plan.commands.map(esc).join("\n")}</code>`:""}
+    <div class="hint" style="margin-top:8px">Claude Code prunes on its own after <code>cleanupPeriodDays</code>
+      (default 30) in its <code>settings.json</code>; Codex keeps everything forever.</div>`;
+}
+// last two path components, on either separator (logs may come from either OS)
+function shortPath(p){ return String(p||"").split(/[\\/]/).filter(Boolean).slice(-2).join("/"); }
 /* ---------------- SETTINGS ---------------- */
 async function openSettings(){
   openDrawer('<div class="empty">Loading…</div>');
@@ -801,7 +884,7 @@ async function pwaDisable(){
   await Promise.all(regs.map(r=>r.unregister()));
   if(window.caches){
     const keys = await caches.keys();
-    await Promise.all(keys.filter(k=>k.startsWith("ai-usage-")).map(k=>caches.delete(k)));
+    await Promise.all(keys.filter(k=>k.startsWith("ai-usage-")||k.startsWith("agenttelemetry-")).map(k=>caches.delete(k)));
   }
 }
 
@@ -820,7 +903,7 @@ function setPollMs(v){
 function renderSettings(cfg){
   const days=cfg.claude_cleanup_days, def=cfg.claude_cleanup_default;
   openDrawer(`
-    <div class="stg-eyebrow">Settings</div>
+    <div class="eyebrow">Settings</div>
     <h2 class="stg-h">Claude Code log retention</h2>
     <div class="stg-note">Claude Code deletes its own session transcripts after this
       many days &mdash; the <code>cleanupPeriodDays</code> setting. Codex, by contrast,
@@ -841,7 +924,7 @@ function renderSettings(cfg){
       cfg.claude_settings_exists?"":"<br>Not created yet &mdash; it will be on first save."}
       <br>Other settings in the file are preserved, and a <span>.bak</span> is kept.</div>
 
-    <h2 class="stg-h" style="margin-top:26px">Install as an app</h2>
+    <h2 class="stg-h stg-sec">Install as an app</h2>
     <div class="stg-note">Off by default. Turning this on registers a service worker so
       the dashboard can be installed to your Dock or taskbar and still open its shell when
       <code>dashboard.py</code> isn't running. Your usage data is never cached &mdash;
@@ -858,7 +941,7 @@ function renderSettings(cfg){
     </div>
     <div class="stg-msg" id="pwaMsg"></div>
 
-    <h2 class="stg-h" style="margin-top:26px">Refresh interval</h2>
+    <h2 class="stg-h stg-sec">Refresh interval</h2>
     <div class="stg-note">How often the page re-fetches <code>/api/data</code> (about
       ${fmtBytes(cfg.cache_bytes||0)} of JSON each time). Slower saves CPU and disk churn;
       <b>Manual</b> updates only when you press <b>&#8635;</b>. The server keeps parsing
@@ -867,7 +950,7 @@ function renderSettings(cfg){
       POLL_CHOICES.map(([v,l])=>`<button data-ms="${v}"${
         String(pollMs())===v?' class="on"':''}>${l}</button>`).join("")}</div>
 
-    <h2 class="stg-h" style="margin-top:26px">Analytics cache</h2>
+    <h2 class="stg-h stg-sec">Analytics cache</h2>
     <div class="stg-note">This dashboard's own parsed data &mdash;
       <b>${fmtBytes(cfg.cache_bytes||0)}</b> across ${fmtNum(cfg.cache_files||0)} files:
       your prompts, project names and costs. <b>Rebuild</b> re-reads every log from
@@ -965,306 +1048,6 @@ function renderSettings(cfg){
   });
 }
 
-/* ---------------- STORAGE ---------------- */
-function viewStorage(){
-  if(!STORAGE){ document.getElementById("stStats").innerHTML='<div class="empty">Measuring…</div>'; return; }
-  const st=STORAGE;
-  const total=st.sources.reduce((a,s)=>a+s.bytes,0);
-  const files=st.sources.reduce((a,s)=>a+s.files,0);
-  const extras=st.extras.reduce((a,e)=>a+e.bytes,0);
-  const disk=st.disk||{total:0,free:0,used:0};
-  const biggest=st.files[0];
-  document.getElementById("stStats").innerHTML=[
-    {l:"Log data on disk",v:fmtBytes(total),s:`${fmtNum(files)} files across ${st.sources.length} tools`},
-    {l:"Largest single log",v:biggest?fmtBytes(biggest.bytes):"—",s:biggest?SRC[biggest.source].label+" · "+biggest.project:""},
-    {l:"Related, not analysed",v:fmtBytes(extras),s:"see the panel below"},
-    {l:"Share of drive",v:disk.total?fmtPct(total/disk.total):"—",s:`of ${fmtBytes(disk.total)}`},
-    {l:"Dashboard cache",v:fmtBytes(st.cache_bytes),s:".usage_cache.json"},
-  ].map(x=>`<div class="stat" style="flex:1 1 130px"><div class="l">${x.l}</div>
-      <div class="v num">${x.v}</div><div class="s">${esc(x.s)}</div></div>`).join("");
-
-  const otherUsed=Math.max(0,(disk.used||0)-total-extras);
-  document.getElementById("diskMeter").innerHTML=`
-    <div class="meter" style="height:14px">
-      <i style="width:${disk.total?total/disk.total*100:0}%;background:var(--accent)" title="AI logs"></i>
-      <i style="width:${disk.total?extras/disk.total*100:0}%;background:var(--warn)" title="related AI data"></i>
-      <i style="width:${disk.total?otherUsed/disk.total*100:0}%;background:var(--surface-3)" title="everything else"></i>
-    </div>
-    <div class="legend" style="margin-top:8px">
-      <span class="li"><span class="sw" style="background:var(--accent)"></span>AI logs ${fmtBytes(total)}</span>
-      <span class="li"><span class="sw" style="background:var(--warn)"></span>related AI data ${fmtBytes(extras)}</span>
-      <span class="li"><span class="sw" style="background:var(--surface-3)"></span>everything else ${fmtBytes(otherUsed)}</span>
-      <span class="li dim">free ${fmtBytes(disk.free)}</span>
-    </div>
-    ${disk.total && disk.free/disk.total < 0.1 ? `<div class="warnbar bad" style="margin-top:12px">
-      <span>⚠</span><div><strong>Only ${fmtBytes(disk.free)} free (${fmtPct(disk.free/disk.total)}).</strong>
-      These logs alone are ${(total/disk.free).toFixed(1)}× your remaining headroom — the cleanup
-      commands on the right reclaim the oldest of them without losing any analytics.</div></div>`:""}`;
-
-  hbar("stByTool", st.sources.filter(s=>s.bytes).map(s=>({
-    label:(SRC[s.source]||{label:s.source}).label, value:s.bytes, color:srcColor(s.source)})),
-    {fmt:fmtBytes});
-
-  // bytes per 1M tokens — how expensively each tool stores its history
-  const tokBySrc={};
-  for(const r of RAW.records) tokBySrc[r.source]=(tokBySrc[r.source]||0)+recTokens(r);
-  hbar("stEff", st.sources.filter(s=>s.bytes&&tokBySrc[s.source]>1e6).map(s=>({
-    label:(SRC[s.source]||{label:s.source}).label,
-    value:s.bytes/(tokBySrc[s.source]/1e6), color:srcColor(s.source)})).sort((a,b)=>b.value-a.value),
-    {fmt:fmtBytes});
-
-  // cumulative accumulation
-  const days=[...new Set(st.growth.map(g=>g.date))].filter(x=>x&&x!=="unknown").sort();
-  const srcs=[...new Set(st.growth.map(g=>g.source))]
-    .sort((a,b)=>ORDER.indexOf(a)-ORDER.indexOf(b));
-  const ds=srcs.filter(s=>!isMuted("stGrowth",(SRC[s]||{label:s}).label)).map(s=>{
-    const m={};
-    for(const g of st.growth) if(g.source===s) m[g.date]=(m[g.date]||0)+g.bytes;
-    let run=0; return areaDS((SRC[s]||{label:s}).label, days.map(x=>(run+=(m[x]||0))), srcColor(s));
-  });
-  document.getElementById("stGrowthLegend").innerHTML=
-    legendHTML("stGrowth", srcs.map(s=>({label:(SRC[s]||{label:s}).label,color:srcColor(s)})));
-  mk("stGrowth",{type:"line",data:{labels:days.map(shortDay),datasets:ds},
-    options:{interaction:{mode:"index",intersect:false},
-      scales:axes({y:{stacked:true,min:0,ticks:{callback:v=>fmtBytes(v)}}}),
-      plugins:{tooltip:{callbacks:{label:c=>" "+c.dataset.label+": "+fmtBytes(c.parsed.y)}}}}});
-
-  const cols=[["bytes","Size"],["source","Tool"],["project","Project"],["last","Last written"],["path","Path"]];
-  const rows=sortRows(st.files,S.fileSort).slice(0,120);   // sort all, then show 120
-  document.getElementById("stFiles").innerHTML=thead(cols,S.fileSort,"file")+"<tbody>"+
-    rows.map(f=>`<tr><td class="num r"><strong>${fmtBytes(f.bytes)}</strong></td>
-      <td>${srcBadge(f.source)}</td><td class="dim">${esc(f.project)}</td>
-      <td class="dim">${(f.last||"").slice(0,10)||"—"}</td>
-      <td class="name dim" title="${esc(f.path)}">…/${esc(shortPath(f.path))}</td></tr>`).join("")+"</tbody>";
-  const nTotal=st.files_total||st.files.length;
-  document.getElementById("stBigHint").textContent =
-    `showing ${Math.min(120,rows.length)} of ${fmtNum(nTotal)} live log files`
-    + (nTotal>st.files.length?` · sortable over the largest ${fmtNum(st.files.length)}`:"");
-
-  document.getElementById("stExtras").innerHTML=
-    `<thead><tr><th>What</th><th class="r">Size</th></tr></thead><tbody>`+
-    st.extras.map(e=>`<tr><td class="name" title="${esc(e.path)}">${esc(e.label)}
-      ${e.note?`<div class="dim" style="font-size:11px;white-space:normal">${esc(e.note)}</div>`:""}</td>
-      <td class="num r">${fmtBytes(e.bytes)}</td></tr>`).join("")+"</tbody>";
-
-  // reclaimable + the commands are computed server-side, over every live file and
-  // for the shell this machine actually runs
-  const plan = st.cleanup || {commands:[], days:90, shell:""};
-  const rc = (st.reclaimable||{})[String(plan.days)] || {files:0, bytes:0};
-  document.getElementById("cleanup").innerHTML=`
-    <div class="hint" style="margin:14px 0 4px">Reclaim space — the dashboard keeps every session it has
-      already parsed, so deleting old logs does <strong>not</strong> shrink your analytics.
-      ${rc.files?`<br><strong>${fmtBytes(rc.bytes)}</strong> sits in ${fmtNum(rc.files)} log(s)
-        untouched for ${plan.days}+ days.`:""}</div>
-    ${plan.commands.length?`<div class="hint">Run in <strong>${esc(plan.shell)}</strong> — paths are
-      this machine's:</div><code class="cmd">${plan.commands.map(esc).join("\n")}</code>`:""}
-    <div class="hint" style="margin-top:8px">Claude Code prunes on its own after
-      <code>cleanupPeriodDays</code> (default 30) in its <code>settings.json</code>; Codex keeps
-      everything forever.</div>`;
-}
-// last two path components, on either separator (logs may come from either OS)
-function shortPath(p){ return String(p||"").split(/[\\/]/).filter(Boolean).slice(-2).join("/"); }
-
-/* ---------------- dispatch ---------------- */
-const VIEW_HTML={};
-function renderAll(){
-  if(!RAW) return;
-  // model colour ranking: siblings of a provider separate by lightness
-  const tot={};
-  for(const r of RAW.records){ if(r.model==="(user)") continue;
-    tot[r.model]=(tot[r.model]||0)+recTokens(r); }
-  MODEL_RANK={};
-  Object.entries(tot).sort((a,b)=>b[1]-a[1]).forEach(([m])=>{
-    const p=providerOf(m); (MODEL_RANK[p]=MODEL_RANK[p]||[]).push(m); });
-
-  syncRangeUI(); buildFilterPanels(); renderPills();
-  document.querySelectorAll(".view").forEach(v=>v.classList.toggle("on", v.id==="v-"+S.view));
-  document.querySelectorAll("#tabs button").forEach(b=>b.classList.toggle("on", b.dataset.v===S.view));
-  const d = slice();
-  const host = document.getElementById("v-"+S.view);
-  if(!VIEW_HTML[S.view]) VIEW_HTML[S.view] = host.innerHTML;
-  const empty = !d.recs.length && !d.sessions.length;
-  if(empty && S.view!=="storage"){
-    host.innerHTML = `<div class="grid"><div class="card col-12"><div class="empty">
-      No activity for this range and filter combination.</div></div></div>`;
-    host.dataset.emptied = "1";
-    return;
-  }
-  if(host.dataset.emptied==="1"){ host.innerHTML = VIEW_HTML[S.view]; host.dataset.emptied="0"; }
-  try{
-    if(S.view==="overview") viewOverview(d);
-    else if(S.view==="cost") viewCost(d);
-    else if(S.view==="models") viewModels(d);
-    else if(S.view==="tools") viewTools(d);
-    else if(S.view==="projects") viewProjects(d);
-    else if(S.view==="sessions") viewSessions(d);
-    else if(S.view==="optimize") viewOptimize(d);
-    else if(S.view==="storage") viewStorage();
-  }catch(err){
-    console.error("render failed", err);
-    document.documentElement.dataset.jsError = "render "+S.view+": "+(err&&err.message||err);
-  }
-}
-
-/* ---------------- data ---------------- */
-async function load(){
-  try{
-    const r=await fetch("/api/data"); RAW=await r.json();
-    const dates=RAW.records.map(x=>x.date).filter(x=>x!=="0000-00-00");
-    const lo=dates.length?dates.reduce((a,b)=>a<b?a:b):"—";
-    const hi=dates.length?dates.reduce((a,b)=>a>b?a:b):"—";
-    const fresh=new Date(RAW.meta.last_refresh*1000).toLocaleTimeString();
-    document.getElementById("subtitle").textContent =
-      `${fmtNum(RAW.meta.files)} log files · ${lo} → ${hi} · refreshed ${fresh}`;
-    document.getElementById("pricingNote").textContent=RAW.pricing_note;
-    renderAll();
-  }catch(e){
-    document.getElementById("subtitle").innerHTML=
-      '<span style="color:var(--bad)">⚠ cannot reach /api/data — is dashboard.py running?</span>';
-  }
-}
-async function loadStorage(){
-  try{ const r=await fetch("/api/storage"); STORAGE=await r.json();
-    if(S.view==="storage") renderAll(); }catch(e){}
-}
-
-/* ---------------- events ---------------- */
-document.getElementById("tabs").addEventListener("click",e=>{
-  const b=e.target.closest("button[data-v]"); if(!b) return;
-  S.view=b.dataset.v; location.hash=S.view;
-  if(S.view==="storage" && !STORAGE) loadStorage();
-  renderAll();
-});
-document.getElementById("rangePanel").addEventListener("click",e=>{
-  const it=e.target.closest("[data-preset]");
-  if(it){ S.preset=it.dataset.preset; closeDD(); renderAll(); return; }
-  if(e.target.closest("[data-apply]")){
-    const a=document.getElementById("dFrom").value, b=document.getElementById("dTo").value;
-    if(a&&b){ S.preset="custom"; S.from=a<b?a:b; S.to=a<b?b:a; closeDD(); renderAll(); }
-  }
-});
-document.getElementById("cmpSeg").addEventListener("click",e=>{
-  const b=e.target.closest("button"); if(!b) return;
-  S.compare=b.dataset.c==="1";
-  [...e.currentTarget.children].forEach(x=>x.classList.toggle("on",x===b)); renderAll();
-});
-function wireMulti(panelId, get, isTools){
-  document.getElementById(panelId).addEventListener("click",e=>{
-    const set=get();
-    if(e.target.closest("[data-all]")){ e.preventDefault();
-      if(isTools) ORDER.forEach(s=>set.add(s)); else set.clear(); renderAll(); return; }
-    if(e.target.closest("[data-none]")){ e.preventDefault();
-      if(isTools){ set.clear(); set.add(ORDER[0]); }
-      renderAll(); return; }
-    const it=e.target.closest(".dd-item[data-k]"); if(!it) return;
-    const k=it.dataset.k;
-    if(e.target.closest("[data-only]")){ set.clear(); set.add(k); renderAll(); return; }
-    if(isTools){ if(set.has(k)){ if(set.size>1) set.delete(k); } else set.add(k); }
-    else { if(set.has(k)) set.delete(k); else set.add(k); }
-    renderAll();
-  });
-}
-wireMulti("toolsPanel",()=>S.tools,true);
-wireMulti("provPanel",()=>S.provs,false);
-wireMulti("projPanel",()=>S.projs,false);
-wireMulti("idePanel",()=>S.ides,false);
-wireMulti("modelPanel",()=>S.models,false);
-
-document.getElementById("pills").addEventListener("click",e=>{
-  const b=e.target.closest("[data-pill]"); if(!b) return;
-  const k=b.dataset.pill;
-  if(k==="__all"){ S.preset="30d"; S.tools=new Set(ORDER); S.provs.clear(); S.projs.clear();
-    S.models.clear(); S.search=""; S.exactOnly=false; S.compare=false;
-    document.getElementById("search").value="";
-    document.querySelectorAll("#cmpSeg button").forEach((x,i)=>x.classList.toggle("on",i===0));
-    document.getElementById("reliableBtn").classList.remove("on"); }
-  else if(k==="range") S.preset="30d";
-  else if(k==="tools") S.tools=new Set(ORDER);
-  else if(k==="exact"){ S.exactOnly=false; document.getElementById("reliableBtn").classList.remove("on"); }
-  else if(k==="search"){ S.search=""; document.getElementById("search").value=""; }
-  else if(k==="cmp"){ S.compare=false;
-    document.querySelectorAll("#cmpSeg button").forEach((x,i)=>x.classList.toggle("on",i===0)); }
-  else if(k.startsWith("prov:")) S.provs.delete(k.slice(5));
-  else if(k.startsWith("proj:")) S.projs.delete(k.slice(5));
-  else if(k.startsWith("ide:")) S.ides.delete(k.slice(4));
-  else if(k.startsWith("model:")) S.models.delete(k.slice(6));
-  renderAll();
-});
-let searchT=null;
-document.getElementById("search").addEventListener("input",e=>{
-  clearTimeout(searchT); const v=e.target.value;
-  searchT=setTimeout(()=>{ S.search=v.trim(); renderAll(); },220);
-});
-document.getElementById("reliableBtn").addEventListener("click",e=>{
-  S.exactOnly=!S.exactOnly; e.currentTarget.classList.toggle("on",S.exactOnly); renderAll();
-});
-document.getElementById("themeBtn").addEventListener("click",cycleTheme);
-document.getElementById("settingsBtn").addEventListener("click",openSettings);
-document.getElementById("refreshBtn").addEventListener("click",async e=>{
-  e.currentTarget.style.opacity=".4";
-  await fetch("/api/refresh"); await load(); await loadStorage();
-  e.currentTarget.style.opacity="";
-});
-document.getElementById("liveBtn").addEventListener("click",e=>{
-  S.live=!S.live; e.currentTarget.classList.toggle("on",S.live);
-  document.getElementById("livedot").classList.toggle("off",!S.live);
-});
-document.addEventListener("click",e=>{
-  const seg=e.target.closest("#metricSeg button,#projMetricSeg button,#provMetricSeg button,#rateSeg button,#ideMetricSeg button");
-  if(seg){ const p=seg.parentElement;
-    if(p.id==="metricSeg") S.metric=seg.dataset.m;
-    if(p.id==="projMetricSeg") S.projMetric=seg.dataset.m;
-    if(p.id==="provMetricSeg") S.provMetric=seg.dataset.m;
-    if(p.id==="rateSeg") S.rateMetric=seg.dataset.m;
-    if(p.id==="ideMetricSeg") S.ideMetric=seg.dataset.m;
-    [...p.children].forEach(x=>x.classList.toggle("on",x===seg)); renderAll(); return; }
-  const lg=e.target.closest(".li[data-lg]");
-  if(lg){ const id=lg.dataset.lg, k=lg.dataset.k;
-    S.muted[id]=S.muted[id]||new Set();
-    if(S.muted[id].has(k)) S.muted[id].delete(k); else S.muted[id].add(k);
-    renderAll(); return; }
-  const th=e.target.closest("th[data-k]");
-  if(th){ const k=th.dataset.k, t=th.dataset.t;
-    const st={sess:S.sessSort,model:S.modelSort,tool:S.toolSort,proj:S.projSort,file:S.fileSort}[t];
-    if(st){ st.dir = st.key===k ? -st.dir : -1; st.key=k; renderAll(); } return; }
-  const pr=e.target.closest("tr[data-proj]");
-  if(pr){ S.projs.clear(); S.projs.add(pr.dataset.proj); S.view="sessions"; renderAll(); return; }
-  const sr=e.target.closest("tr[data-sess]");
-  if(sr){ openSession(+sr.dataset.sess); return; }
-  const mr=e.target.closest("tr[data-model]");
-  if(mr){ const m=mr.dataset.model;
-    if(S.modelExpanded.has(m)) S.modelExpanded.delete(m); else S.modelExpanded.add(m);
-    renderAll(); return; }
-});
-document.getElementById("drawerX").addEventListener("click",closeDrawer);
-document.getElementById("scrim").addEventListener("click",closeDrawer);
-addEventListener("scroll",()=>{
-  document.getElementById("filters").classList.toggle("stuck", scrollY>8);
-},{passive:true});
-matchMedia("(prefers-color-scheme: dark)").addEventListener("change",()=>{
-  if((localStorage.getItem("aiu.theme")||"auto")==="auto") applyTheme("auto");
-});
-
-/* ---------------- boot ---------------- */
-const QP=new URLSearchParams(location.search);
-applyTheme(QP.get("theme")||localStorage.getItem("aiu.theme")||"auto");
-if(QP.get("range")) S.preset=QP.get("range");
-document.getElementById("liveBtn").classList.add("on");
-if(location.hash && document.getElementById("v-"+location.hash.slice(1))) S.view=location.hash.slice(1);
-load().then(()=>{ if(S.view==="storage") loadStorage(); });
-setTimeout(loadStorage, 1200);
-/* Poll interval is user-configurable (gear menu). The payload is ~1MB, so a
-   tighter loop is real CPU and disk churn; 0 means "only when I press ↻". */
-let pollTimers=[];
-function applyPollInterval(){
-  pollTimers.forEach(clearInterval); pollTimers=[];
-  const ms=pollMs();
-  if(!ms) return;
-  pollTimers.push(setInterval(()=>{ if(S.live) load(); }, ms));
-  pollTimers.push(setInterval(()=>{ if(S.live) loadStorage(); }, Math.max(ms*8,120000)));
-}
-applyPollInterval();
-
 /* ---------------- OPTIMIZE ----------------
    Every finding below is derived from the user's own logs in the selected range
    and must carry (a) a number it is based on and (b) something to actually do.
@@ -1306,8 +1089,11 @@ function rateOf(m){ return (RAW.prices && RAW.prices[m]) || null; }
 function costAt(m, t){
   const p = rateOf(m); if(!p) return null;
   const [pin,pout,pcw5,pcw1,pcr] = p;
+  // a write with no tier split is a 5-minute write; a vendor with no write price
+  // (older OpenAI models) bills the write as plain input — never as free
+  const cw5 = (t.cc5||t.cc1) ? (t.cc5||0) : (t.cc||0);
   return ((t.in||0)*pin + (t.out||0)*pout + (t.cr||0)*pcr
-        + (t.cc5||t.cc||0)*pcw5 + (t.cc1||0)*pcw1) / 1e6;
+        + cw5*(pcw5||pin) + (t.cc1||0)*(pcw1||pcw5||pin)) / 1e6;
 }
 /* The cheapest model the user ALSO used from the same vendor — a realistic swap,
    not a recommendation to adopt something they've never touched. */
@@ -1634,44 +1420,262 @@ function scopeLabel(f){
 }
 let SLICE_SOURCES=[];
 
-function viewOptimize(d){
+function runFinders(d){
   SLICE_SOURCES=[...new Set(d.recs.map(r=>r.source))];
-  const found = OPT_FINDERS.map(f => { try{ return f(d); }catch(e){ return null; } })
-                           .filter(Boolean)
-                           .sort((a,b) => b.impact - a.impact);
+  return OPT_FINDERS.map(f => { try{ return f(d); }catch(e){ console.error("finder failed", e); return null; } })
+                    .filter(Boolean).sort((a,b) => b.impact - a.impact);
+}
+function viewOptimize(d){
+  const found = runFinders(d);
   const totalSpend = d.recs.reduce((a,r)=>a+(r.cost||0),0);
-  const addressable = found.reduce((a,f)=>a+f.impact, 0);
-  document.getElementById("optStats").innerHTML = [
-    {l:"Spend in range", v:fmtUSD(totalSpend), s:`${fmtNum(d.sessions.length)} sessions`},
-    {l:"Potentially addressable", v:addressable>0?fmtUSD(addressable):"—",
-     s:totalSpend?`about ${fmtPct(addressable/totalSpend)} of spend`:"—"},
-    {l:"Findings", v:String(found.length), s:found.length?"ranked by est. saving":"nothing to flag"},
-  ].map(x=>`<div class="stat" style="flex:1 1 150px"><div class="l">${x.l}</div>
-      <div class="v num">${x.v}</div><div class="s">${esc(x.s)}</div></div>`).join("");
-
-  document.getElementById("optHint").textContent =
-    `derived from your own logs · ${fmtNum(d.sessions.length)} sessions in the selected range`;
-
+  // Findings overlap — the same long session feeds "large context", "never delegated"
+  // and "thinking share" — so their savings are NOT additive. Lead with the largest.
+  const best = found.filter(f=>f.impact>0.5)[0];
+  document.getElementById("optHero").innerHTML = `
+    <div class="hero-stat" style="min-width:240px"><div class="hero-label">Largest single saving</div>
+      <div class="hero-value">${best?fmtUSD(best.impact):"—"}</div>
+      <div class="hero-delta"><span>${best?`${fmtPct(best.impact/(totalSpend||1))} of ${fmtUSD(totalSpend)} spent in range · estimates overlap, so they don't add up`:"nothing with a dollar figure in this range"}</span></div></div>
+    <div class="hero-stat"><div class="l">Findings</div><div class="v">${found.length}</div><div class="s">${found.length?"ranked by estimated saving":"nothing to flag"}</div></div>
+    <div class="hero-stat"><div class="l">Sessions analysed</div><div class="v">${fmtNum(d.sessions.length)}</div><div class="s">from your own logs</div></div>`;
   const host = document.getElementById("optFindings");
   if(!found.length){
-    host.innerHTML = `<div class="empty">Nothing worth flagging in this range — your cache hit
-      rate, model mix and session lengths all look reasonable.</div>`;
+    host.innerHTML = `<div class="card"><div class="empty">Nothing worth flagging in this range — your cache hit
+      rate, model mix and session lengths all look reasonable.</div></div>`;
     return;
   }
   host.innerHTML = found.map(f => `
     <div class="finding${stripeClass(f)}"${stripeStyle(f)}>
       <div class="finding-head">
-        <div>
-          <div class="finding-title">${f.title}</div>
-          ${scopeLabel(f)}
-        </div>
+        <div><div class="finding-title">${f.title}</div>${scopeLabel(f)}</div>
         ${f.impact > 0.5 ? `<div class="finding-impact num">${fmtUSD(f.impact)}<span>est. saving</span></div>` : ""}
       </div>
       <div class="finding-body">${f.body}</div>
-      <div class="finding-todo"><b>What to do</b> ${f.todo}</div>
+      <div class="finding-todo"><b>What to do</b>${f.todo}</div>
       ${f.rows && f.rows.length ? `<table class="finding-tbl"><tbody>${
         f.rows.map(r=>`<tr>${r.map((c,i)=>
-          `<td${i===0?' class="name"':(i===r.length-1?' class="num r"':' class="dim"')}>${esc(c)}</td>`
+          `<td${i===0?' class="name"':(i===r.length-1?' class="r"':' class="dim"')}>${esc(c)}</td>`
         ).join("")}</tr>`).join("")}</tbody></table>` : ""}
     </div>`).join("");
 }
+
+/* ---------------- dispatch ---------------- */
+const VIEW_HTML={};
+function renderAll(){
+  if(!RAW) return;
+  // model colour ranking: siblings of a provider separate by lightness
+  const tot={};
+  for(const r of RAW.records){ if(r.model==="(user)") continue; tot[r.model]=(tot[r.model]||0)+recTokens(r); }
+  MODEL_RANK={};
+  Object.entries(tot).sort((a,b)=>b[1]-a[1]).forEach(([m])=>{
+    const p=providerOf(m); (MODEL_RANK[p]=MODEL_RANK[p]||[]).push(m); });
+
+  syncRangeUI(); syncMetricUI(); buildFilterPanels(); renderPills();
+  document.querySelectorAll(".view").forEach(v=>v.classList.toggle("on", v.id==="v-"+S.view));
+  document.querySelectorAll("#tabs button").forEach(b=>b.classList.toggle("on", b.dataset.v===S.view));
+  document.getElementById("pageTitle").textContent = VIEW_TITLES[S.view] || "Overview";
+  document.title = (S.view==="overview" ? "" : (VIEW_TITLES[S.view]||"") + " · ") + "AgentTelemetry";
+  const d = slice();
+  const host = document.getElementById("v-"+S.view);
+  if(!VIEW_HTML[S.view]) VIEW_HTML[S.view] = host.innerHTML;
+  let nFound = 0;
+  try{ nFound = runFinders(d).length; }catch(e){}
+  document.getElementById("optCount").textContent = nFound || "";
+  const empty = !d.recs.length && !d.sessions.length;
+  if(empty && S.view!=="storage"){
+    host.innerHTML = `<div class="grid"><div class="card col-12"><div class="empty">
+      No activity for this period and filter combination.</div></div></div>`;
+    host.dataset.emptied = "1";
+    return;
+  }
+  if(host.dataset.emptied==="1"){ host.innerHTML = VIEW_HTML[S.view]; host.dataset.emptied="0"; syncSearchBoxes(); }
+  try{
+    if(S.view==="overview") viewOverview(d);
+    else if(S.view==="cost") viewCost(d);
+    else if(S.view==="models") viewModels(d);
+    else if(S.view==="tools") viewTools(d);
+    else if(S.view==="projects") viewProjects(d);
+    else if(S.view==="sessions") viewSessions(d);
+    else if(S.view==="optimize") viewOptimize(d);
+    else if(S.view==="storage") viewStorage();
+  }catch(err){
+    console.error("render failed", err);
+    document.documentElement.dataset.jsError = "render "+S.view+": "+(err&&err.message||err);
+  }
+}
+function syncSearchBoxes(){ document.querySelectorAll(".search-in").forEach(x=>{ if(x.value!==S.search) x.value=S.search; }); }
+function setView(v){
+  if(!VIEW_TITLES[v]) v = "overview";
+  S.view = v;
+  if(location.hash.slice(1) !== v) history.replaceState(null, "", "#"+v);
+  if(v==="storage" && !STORAGE) loadStorage();
+  renderAll();
+  scrollTo({top:0});
+}
+
+/* ---------------- data ---------------- */
+async function load(){
+  try{
+    const r=await fetch("/api/data"); RAW=await r.json();
+    const dates=RAW.records.map(x=>x.date).filter(x=>x!=="0000-00-00");
+    const lo=dates.length?dates.reduce((a,b)=>a<b?a:b):"—";
+    const hi=dates.length?dates.reduce((a,b)=>a>b?a:b):"—";
+    const fresh=new Date(RAW.meta.last_refresh*1000).toLocaleTimeString([], {hour:"2-digit", minute:"2-digit"});
+    document.getElementById("statusText").textContent = (S.live ? "Live" : "Paused") + " · updated " + fresh;
+    document.getElementById("coverage").textContent =
+      `${fmtNum(RAW.meta.files)} logs · ${lo} → ${hi}. Local only — nothing leaves this machine.`;
+    const dev = RAW.device || {};
+    document.getElementById("devName").textContent = dev.name || "This computer";
+    document.getElementById("devOs").textContent = dev.os || "";
+    document.getElementById("device").title = [dev.name, dev.host, dev.os].filter(Boolean).join(" · ");
+    document.getElementById("pricingNote").textContent=RAW.pricing_note;
+    renderAll();
+  }catch(e){
+    console.error(e);
+    document.getElementById("statusText").innerHTML='<span style="color:var(--bad)">cannot reach /api/data — is dashboard.py running?</span>';
+    document.getElementById("livedot").classList.add("off");
+  }
+}
+async function loadStorage(){
+  try{ const r=await fetch("/api/storage"); STORAGE=await r.json();
+    if(S.view==="storage") renderAll(); }catch(e){ console.error(e); }
+}
+
+/* ---------------- events ---------------- */
+document.getElementById("tabs").addEventListener("click",e=>{
+  const b=e.target.closest("button[data-v]"); if(b) setView(b.dataset.v);
+});
+document.querySelector(".brand").addEventListener("click",e=>{ e.preventDefault(); setView("overview"); });
+addEventListener("hashchange",()=>{ const v=location.hash.slice(1); if(v!==S.view && VIEW_TITLES[v]) setView(v); });
+document.getElementById("periodSeg").addEventListener("click",e=>{
+  const b=e.target.closest("button[data-p]"); if(!b) return;
+  S.preset=b.dataset.p; renderAll();
+});
+document.getElementById("rangePanel").addEventListener("click",e=>{
+  const it=e.target.closest("[data-preset]");
+  if(it){ S.preset=it.dataset.preset; closeDD(); renderAll(); return; }
+  if(e.target.closest("[data-apply]")){
+    const a=document.getElementById("dFrom").value, b=document.getElementById("dTo").value;
+    if(a&&b){ S.preset="custom"; S.from=a<b?a:b; S.to=a<b?b:a; closeDD(); renderAll(); }
+  }
+});
+document.getElementById("metricSeg").addEventListener("click",e=>{
+  const b=e.target.closest("button[data-m]"); if(!b) return;
+  S.metric=b.dataset.m; renderAll();
+});
+document.getElementById("rateSeg").addEventListener("click",e=>{
+  const b=e.target.closest("button[data-r]"); if(!b) return;
+  S.rateMetric=b.dataset.r; renderAll();
+});
+function wireMulti(panelId, get, isTools){
+  document.getElementById(panelId).addEventListener("click",e=>{
+    const set=get();
+    const it=e.target.closest(".dd-item[data-k]"); if(!it) return;
+    e.preventDefault();
+    const k=it.dataset.k;
+    if(e.target.closest("[data-only]")){ set.clear(); set.add(k); renderAll(); return; }
+    if(isTools){ if(set.has(k)){ if(set.size>1) set.delete(k); } else set.add(k); }
+    else if(!set.size){ // "no filter" = everything on: unticking one keeps all the others
+      for(const x of it.parentElement.querySelectorAll(".dd-item[data-k]")) if(x.dataset.k!==k) set.add(x.dataset.k);
+    }
+    else if(set.has(k)) set.delete(k); else set.add(k);
+    renderAll();
+  });
+}
+wireMulti("toolsPanel",()=>S.tools,true);
+wireMulti("provPanel",()=>S.provs,false);
+wireMulti("modelPanel",()=>S.models,false);
+wireMulti("projPanel",()=>S.projs,false);
+wireMulti("idePanel",()=>S.ides,false);
+document.getElementById("filtersPanel").addEventListener("click",e=>{
+  const a=e.target.closest("[data-fall],[data-fnone],[data-fclear]"); if(!a) return;
+  e.preventDefault();
+  if(a.dataset.fall) S.tools=new Set(ORDER);
+  else if(a.dataset.fnone){ S.tools.clear(); S.tools.add(ORDER.find(s=>RAW.records.some(r=>r.source===s))||ORDER[0]); }
+  else S[a.dataset.fclear].clear();
+  renderAll();
+});
+document.getElementById("reliableBtn").addEventListener("change",e=>{ S.exactOnly=e.target.checked; renderAll(); });
+document.getElementById("filtersReset").addEventListener("click",()=>{ resetFilters(); closeDD(); renderAll(); });
+document.getElementById("pills").addEventListener("click",e=>{
+  const b=e.target.closest("[data-pill]"); if(!b) return;
+  const k=b.dataset.pill;
+  if(k==="__all") resetFilters();
+  else if(k==="tools") S.tools=new Set(ORDER);
+  else if(k==="exact") S.exactOnly=false;
+  else if(k==="search"){ S.search=""; syncSearchBoxes(); }
+  else if(k.startsWith("prov:")) S.provs.delete(k.slice(5));
+  else if(k.startsWith("proj:")) S.projs.delete(k.slice(5));
+  else if(k.startsWith("ide:")) S.ides.delete(k.slice(4));
+  else if(k.startsWith("model:")) S.models.delete(k.slice(6));
+  renderAll();
+});
+let searchT=null;
+document.addEventListener("input",e=>{
+  if(!e.target.classList.contains("search-in")) return;
+  clearTimeout(searchT); const v=e.target.value;
+  searchT=setTimeout(()=>{ S.search=v.trim(); syncSearchBoxes(); renderAll(); },220);
+});
+document.getElementById("themeBtn").addEventListener("click",cycleTheme);
+document.getElementById("settingsBtn").addEventListener("click",openSettings);
+document.getElementById("refreshBtn").addEventListener("click",async e=>{
+  const b=e.currentTarget; b.style.opacity=".4";
+  try{ await fetch("/api/refresh"); await load(); await loadStorage(); } finally { b.style.opacity=""; }
+});
+document.getElementById("liveBtn").addEventListener("click",e=>{
+  S.live=!S.live;
+  document.getElementById("livedot").classList.toggle("off",!S.live);
+  e.currentTarget.title = S.live ? "Auto-refresh on — click to pause" : "Auto-refresh paused — click to resume";
+  const st=document.getElementById("statusText"); st.textContent = st.textContent.replace(/^(Live|Paused)/, S.live?"Live":"Paused");
+});
+document.addEventListener("click",e=>{
+  const tv=e.target.closest(".tv[data-tv]");
+  if(tv){ const id=tv.dataset.tv; if(S.tableView.has(id)) S.tableView.delete(id); else S.tableView.add(id);
+    applyTableView(id); return; }
+  const go=e.target.closest("[data-go]");
+  if(go){ e.preventDefault(); setView(go.dataset.go); return; }
+  const lg=e.target.closest(".li[data-lg]");
+  if(lg){ const id=lg.dataset.lg, k=lg.dataset.k;
+    S.muted[id]=S.muted[id]||new Set();
+    if(S.muted[id].has(k)) S.muted[id].delete(k); else S.muted[id].add(k);
+    renderAll(); return; }
+  const th=e.target.closest("th[data-k]");
+  if(th){ const k=th.dataset.k, t=th.dataset.t;
+    const st={sess:S.sessSort,model:S.modelSort,tool:S.toolSort,proj:S.projSort,file:S.fileSort}[t];
+    if(st){ st.dir = st.key===k ? -st.dir : -1; st.key=k; renderAll(); } return; }
+  const pr=e.target.closest("[data-proj]");
+  if(pr && !pr.closest(".dd-panel")){ S.projs.clear(); S.projs.add(pr.dataset.proj); setView("sessions"); return; }
+  const sr=e.target.closest("tr[data-sess]");
+  if(sr){ openSession(+sr.dataset.sess); return; }
+  const mr=e.target.closest("tr[data-model]");
+  if(mr){ const m=mr.dataset.model;
+    if(S.modelExpanded.has(m)) S.modelExpanded.delete(m); else S.modelExpanded.add(m);
+    renderAll(); return; }
+});
+document.getElementById("drawerX").addEventListener("click",closeDrawer);
+document.getElementById("scrim").addEventListener("click",closeDrawer);
+addEventListener("scroll",()=>{ document.getElementById("filters").classList.toggle("stuck", scrollY>8); },{passive:true});
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change",()=>{
+  let m="auto"; try{ m=localStorage.getItem("aiu.theme")||"auto"; }catch(e){}
+  if(m==="auto") applyTheme("auto");
+});
+
+/* ---------------- boot ---------------- */
+const QP=new URLSearchParams(location.search);
+{ let saved="auto"; try{ saved=localStorage.getItem("aiu.theme")||"auto"; }catch(e){}
+  applyTheme(QP.get("theme")||saved); }
+if(QP.get("range")) S.preset=QP.get("range");
+if(QP.get("metric") && ["cost","tokens","time"].includes(QP.get("metric"))) S.metric=QP.get("metric");
+if(location.hash && VIEW_TITLES[location.hash.slice(1)]) S.view=location.hash.slice(1);
+load().then(()=>{ if(S.view==="storage") loadStorage(); });
+setTimeout(loadStorage, 1200);
+/* Poll interval is user-configurable (Settings). The payload is ~1MB, so a
+   tighter loop is real CPU and disk churn; 0 means "only when I press refresh". */
+let pollTimers=[];
+function applyPollInterval(){
+  pollTimers.forEach(clearInterval); pollTimers=[];
+  const ms=pollMs();
+  if(!ms) return;
+  pollTimers.push(setInterval(()=>{ if(S.live) load(); }, ms));
+  pollTimers.push(setInterval(()=>{ if(S.live) loadStorage(); }, Math.max(ms*8,120000)));
+}
+applyPollInterval();

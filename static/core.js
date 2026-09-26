@@ -57,9 +57,15 @@ const fmtTok = n => { n=n||0;
   if(n>=1e3) return (n/1e3).toFixed(1)+"K";
   return ""+Math.round(n); };
 const fmtUSD = n => { n=n||0;
-  if(n>=1000) return "$"+(n/1000).toFixed(1)+"k";
-  if(n>=10)   return "$"+n.toFixed(0);
+  if(n>=100) return "$"+Math.round(n).toLocaleString();
+  if(n>0 && n<0.01) return "<$0.01";
   return "$"+n.toFixed(2); };
+/* Axis ticks only — a tick has no room for "$1,752", and the tooltip carries the exact figure. */
+const fmtUSDk = n => { n=n||0;
+  if(n>=1e6) return "$"+(n/1e6).toFixed(1)+"M";
+  if(n>=1000) return "$"+(n/1000).toFixed(n>=1e4?0:1)+"k";
+  if(n>=10) return "$"+n.toFixed(0);
+  return "$"+(+n.toFixed(2)); };
 const fmtUSD2 = n => "$"+(n||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
 const fmtNum = n => (n||0).toLocaleString();
 const fmtPct = n => (n*100).toFixed(n<0.1?1:0)+"%";
@@ -95,7 +101,8 @@ const S = {
   ides:new Set(),        // which IDE / surface the work ran in
   search:"",
   exactOnly:false,
-  metric:"tokens", projMetric:"tokens", provMetric:"cost", rateMetric:"all", ideMetric:"tokens",
+  metric:"cost", rateMetric:"all",
+  tableView:new Set(),   // chart ids currently shown as their table twin
   live:true,
   muted:{},             // chartId -> Set of muted series labels
   sessSort:{key:"end",dir:-1}, modelSort:{key:"cost",dir:-1},
@@ -254,12 +261,15 @@ function sparkline(vals, color, w, h){
     <path d="${d}" fill="none" stroke="${color}" stroke-width="1.5"
       stroke-linejoin="round" stroke-linecap="round"/></svg>`;
 }
+/* Change vs the equal-length period just before this one. `invert` = up is bad
+   (spend). An arrow always rides with the colour so direction is never hue-alone. */
 function deltaHTML(cur, prev, invert){
-  if(prev==null || !isFinite(prev) || prev===0) return `<span class="delta flat">—</span>`;
+  if(prev==null || !isFinite(prev) || prev===0) return `<span class="delta flat">new</span>`;
   const d=(cur-prev)/Math.abs(prev);
   if(Math.abs(d)<0.005) return `<span class="delta flat">no change</span>`;
   const up=d>0, good = invert ? !up : up;
-  return `<span class="delta ${good?"up":"down"}">${up?"▲":"▼"} ${Math.abs(d*100).toFixed(0)}%</span>`;
+  const pct = Math.abs(d)>=10 ? Math.round(Math.abs(d))+"×" : Math.abs(d*100).toFixed(0)+"%";
+  return `<span class="delta ${good?"up":"down"}">${up?"▲":"▼"} ${pct}</span>`;
 }
 
 /* ---------- tooltip ---------- */
@@ -282,13 +292,12 @@ function applyTheme(mode){
   const dark = mode==="dark" || (mode==="auto" &&
     matchMedia("(prefers-color-scheme: dark)").matches);
   root.dataset.resolved = dark?"dark":"light";
-  localStorage.setItem("aiu.theme", mode);
-  document.getElementById("themeBtn").textContent = mode==="auto"?"◐":(dark?"☾":"☀");
+  try{ localStorage.setItem("aiu.theme", mode); }catch(e){}
   document.getElementById("themeBtn").title = "Theme: "+mode+" (t)";
   if(RAW) renderAll();
 }
 function cycleTheme(){
-  const cur = localStorage.getItem("aiu.theme")||"auto";
+  let cur="auto"; try{ cur = localStorage.getItem("aiu.theme")||"auto"; }catch(e){}
   applyTheme(cur==="auto"?"light":cur==="light"?"dark":"auto");
 }
 
@@ -309,7 +318,8 @@ document.addEventListener("keydown", e=>{
   if(map[e.key]){ S.preset=map[e.key]; syncRangeUI(); renderAll(); }
   if(e.key==="t") cycleTheme();
   if(e.key==="r") document.getElementById("refreshBtn").click();
-  if(e.key==="/"){ e.preventDefault(); document.getElementById("search").focus(); }
+  if(e.key==="/"){ const box=document.querySelector(".view.on .search-in");
+    if(box){ e.preventDefault(); box.focus(); } }
 });
 
 /* ---------- drawer ---------- */

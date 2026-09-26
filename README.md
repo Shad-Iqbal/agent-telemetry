@@ -1,10 +1,11 @@
-# AI Usage Dashboard
+# AgentTelemetry
 
-A **live, local** analytics dashboard for your AI coding-assistant usage. It reads the
-interaction logs your tools already write to your own machine and serves an interactive
-dashboard — tokens, estimated cost, cache efficiency, an **Anthropic vs OpenAI vs Copilot**
-provider comparison, a GitHub-style activity calendar, and breakdowns by **model, provider,
-day, hour, weekday, tool, project and session** — plus how much **disk** all these logs eat.
+**Live, local telemetry for your AI coding agents.** AgentTelemetry reads the interaction
+logs your tools already write to your own machine and serves a clean, interactive
+dashboard — estimated spend, tokens, active time, cache efficiency, an **Anthropic vs OpenAI
+vs Google** provider comparison, an activity calendar, and breakdowns by **model, provider,
+day, hour, weekday, tool, IDE, project and session** — plus how much **disk** all these logs
+eat, and suggestions for spending less, drawn from your own numbers.
 
 **Your data never leaves your machine.** No account, no API key, no telemetry, no
 dependencies — just Python's standard library and a vendored copy of Chart.js.
@@ -58,7 +59,7 @@ instead of cloning, delete `.usage_cache.json` first — that file is your perso
 | **Claude Code** | `~/.claude/projects/**/*.jsonl` | exact (in/out/cache read+write, 5m/1h tiers) |
 | **Claude Desktop** (agent mode) | `Claude/local-agent-mode-sessions/**` under App Support / `%APPDATA%` / `~/.config` | exact |
 | **Codex** | `~/.codex/sessions/**`, `~/.codex/archived_sessions/**` | exact (in/cached/out/reasoning); subagents are identified and labelled |
-| **GitHub Copilot** | VS Code / Insiders / Cursor `workspaceStorage/*/chatSessions/*.{json,jsonl}` | estimated from message text (Copilot logs no token counts) |
+| **GitHub Copilot** | VS Code / Insiders / Cursor `workspaceStorage/*/chatSessions/*.{json,jsonl}` | exact where Copilot recorded them (`promptTokens`/`completionTokens` on finished requests in current builds); estimated from message text for older chats · premium-request multiplier read separately |
 | **Cursor** (native AI) | `Cursor/User/globalStorage/state.vscdb` under App Support / `%APPDATA%` / `~/.config` | partial — model, mode, timestamps, tool calls and AI-line stats are exact; tokens are on only ~2% of messages |
 | **opencode** | `~/.local/share/opencode/opencode.db`, `%LOCALAPPDATA%\opencode\opencode.db`, `~/.opencode/opencode.db` (or `$OPENCODE_DATA_DIR`) | exact (in/out/reasoning/cache); cost is read from opencode's own per-message value |
 | **Hermes Agent** | `~/.hermes/state.db` (or `$HERMES_HOME`, `%LOCALAPPDATA%\hermes`) | exact (in/out/cache/reasoning, per model) |
@@ -71,49 +72,50 @@ Models table lists each `model × tool` row separately.
 
 ## What you get
 
-Seven tabs, light + dark theme, everything date-filterable.
+Eight views in a left-hand sidebar, light + dark theme, everything date-filterable, and the
+**name of this machine** at the top — so a screenshot always says which computer it came from.
 
-**Overview** — KPI cards with sparklines and period-over-period deltas · Highlights (biggest
-day, priciest session, longest streak, busiest hour) · GitHub-style activity calendar (click a
-day to zoom to it) · daily activity stacked by tool · share by tool · **hour × weekday
-heatmap** · token composition.
+One control row sits above every view: the **period** (Today · 7D · 30D · 90D · All, plus
+*More* for this week / month / quarter / year, last month and a custom range), the **measure**
+(**Cost · Tokens · Time** — every chart and ranking switches together), and a single
+**Filters** panel (tool, provider, model, project, IDE / surface, and *exact tokens only*).
+Active filters show as removable chips. Every figure is compared with the equal-length
+period just before it, and every chart has a **table view** (the grid icon) so nothing is
+readable only by hovering.
 
-**Cost** — total / per active day / 30-day run rate / per session / per prompt ·
-**cache hit rate and what caching saved you** · blended rate by model, toggleable between
-*all tokens* (cost ÷ every token, cache reads included — a low bar means heavily cached)
-and *per output* (cost ÷ generated tokens, the one that's comparable across providers) ·
-cumulative and daily cost by tool.
+**Overview** — one hero number with its change vs the previous period · per-day chart
+stacked by tool · tiles for spend, tokens, active time, prompts, replies, sessions and cache
+hit rate, each with a sparkline · spend by tool · top models · top projects · highlights ·
+**hour × weekday heatmap** · token mix per tool · 12-month activity calendar (click a day).
 
-**Models & Providers** — **Anthropic vs OpenAI vs Google head-to-head** (independent of which
-tool ran the model) · concentric provider→model doughnut · provider share over time ·
-model-adoption timeline · **provider × tool matrix** · sortable `model × tool` table with a
-⚠ on any model missing a price row.
+**Cost** — total with per-active-day, 30-day run rate, per session and per prompt ·
+cumulative spend by tool against the previous period · **cache hit rate and what caching
+saved you** · spend by model, by project and by **token type** (what cache reads vs writes vs
+output actually cost you) · effective rate by model, as *all tokens* or *per output* (the one
+that's comparable across providers) · daily spend.
 
-**Tools & Agents** — tool calls per prompt / per message, context amplification, subagent
-token share · top tool calls · calls by category (read / edit / execute / web / agents / MCP)
-· **MCP server usage** · full sortable tool list.
+**Models** — provider cards (who made the model, independent of the tool that ran it) ·
+sortable `model × tool` table with a ⚠ on any model missing a price · model timeline ·
+provider share over time · **provider × tool matrix**.
 
-**Projects** — by tokens / cost / messages, concentration stats, and a table where clicking a
-row filters everything to that project.
+**Tools & agents** — active time, tool calls per prompt, context amplification, subagent
+share, MCP and web calls, Copilot premium requests, Cursor's AI lines kept · top tool calls
+· calls by category · **where you work** (IDE × tool) · MCP servers · **Skills** · the full
+tool list.
 
-**Sessions** — real session titles (not hashes), tool, project, model, tokens, cost, prompts,
-messages, tool calls, cache % — click any row for a detail panel with git branch, entrypoint,
-tool version, token breakdown and log size.
+**Projects** — ranked by the chosen measure, concentration stats, and a searchable table
+where clicking a row opens that project's sessions.
 
-**Optimize** — suggestions derived from your own logs, ranked by what they'd save:
-MCP servers you've connected but never call (their tool definitions ride in every
-request), sessions running at huge context, cache you paid to write and never read,
-a top-tier model doing trivial work, what each **Skill** costs you, and how much
-spend runs inside subagents. Nothing is shown unless your data supports it.
+**Sessions** — real session titles, tool, project, model, tokens, cost, prompts, replies,
+tool calls, active time, cache % — search, sort, and click any row for a detail panel.
+
+**Optimize** — suggestions derived from your own logs, ranked by what they'd save: sessions
+re-reading a very large context, thinking share, tool-heavy sessions that never delegated,
+cache written but never read, a costly model doing light work, what each **Skill** costs,
+MCP servers you connected but never call, Codex reasoning effort. Nothing is shown unless
+your data supports it, and because the estimates overlap they are never summed.
 
 **Storage** — see below.
-
-**Filters** — an **IDE / surface** filter (VS Code, Insiders, Cursor, Codex Desktop,
-Claude Desktop, CLI…) alongside tool, provider, project and model, plus a *Where you work*
-matrix on Tools & Agents · flexible date range (14 presets incl. this week / month / quarter / year, plus a
-custom start–end picker), **compare vs. previous period**, multi-select dropdowns for tool,
-provider, project and model, search, and an "exact tokens only" toggle that drops the sources
-whose token counts are estimated. Filter state shows as removable pills.
 
 **Keyboard** — `1`/`7`/`3`/`9`/`a` ranges, `m` month-to-date, `/` search, `t` theme, `r` refresh.
 
@@ -124,12 +126,12 @@ whose token counts are estimated. Filter state shows as removable pills.
 The tools you use write a *lot* to disk, and nothing else tells you how much. The **Storage**
 tab shows total footprint and per-tool bytes, a free-space gauge that warns when the drive is
 nearly full, storage accumulation over time, the largest individual log files, **bytes per 1M
-tokens** (which tool stores its history most expensively), AI data on disk the dashboard does
+tokens** (which tool stores its history most expensively), AI data on disk AgentTelemetry does
 *not* analyse, and copy-paste cleanup commands **generated for your own paths and your own
-shell** (`find` on macOS/Linux, PowerShell on Windows). The dashboard never deletes anything
+shell** (`find` on macOS/Linux, PowerShell on Windows). AgentTelemetry never deletes anything
 itself.
 
-Deleting old logs does **not** shrink your analytics — the dashboard keeps every session it has
+Deleting old logs does **not** shrink your analytics — AgentTelemetry keeps every session it has
 already parsed, so the cleanup is safe.
 
 ---
