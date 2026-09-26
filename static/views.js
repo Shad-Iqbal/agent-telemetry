@@ -573,13 +573,13 @@ function categorize(name){
 }
 /* ---------------- ACTIVITY ----------------
    RAW.activity: one row per (date, tool, model, category) — a turn is one typed
-   prompt plus all the work until the next one, classified by the tools it used and
-   the words it used (parser.py ACTIVITY). Only Claude Code,
+   prompt plus all the work until the next one, classified mostly by what the agent
+   did — files edited, commands run (parser.py ACTIVITY). Only Claude Code,
    Claude Desktop and Codex log enough to classify. */
-const ACT_LABEL = {coding:"Coding", feature:"New features", debugging:"Debugging",
-  refactoring:"Refactoring", testing:"Testing", exploration:"Exploring / research",
-  planning:"Planning", delegation:"Delegating to agents", git:"Git", "build/deploy":"Build / deploy",
-  brainstorming:"Brainstorming", conversation:"Just talking", general:"Skills / other"};
+const ACT_LABEL = {build:"Building features", fix:"Fixing bugs", refactor:"Refactoring",
+  test:"Testing", docs:"Docs", review:"Reviewing", explore:"Exploring code",
+  research:"Web research", data:"Data & MCP tools", plan:"Planning", delegate:"Delegating to agents",
+  vcs:"Git & PRs", ops:"Build, install & deploy", chat:"Q&A / chat"};
 function actRows(d){
   const r = d.r;
   return (RAW.activity||[]).filter(x => passSrc(x.source) && passModel(x.model)

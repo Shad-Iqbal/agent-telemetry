@@ -101,9 +101,9 @@ model's edits land first time, retries per edit, tokens and cost per prompt).
 
 **Tools & agents** — active time, tool calls per prompt, context amplification, subagent
 share, MCP and web calls, Copilot premium requests, Cursor's AI lines kept · top tool calls
-· calls by category · **what your prompts were for** (coding, debugging, new features,
-exploring, testing, git… — each prompt classified by the tools it used and the words it
-used, Claude Code & Codex) · **edits that landed first time** (one-shot rate per tool, retries,
+· calls by category · **what your prompts were for** (building, fixing, refactoring,
+testing, exploring, git, deploys… — each prompt classified by what the agent did: the files
+it edited and the commands it ran; Claude Code & Codex) · **edits that landed first time** (one-shot rate per tool, retries,
 and what the retried prompts cost) · **where you work** (IDE × tool) · MCP servers, with the
 tools used out of those each server offered · **Skills** · the full tool list.
 

@@ -354,26 +354,41 @@ appears as `claude-in-chrome` and `Claude_in_Chrome` across versions, and
 
 `agg["activity"]` (`"date\tmodel\tcategory"` → turns, edits, oneshot, retries and token
 fields) comes from the ACTIVITY block in `parser.py`; the payload ships it as `activity`,
-costed per row by `_cost()`. The keyword and tool rules are adapted from an MIT-licensed
-classifier; its attribution sits on the ACTIVITY block — keep it if you change the rules.
+costed per row by `_cost()`.
+
+- **Classified by what the agent did, not by guessing from words.** `_classify_turn` looks
+  first at the evidence: an edit makes it a build/fix/refactor turn — or `docs`/`test` when
+  every edited file is documentation or a test (`_file_kind`); a spawned agent is `delegate`;
+  otherwise the shell commands it ran decide (`_cmd_kinds`: a test runner → `test`, a
+  writing `git`/`gh pr` → `vcs`, an installer/builder/deployer → `ops`), then the tool mix
+  (`mcp` → `data`, web → `research`, reads/shell → `explore`). The prompt's wording only
+  settles what an edit was FOR and what a tool-free turn was: `_prompt_intents` scores
+  weighted word lists and the highest total wins, ties by declaration order.
+  Categories: build · fix · refactor · test · docs · review · explore · research · data ·
+  plan · delegate · vcs · ops · chat. `_LEGACY_CATEGORY` maps ids older caches used.
+- **Tool kinds come from the names each agent actually logs** (`_TOOL_KIND`). Codex's
+  `exec`/`exec_command`/`write_stdin` are shell, `apply_patch` edit, `update_plan` plan,
+  `view_image` read; a Codex subagent spawn is its `SubAgentActivity` "started" marker.
 
 - **A turn is one typed prompt plus everything until the next one.** It opens at the same
   places prompts are counted (`_turn_open`), so the prompt filters above decide what a turn
   is. A queued steer does NOT open a turn — it redirects the running one. A subagent's file
   never opens one: its work is the parent's delegation turn.
-- **The prompt's text never reaches the cache.** `_prompt_kw()` regex-matches it on arrival
-  and keeps only flags; the running turn persists in `state.turn` (incremental parsing).
+- **The prompt's text never reaches the cache.** `_prompt_intents()` scores it on arrival
+  and keeps only small per-intent numbers; the running turn persists in `state.turn` (incremental parsing).
   `activity_of()` adds the still-open last turn read-only, since nothing will close it.
-- **Retry** = an edit, then a shell run that isn't read-only, then another edit to the SAME
-  file. `oneshot` = an editing turn with none. `retry_cost` is the whole turn's cost, not the
+- **Retry (rework)** = a file edited again after a *check* ran — a command that tests,
+  builds, lints or runs the project (`_cmd_kinds` → "check"; a lookup like `rg`/`cat`/`git
+  log` never is). Each check marks every file edited so far; editing a marked file counts
+  one and re-arms it. `oneshot` = an editing turn with none. `retry_cost` is the whole turn's cost, not the
   redo alone — the Optimize finder compares it with `edit_cost` (all editing turns) to get
   an excess from the user's own averages rather than a guessed fraction.
 - **Codex edits come from `patch_apply_end` / `item_completed:FileChange`**, the one place
   every build records each file a patch touched — Codex Desktop applies patches from inside
   its `exec` JS tool, which never shows as `apply_patch`. Once a rollout shows either event,
   `apply_patch` calls stop counting for activity so an edit isn't counted twice. `exec`
-  programs are scanned for their `cmd:` strings, so one that only runs `rg`/`cat` is a
-  lookup, not a check.
+  programs are scanned for their `cmd:` strings so their commands can be judged; one whose
+  commands can't be read is neither a check nor a lookup.
 - Turns are attributed to the model that answered most; tokens split by the model that
   actually produced them.
 
