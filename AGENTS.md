@@ -504,8 +504,8 @@ must not report three days of "active" time. Formatted client-side by `fmtDur()`
 
 Settings → **Your devices** combines two (or more) of the user's own computers over the
 local network. Both switches are off until the user turns them on, and each asks first
-(a `confirm()` that says exactly what is sent). Everything lives in `dashboard.py`'s
-Devices section.
+(an `askConfirm()` dialog that says exactly what is sent). Everything lives in
+`dashboard.py`'s Devices section.
 
 - **Share** starts a *second* `Server` on `0.0.0.0:7879` (`share.port` in `.peers.json`)
   with `PeerHandler`, which answers ONE route, `GET /api/peer/export`, and only with
