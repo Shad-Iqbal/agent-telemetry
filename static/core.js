@@ -87,6 +87,10 @@ const fmtBytes = n => { n=n||0;
   if(n>=1e6) return (n/1e6).toFixed(0)+" MB";
   if(n>=1e3) return (n/1e3).toFixed(0)+" KB";
   return n+" B"; };
+/* A unix time (seconds) as "just now", "4m ago", "3h ago", "2d ago". */
+const ago = t => { const s = Math.max(0, Date.now()/1000 - (t||0));
+  return s<45 ? "just now" : s<3600 ? Math.round(s/60)+"m ago"
+       : s<172800 ? Math.round(s/3600)+"h ago" : Math.round(s/86400)+"d ago"; };
 const esc = s => (s==null?"":(""+s)).replace(/[&<>"]/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c]));
 const recTokens = r => (r.in||0)+(r.out||0)+(r.cr||0)+(r.cc||0);
 const ctxTokens = r => (r.in||0)+(r.cr||0)+(r.cc||0);
@@ -102,6 +106,7 @@ const S = {
   projs:new Set(),
   models:new Set(),
   ides:new Set(),        // which IDE / surface the work ran in
+  devs:new Set(),        // which device (only offered once another one is connected)
   search:"",
   exactOnly:false,
   metric:"tokens", rateMetric:"all",   // tokens lead; cost is an estimate
@@ -172,15 +177,20 @@ function passModel(m){
 }
 function passProj(p){ return !S.projs.size || S.projs.has(p||"(unknown)"); }
 function passIde(i){ return !S.ides.size || S.ides.has(i||"(unknown)"); }
+/* Rows without a device are this one's (an older payload, or a single-device install). */
+function passDev(d){ return !S.devs.size || S.devs.has(d || (RAW && RAW.device && RAW.device.id)); }
+function devices(){ return (RAW && RAW.devices) || []; }
+function multiDevice(){ return devices().length > 1; }
+function deviceName(id){ const d=devices().find(x=>x.id===id); return d ? d.name : "This device"; }
 
 function slice(r){
   r = r || range();
   const recs = RAW.records.filter(x => passSrc(x.source) && passModel(x.model)
-      && passProj(x.project) && passIde(x.ide) && x.date>=r.from && x.date<=r.to);
-  const hourly = RAW.hourly.filter(x => passSrc(x.source) && x.date>=r.from && x.date<=r.to);
+      && passProj(x.project) && passIde(x.ide) && passDev(x.device) && x.date>=r.from && x.date<=r.to);
+  const hourly = RAW.hourly.filter(x => passSrc(x.source) && passDev(x.device) && x.date>=r.from && x.date<=r.to);
   const sessions = RAW.sessions
     .filter(x => passSrc(x.source) && passProj(x.project) && passModel(x.model)
-                 && passIde(x.ide) && activeInRange(x, r))
+                 && passIde(x.ide) && passDev(x.device) && activeInRange(x, r))
     .map(x => clipSession(x, r));
   return {recs, hourly, sessions, r};
 }
@@ -212,10 +222,10 @@ function clipSession(s, r){
 
 /* Tool-call rows carry a date + source but no project/model dimension, so the
    project / provider / model filters cannot apply to them — the UI says so. */
-function toolCounts(r){
+function toolCounts(r, only){
   const out = {};
   for(const t of RAW.tools){
-    if(!passSrc(t.source)) continue;
+    if(!passSrc(t.source) || !passDev(t.device) || (only && !only(t))) continue;
     if(t.date < r.from || t.date > r.to) continue;
     const e = out[t.name] || (out[t.name] = {name:t.name, count:0, src:{}});
     e.count += t.count;
@@ -316,6 +326,8 @@ document.addEventListener("click", e=>{
   if(!e.target.closest(".dd-panel")) closeDD();
 });
 document.addEventListener("keydown", e=>{
+  // an open dialog owns the keyboard: Esc closes it alone, not the drawer behind it
+  if(document.querySelector("dialog.modal[open]")) return;
   if(e.key==="Escape"){ closeDD(); closeDrawer(); }
   if(e.target.tagName==="INPUT"||e.target.tagName==="SELECT"||e.target.tagName==="TEXTAREA"
      ||e.target.isContentEditable) return;
@@ -356,6 +368,34 @@ document.addEventListener("DOMContentLoaded", () => {
   if(qs === "collapsed" || qs === "open") setSide(qs === "collapsed");
   else if(saved === "collapsed") setSide(true);
 });
+
+/* ---------- confirm dialog ----------
+   The app's own, never the browser's confirm(): that one wears the browser's chrome,
+   says "127.0.0.1:7878 says", and can't carry emphasis or a list. Resolves true only
+   on the confirm button; Esc, Cancel and a click on the backdrop all resolve false.
+   `body` is HTML, so callers escape anything that came from data. */
+function askConfirm({title, body, ok="Continue", cancel="Cancel", danger=false}){
+  return new Promise(resolve=>{
+    const d = document.createElement("dialog");
+    d.className = "modal"; d.setAttribute("aria-labelledby", "modalTitle");
+    d.innerHTML = `<div class="modal-in">
+        <h2 class="modal-h" id="modalTitle">${esc(title)}</h2>
+        <div class="modal-body">${body}</div>
+        <div class="modal-actions">
+          <button class="btn" value="cancel">${esc(cancel)}</button>
+          <button class="btn ${danger?"danger":"primary"}" value="ok">${esc(ok)}</button>
+        </div></div>`;
+    let yes = false;
+    d.addEventListener("click", e=>{
+      const b = e.target.closest("button[value]");
+      if(b){ yes = b.value==="ok"; d.close(); }
+      else if(e.target===d) d.close();              // the backdrop, outside .modal-in
+    });
+    d.addEventListener("close", ()=>{ d.remove(); resolve(yes); });
+    document.body.appendChild(d);
+    d.showModal();                                  // focus lands on Cancel, the safe choice
+  });
+}
 
 /* ---------- drawer ---------- */
 function openDrawer(html){

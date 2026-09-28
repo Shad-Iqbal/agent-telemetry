@@ -7,8 +7,9 @@ vs Google** provider comparison, an activity calendar, and breakdowns by **model
 day, hour, weekday, tool, IDE, project and session** — plus how much **disk** all these logs
 eat, and suggestions for spending less, drawn from your own numbers.
 
-**Your data never leaves your machine.** No account, no API key, no telemetry, no
-dependencies — just Python's standard library and a vendored copy of Chart.js.
+**Your data never leaves your machine** — unless you turn on [Your devices](#your-devices-optional)
+to combine two of your own computers over your local network. No account, no API key, no
+telemetry, no dependencies — just Python's standard library and a vendored copy of Chart.js.
 
 Covers **Claude Code · Claude Desktop · Codex · GitHub Copilot · Cursor · opencode · Hermes Agent · OpenClaw**.
 
@@ -221,6 +222,28 @@ default** — open the **⚙** menu and turn on *Install as an app*, then use yo
 Install / Add to Dock. That registers a service worker so the shell still opens when
 `dashboard.py` isn't running; your usage data is never cached, `/api/` always hits the live
 server. Turning it off again unregisters the worker and clears its cache.
+
+## Your devices (optional)
+
+Use your coding agents on more than one computer? You can see them all in one dashboard.
+It's **off by default** and works over your **local network** only. Open **⚙ → Your devices**:
+
+1. On the computer you want to read from, click **Share this device…**. It shows an
+   address (like `your-mac.local:7879`) and a pairing code.
+2. On the computer you're looking from, enter that address and code, then click **Connect…**.
+3. To see each one from the other, do both steps on both.
+
+Once connected, a **Devices** filter appears and the header reads "…from all tools **on all
+devices**…". The connected device's usage is fetched every minute, and a copy is kept in
+`.peers/` so it still shows while that computer is asleep. Disconnecting deletes the copy.
+
+What sharing sends: session titles (often the start of a prompt), project and branch names,
+log file paths, models, token counts, costs and times. Full prompts, replies and file
+contents are never sent. Sharing opens one read-only port (7879) that answers only to the
+pairing code. The dashboard itself stays on `127.0.0.1`. The connection is **not
+encrypted**, so share only on a network you trust. The setup checks on the Optimize tab
+(instruction files, installed skills, MCP servers) and the Storage tab still describe only
+the computer you're looking at. `.peers.json` and `.peers/` are gitignored.
 
 ## Contributing
 
