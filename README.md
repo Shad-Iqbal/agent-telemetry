@@ -245,6 +245,18 @@ encrypted**, so share only on a network you trust. The setup checks on the Optim
 (instruction files, installed skills, MCP servers) and the Storage tab still describe only
 the computer you're looking at. `.peers.json` and `.peers/` are gitignored.
 
+**If it can't connect**, the error says which of these it is:
+
+- **The other device's firewall.** On Windows, allow Python on *private* networks when asked,
+  and set the Wi-Fi to Private (Settings → Network & internet). On macOS, allow incoming
+  connections when asked.
+- **A VPN** (like 1.1.1.1 with WARP) on either device can get in the way.
+- **A `.local` name that doesn't resolve.** Use the IP address shown next to it instead.
+
+Once connected, a device that moves to a new IP address is still found: every answer
+lists the other addresses it can be reached at, and those are tried when the saved one
+stops working.
+
 ## Contributing
 
 See **[CONTRIBUTING.md](CONTRIBUTING.md)** — it covers the setup, the hard rules

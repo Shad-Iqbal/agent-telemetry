@@ -1261,6 +1261,13 @@ function renderSettings(cfg){
    Off until turned on, and the only thing that sends data off this machine, so
    each switch asks first. Sharing and connecting are separate: do both on both
    machines to see each from the other. */
+/* Why the other device can't get in, as each OS puts it. */
+const firewallHint=me=>({
+  macos:"If macOS asks whether Python may accept incoming connections, allow it",
+  windows:"If Windows asks whether to allow Python through the firewall, allow it on private "+
+    "networks, and set this Wi-Fi to Private (Settings \u2192 Network & internet)",
+  }[me.platform] || `If a firewall is on (ufw, firewalld), allow TCP port ${me.port}`)+
+  ", or the other device can't reach this one.";
 async function loadDevices(msg){
   const box=document.getElementById("devBox"); if(!box) return;
   try{ renderDevices(await (await fetch("/api/devices")).json(), msg); }
@@ -1284,14 +1291,13 @@ function renderDevices(st, msg){
         <div class="stg-actions"><button class="btn" id="devShareOff">Stop sharing</button>
           <button class="btn" id="devNewCode">New code</button></div>
       </div>
-      <div class="stg-hint" style="margin-top:8px">If macOS asks whether Python may accept incoming
-        connections, allow it, or the other device can't reach this one.</div>`
+      <div class="stg-hint" style="margin-top:8px">${esc(firewallHint(me))}</div>`
     : `<div class="stg-hint">Off. Nothing on this device can be reached from the network.</div>
       <div class="stg-actions"><button class="btn primary" id="devShareOn">Share this device…</button></div>`}
     ${me.error?`<div class="stg-msg err">${esc(me.error)}</div>`:""}
     <div class="dev-sub">Connected devices</div>
     ${peers.map(p=>`<div class="dev-card">
-        <div><span class="dev-name">${esc(p.name)}</span> <span class="dev-meta">${esc(p.os||"")} · ${esc(p.addr||"")}</span></div>
+        <div><span class="dev-name">${esc(p.name)}</span> <span class="dev-meta">${esc(p.os||"")} · ${esc(p.addr||"")}${p.via?` (answering at ${esc(p.via)})`:""}</span></div>
         <div class="dev-meta">${p.last_ok?`Synced ${ago(p.last_ok)}`:"Never synced"}${p.shown?` · ${fmtNum(p.logs)} logs`:""}${p.app?` · ${esc(p.app)}`:""}</div>
         ${p.error?`<div class="dev-err">${esc(p.error)}</div>`:""}
         <div class="stg-actions"><button class="btn" data-dev-sync>Sync now</button>

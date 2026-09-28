@@ -534,6 +534,18 @@ local network. Both switches are off until the user turns them on, and each asks
   it did before.
 - No encryption: the pairing code keeps others on the Wi-Fi from *reading* the export,
   not from sniffing it. The UI says so.
+- **The address shown under Share is every address ranked, not the route to the
+  internet.** A VPN takes that route over: on Windows with 1.1.1.1's WARP on, it answered
+  `172.16.0.2`, which nothing on the Wi-Fi can reach, so connecting from the Mac always
+  failed. `_lan_addrs()` gathers the route's address plus every adapter's
+  (`gethostbyname_ex`), then shows 192.168/16 and 10/8 first, and 172.16/12 and 100.64/10
+  (VPNs, WSL, Docker, Tailscale) only when there's nothing better.
+- **A connection survives a new IP.** Every authorized answer carries
+  `X-AgentTelemetry-Addrs`, the sharer's current addresses. They're saved as the peer's
+  `alts`, and `_pull_any` tries `last_addr`, then the typed `addr`, then those.
+  `_reach()` probes each with a 5s connect first (the pull itself allows 30s for a big
+  export), so a dead address fails fast, and it names the cause: a name that didn't
+  resolve, a refused port, or silence.
 - The device name goes in `X-AgentTelemetry-Device` URL-quoted. A header is Latin-1, and
   "Uttam’s MacBook Air" is not; unquoted, every connection attempt failed.
 

@@ -15,7 +15,7 @@ Stdlib only. First run parses everything (one large Codex log makes that take a
 moment); results are cached, and subsequent refreshes are incremental & instant.
 """
 import os, re, sys, json, time, glob, threading, argparse, shutil, mimetypes, platform, subprocess
-import gzip, hmac, io, secrets, socket, uuid, urllib.parse, urllib.request, urllib.error
+import gzip, hmac, io, ipaddress, secrets, socket, uuid, urllib.parse, urllib.request, urllib.error
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import parser as P
@@ -1397,9 +1397,14 @@ class PeerHandler(BaseHTTPRequestHandler):
         except TimeoutError:
             self._plain(503, "busy parsing, try again shortly")
             return
+        # where else this device answers, so the reader can fall back when the
+        # address it was given stops working (a new IP, a .local lookup that failed)
+        port = self.server.server_address[1]
+        addrs = ", ".join(f"{a}:{port}" for a in _lan_addrs())
         if self.headers.get("If-None-Match") == etag:
             self.send_response(304)
             self.send_header("ETag", etag)
+            self.send_header("X-AgentTelemetry-Addrs", addrs)
             self.end_headers()
             return
         self.send_response(200)
@@ -1407,6 +1412,7 @@ class PeerHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Encoding", "gzip")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("ETag", etag)
+        self.send_header("X-AgentTelemetry-Addrs", addrs)
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
@@ -1439,59 +1445,139 @@ def _share_stop():
         sys.stderr.write("[devices] sharing stopped\n")
 
 
+_HOME_NETS = [ipaddress.ip_network(n) for n in ("192.168.0.0/16", "10.0.0.0/8")]
+_VIRTUAL_NETS = [ipaddress.ip_network(n) for n in ("172.16.0.0/12", "100.64.0.0/10")]
+_addr_cache = {"at": 0.0, "v": []}
+
+
 def _lan_addrs():
     """How the other device can reach this one: its .local name (stable across
-    networks) and its current IP."""
-    out = []
+    networks), then its Wi-Fi/Ethernet address.
+
+    The address the OS would use to reach the internet is not enough on its own. A
+    VPN takes that route over (1.1.1.1's WARP answers as 172.16.0.2), and so can a
+    VM or WSL adapter, and nothing else on the Wi-Fi can reach those. So every
+    address the machine holds is ranked: home and office ranges first, then the
+    ranges VPNs, WSL, Docker and Tailscale use, which are shown only when there's
+    nothing better."""
+    if time.time() - _addr_cache["at"] < 30:
+        return _addr_cache["v"]
+    names, ips = [], []
     if sys.platform == "darwin":
         try:
             n = subprocess.run(["scutil", "--get", "LocalHostName"], capture_output=True,
                                text=True, timeout=2).stdout.strip()
             if n:
-                out.append(n + ".local")
+                names.append(n + ".local")
         except (OSError, subprocess.SubprocessError) as e:
             sys.stderr.write(f"[devices] scutil failed: {e}\n")
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
             s.connect(("192.0.2.1", 9))        # a UDP connect only picks a route; nothing is sent
-            ip = s.getsockname()[0]
+            ips.append(s.getsockname()[0])
         finally:
             s.close()
-        if ip and not ip.startswith("127."):
-            out.append(ip)
     except OSError:
         pass
+    try:                                       # every adapter's address on Windows and macOS
+        ips += socket.gethostbyname_ex(socket.gethostname())[2]
+    except OSError:
+        pass
+    rank = {}
+    for ip in ips:
+        try:
+            a = ipaddress.IPv4Address(ip)
+        except ValueError:
+            continue
+        if a.is_loopback or a.is_link_local or a.is_multicast or a.is_unspecified:
+            continue
+        rank.setdefault(ip, 0 if any(a in n for n in _HOME_NETS)
+                        else 1 if any(a in n for n in _VIRTUAL_NETS) else 2)
+    best = min(rank.values(), default=None)
+    out = names + [ip for ip, r in rank.items() if r == best][:2]
+    _addr_cache.update(at=time.time(), v=out)
     return out
 
 
-def _peer_url(addr):
+def _hostport(addr):
+    """(host, port) from what the user typed: 192.168.1.20, its-name.local:7879,
+    or a pasted http:// URL."""
     a = re.sub(r"^\s*https?://", "", str(addr or "").strip()).split("/")[0]
     m = re.fullmatch(r"([A-Za-z0-9.-]+)(?::(\d{1,5}))?", a)
-    if not m:
+    port = int(m.group(2) or PEER_PORT) if m else 0
+    if not m or not 0 < port < 65536:
         raise ValueError("Enter the other device's address, like 192.168.1.20 or its-name.local")
-    return f"http://{m.group(1)}:{int(m.group(2) or PEER_PORT)}/api/peer/export"
+    return m.group(1).lower(), port
+
+
+def _addr_key(addr):
+    try:
+        return "%s:%d" % _hostport(addr)
+    except ValueError:
+        return None
 
 
 _NO_PROXY = urllib.request.build_opener(urllib.request.ProxyHandler({}))   # it's the LAN
 
 
+class _Unreachable(ValueError):
+    """Nothing answered at that address, so another one may still work."""
+
+
+_REACH_HINT = ("Check that both devices are on the same Wi-Fi and that the other one's "
+               "firewall lets AgentTelemetry in. A VPN (like 1.1.1.1 with WARP) on either "
+               "device can also get in the way.")
+
+
+def _reach(addr):
+    """Fail in seconds, not the pull's 30s, and say why in words: a name that
+    didn't resolve, a port with nothing on it, or silence."""
+    host, port = _hostport(addr)
+    try:
+        socket.create_connection((host, port), timeout=5).close()
+    except socket.gaierror:
+        raise _Unreachable(f"Couldn't find {host} on this network. Try its IP address instead; "
+                           "it's shown under Share this device over there.")
+    except ConnectionRefusedError:
+        raise _Unreachable(f"Nothing is listening at {host}:{port}. Turn on sharing on that "
+                           "device, and check the address.")
+    except socket.timeout:
+        raise _Unreachable(f"{host}:{port} didn't answer. {_REACH_HINT}")
+    except OSError as e:
+        raise _Unreachable(f"Couldn't reach {host}:{port} ({e.strerror or e}). {_REACH_HINT}")
+    return host, port
+
+
+def _alt_addrs(headers):
+    """The other addresses the sharing device says it answers on."""
+    out = []
+    for a in (headers.get("X-AgentTelemetry-Addrs") or "").split(","):
+        k = _addr_key(a)
+        if k and k not in out:
+            out.append(k)
+    return out[:4]
+
+
 def _pull(addr, code, etag=None):
-    """(export, etag) from another device, or (None, etag) when it hasn't changed."""
-    req = urllib.request.Request(_peer_url(addr), headers={
+    """(export, etag, other addresses) from another device. export is None when
+    it hasn't changed."""
+    host, port = _reach(addr)
+    req = urllib.request.Request(f"http://{host}:{port}/api/peer/export", headers={
         "Authorization": "Bearer " + _norm_code(code), "Accept-Encoding": "gzip",
         # quoted: a header is Latin-1, and names are not ("Uttam’s MacBook Air")
         "X-AgentTelemetry-Device": urllib.parse.quote(DEVICE["name"])})
     if etag:
         req.add_header("If-None-Match", etag)
     try:
-        with _NO_PROXY.open(req, timeout=20) as r:
+        with _NO_PROXY.open(req, timeout=30) as r:
             raw = r.read(PEER_MAX_BYTES + 1)
             new_etag = r.headers.get("ETag")
+            alts = _alt_addrs(r.headers)
             gz = (r.headers.get("Content-Encoding") or "").lower() == "gzip"
     except urllib.error.HTTPError as e:
         if e.code == 304:
-            return None, etag
+            return None, etag, _alt_addrs(e.headers)
         if e.code == 401:
             raise ValueError("The pairing code was rejected. Check it in the other device's "
                              "Settings → Your devices.")
@@ -1499,8 +1585,8 @@ def _pull(addr, code, etag=None):
             raise ValueError("That device is still parsing its logs; it will be retried.")
         raise ValueError(f"That address answered HTTP {e.code}, not as AgentTelemetry.")
     except (urllib.error.URLError, OSError) as e:
-        raise ValueError(f"Couldn't reach {addr}: {getattr(e, 'reason', e)}. Both devices must be "
-                         "on the same network, with sharing turned on over there.")
+        raise _Unreachable(f"Couldn't reach {host}:{port} ({getattr(e, 'reason', e)}). "
+                           f"{_REACH_HINT}")
     if gz:
         with gzip.GzipFile(fileobj=io.BytesIO(raw)) as g:
             raw = g.read(PEER_MAX_BYTES + 1)
@@ -1522,7 +1608,7 @@ def _pull(addr, code, etag=None):
                      if isinstance(a, dict) and isinstance(a.get("source"), str)
                      and isinstance(a.get("records", {}), dict)
                      and isinstance(a.get("sessions", []), list)}
-    return data, new_etag
+    return data, new_etag, alts
 
 
 def _store_mirror(pid, data):
@@ -1537,6 +1623,29 @@ def _store_mirror(pid, data):
     _set_mirror(pid, m)
 
 
+def _pull_any(p, etag):
+    """_pull, trying the address that last worked, then the one the user typed,
+    then the others the device said it answers on. An IP changes when the router
+    hands out a new one, and a .local name sometimes fails to resolve, so one of
+    the others often still works."""
+    tried, first = [], None
+    for a in [p.get("last_addr"), p.get("addr")] + list(p.get("alts") or []):
+        k = _addr_key(a)
+        if not k or k in tried:
+            continue
+        tried.append(k)
+        try:
+            data, etag, alts = _pull(a, p.get("code"), etag)
+        except _Unreachable as e:
+            first = first or e
+            continue
+        p.update(last_addr=k, alts=alts or p.get("alts") or [])
+        return data, etag
+    if first and len(tried) > 1:
+        raise _Unreachable(f"{first} Also tried {', '.join(tried[1:])}.")
+    raise first or ValueError("This device has no address saved. Disconnect and connect again.")
+
+
 def _sync_peer(pid):
     """Pull one connected device. Call with _sync_lock held."""
     p = _peer_cfg()["peers"].get(pid)
@@ -1544,8 +1653,7 @@ def _sync_peer(pid):
         return
     p["last_try"] = time.time()
     try:
-        data, etag = _pull(p.get("addr"), p.get("code"),
-                           p.get("etag") if pid in _peer["mirrors"] else None)
+        data, etag = _pull_any(p, p.get("etag") if pid in _peer["mirrors"] else None)
         if data is not None:
             if data["device_id"] != pid:
                 raise ValueError("A different device now answers at that address. "
@@ -1581,6 +1689,9 @@ def devices_status():
                     key=lambda x: -x["at"])
         peers = [{"id": pid, "name": p.get("name") or "Other device", "os": p.get("os") or "",
                   "addr": p.get("addr"), "app": p.get("app"), "last_ok": p.get("last_ok"),
+                  # set only when it answered somewhere other than the address typed
+                  "via": (p.get("last_addr") if p.get("last_addr")
+                          and p.get("last_addr") != _addr_key(p.get("addr")) else None),
                   "last_try": p.get("last_try"), "error": p.get("error"),
                   "logs": len(_peer["mirrors"].get(pid) or {}), "shown": pid in _peer["mirrors"]}
                  for pid, p in cfg["peers"].items()]
@@ -1589,7 +1700,8 @@ def devices_status():
                      "addresses": _lan_addrs() if sharing else [],
                      "port": int(share.get("port") or PEER_PORT), "sharing": sharing,
                      "code": share.get("code") if sharing else None, "error": err,
-                     "pulled_by": by},
+                     "pulled_by": by, "platform": ("windows" if IS_WINDOWS else "macos"
+                                                   if sys.platform == "darwin" else "linux")},
             "peers": peers, "pull_every": PEER_PULL_EVERY}
 
 
@@ -1622,7 +1734,7 @@ def devices_action(body):
         if not _norm_code(code):
             raise ValueError("Enter the pairing code shown on the other device.")
         with _sync_lock:
-            data, etag = _pull(addr, code)
+            data, etag, alts = _pull(addr, code)
             pid = data["device_id"]
             if pid == cfg["device_id"]:
                 raise ValueError("That's this device. Enter the address of your other one.")
@@ -1632,7 +1744,8 @@ def devices_action(body):
                 cfg["peers"][pid] = {"addr": addr, "code": _norm_code(code),
                                      "name": dev.get("name"), "os": dev.get("os"),
                                      "app": data.get("app"), "added": now, "last_ok": now,
-                                     "last_try": now, "etag": etag, "error": None}
+                                     "last_try": now, "etag": etag, "error": None,
+                                     "last_addr": _addr_key(addr), "alts": alts}
                 _save_peer_cfg()
             _store_mirror(pid, data)
     elif act == "disconnect":
