@@ -128,7 +128,7 @@ function multiPanel(panelId, items, set, isTools){
 }
 function buildFilterPanels(){
   const r = range();
-  const tokBySrc = {}, tokByProv = {}, tokByProj = {}, tokByModel = {}, tokByIde = {}, seen = new Set();
+  const tokBySrc = {}, tokByProv = {}, tokByProj = {}, tokByModel = {}, tokByIde = {}, tokByDev = {}, seen = new Set();
   for(const x of RAW.records){
     seen.add(x.source);
     if(x.date<r.from||x.date>r.to) continue;
@@ -140,6 +140,8 @@ function buildFilterPanels(){
     }
     tokByProj[x.project||"(unknown)"]=(tokByProj[x.project||"(unknown)"]||0)+t;
     tokByIde[x.ide||"(unknown)"]=(tokByIde[x.ide||"(unknown)"]||0)+t;
+    const dv = x.device || RAW.device.id;
+    tokByDev[dv]=(tokByDev[dv]||0)+t;
   }
   multiPanel("toolsPanel",
     ORDER.filter(s=>seen.has(s)).map(s=>({key:s,label:SRC[s].label,color:srcColor(s),value:fmtTok(tokBySrc[s]||0)})),
@@ -154,6 +156,11 @@ function buildFilterPanels(){
       .map(([k,v])=>({key:k,label:k,value:fmtTok(v)})), S.projs);
   multiPanel("idePanel",
     Object.entries(tokByIde).sort((a,b)=>b[1]-a[1]).map(([k,v])=>({key:k,label:k,value:fmtTok(v)})), S.ides);
+  // devices appear only once another one is connected; this one is listed first
+  const multi = multiDevice();
+  document.getElementById("devSec").hidden = !multi;
+  if(multi) multiPanel("devPanel",
+    devices().map(v=>({key:v.id, label:v.name+(v.local?" (this device)":""), value:fmtTok(tokByDev[v.id]||0)})), S.devs);
   const n = (S.tools.size!==ORDER.length?1:0) + (S.provs.size?1:0) + (S.models.size?1:0)
           + (S.projs.size?1:0) + (S.ides.size?1:0) + (S.exactOnly?1:0);
   // the tools phrase: "all tools", "Claude Code", "Claude Code & Codex", "3 tools";
@@ -162,9 +169,14 @@ function buildFilterPanels(){
   document.getElementById("qTools").textContent = picked.length===all.length ? "all tools"
     : !picked.length ? "no tools" : picked.length<=2 ? picked.map(x=>SRC[x].label).join(" & ")
     : `${picked.length} tools`;
+  // "... from all tools on all devices over ..." — only said when there is a choice
+  const devPicked = devices().filter(v=>!S.devs.size || S.devs.has(v.id));
+  document.getElementById("qDev").textContent = !multi ? ""
+    : devPicked.length===devices().length ? " on all devices"
+    : devPicked.length===1 ? " on " + devPicked[0].name : ` on ${devPicked.length} devices`;
   const other = n - (S.tools.size!==ORDER.length?1:0);
   document.getElementById("filterCount").textContent = other ? `+${other} filter${other>1?"s":""}` : "";
-  document.getElementById("filtersBtn").classList.toggle("on", n>0);
+  document.getElementById("filtersBtn").classList.toggle("on", n>0 || S.devs.size>0);
   document.getElementById("reliableBtn").checked = S.exactOnly;
 }
 function renderPills(){
@@ -174,6 +186,7 @@ function renderPills(){
   S.models.forEach(m=>out.push(["model:"+m, m]));
   S.projs.forEach(p=>out.push(["proj:"+p, p]));
   S.ides.forEach(i=>out.push(["ide:"+i, i]));
+  S.devs.forEach(v=>out.push(["dev:"+v, deviceName(v)]));
   if(S.exactOnly) out.push(["exact","Exact tokens only"]);
   if(S.search) out.push(["search",`“${S.search}”`]);
   document.getElementById("pills").innerHTML = out.map(([k,l])=>
@@ -181,7 +194,7 @@ function renderPills(){
     + (out.length>1 ? `<span class="pill reset"><button data-pill="__all" style="color:inherit;font-size:11.5px;padding:0">Clear all</button></span>` : "");
 }
 function resetFilters(){
-  S.tools = new Set(ORDER); S.provs.clear(); S.projs.clear(); S.models.clear(); S.ides.clear();
+  S.tools = new Set(ORDER); S.provs.clear(); S.projs.clear(); S.models.clear(); S.ides.clear(); S.devs.clear();
   S.search = ""; S.exactOnly = false;
   document.querySelectorAll(".search-in").forEach(x=>x.value="");
 }
@@ -329,7 +342,7 @@ function viewOverview(d){
 
   const byDay={}; let max=0;
   for(const r of RAW.records){
-    if(!passSrc(r.source)||!passModel(r.model)||!passProj(r.project)||!passIde(r.ide)) continue;
+    if(!passSrc(r.source)||!passModel(r.model)||!passProj(r.project)||!passIde(r.ide)||!passDev(r.device)) continue;
     byDay[r.date]=(byDay[r.date]||0)+recTokens(r); max=Math.max(max,byDay[r.date]);
   }
   renderCalendar(byDay, max, day=>{ S.preset="custom"; S.from=day; S.to=day; renderAll(); });
@@ -636,7 +649,7 @@ const ACT_LABEL = {build:"Building features", fix:"Fixing bugs", refactor:"Refac
 function actRows(d){
   const r = d.r;
   return (RAW.activity||[]).filter(x => passSrc(x.source) && passModel(x.model)
-    && passProj(x.project) && passIde(x.ide) && x.date>=r.from && x.date<=r.to);
+    && passProj(x.project) && passIde(x.ide) && passDev(x.device) && x.date>=r.from && x.date<=r.to);
 }
 function actSum(rows, key){
   const out = {};
@@ -773,7 +786,7 @@ function viewTools(d){
     : `<tbody><tr><td class="empty">No MCP tool calls in range.</td></tr></tbody>`;
 
   const sk={};
-  for(const x of (RAW.skills||[])){ if(x.date<d.r.from||x.date>d.r.to||!passSrc("claude")) continue;
+  for(const x of (RAW.skills||[])){ if(x.date<d.r.from||x.date>d.r.to||!passSrc("claude")||!passDev(x.device)) continue;
     const e=sk[x.name]||(sk[x.name]={skill:x.name,asst:0,tok:0,cost:0}); e.asst+=x.asst; e.tok+=x.tok; e.cost+=x.cost; }
   const skills=Object.values(sk).sort((a,b)=>b.cost-a.cost);
   document.getElementById("skillTable").innerHTML = skills.length
@@ -872,6 +885,7 @@ function openSession(i){
     <div class="eyebrow">Session</div>
     <h2>${esc(s.title||s.project||s.id)}</h2>
     <div style="margin-bottom:16px;display:flex;gap:8px;align-items:center">${srcBadge(s.source)} <span class="dim" style="font-size:12px">${esc(s.id)}</span></div>
+    ${row("Device",multiDevice()?esc(deviceName(s.device||RAW.device.id)):null)}
     ${row("Project",esc(s.project||"—"))}
     ${row("Model",esc((s.models||[s.model]).join(" · ")))}
     ${row("Git branch",s.branch?esc(s.branch):null)}
@@ -1136,6 +1150,9 @@ function renderSettings(cfg){
       POLL_CHOICES.map(([v,l])=>`<button data-ms="${v}"${
         String(pollMs())===v?' class="on"':''}>${l}</button>`).join("")}</div>
 
+    <h2 class="stg-h stg-sec">Your devices</h2>
+    <div id="devBox"><div class="stg-hint">Loading…</div></div>
+
     <h2 class="stg-h stg-sec">Analytics cache</h2>
     <div class="stg-note">This dashboard's own parsed data &mdash;
       <b>${fmtBytes(cfg.cache_bytes||0)}</b> across ${fmtNum(cfg.cache_files||0)} files:
@@ -1187,9 +1204,9 @@ function renderSettings(cfg){
   });
 
   const cacheMsg=()=>document.getElementById("cacheMsg");
-  const cacheDo=async(action,confirmText)=>{
+  const cacheDo=async(action,ask)=>{
     const btns=[document.getElementById("cacheRebuild"),document.getElementById("cacheDelete")];
-    if(!confirm(confirmText)) return;
+    if(!await askConfirm(ask)) return;
     btns.forEach(b=>b.disabled=true);
     cacheMsg().className="stg-msg"; cacheMsg().textContent=
       action==="rebuild"?"Re-reading every log\u2026 this can take a minute.":"Deleting\u2026";
@@ -1208,13 +1225,19 @@ function renderSettings(cfg){
     }catch(e){ btns.forEach(b=>b.disabled=false);
       cacheMsg().className="stg-msg err"; cacheMsg().textContent=e.message; }
   };
-  document.getElementById("cacheRebuild").addEventListener("click",()=>cacheDo("rebuild",
-    "Rebuild the analytics cache?\n\nEvery log is re-read from scratch. Sessions whose logs "
-    +"a tool has already deleted cannot be recovered and will disappear from your totals."));
-  document.getElementById("cacheDelete").addEventListener("click",()=>cacheDo("delete",
-    "Delete the analytics cache?\n\nThe file is removed now, but a running server "
-    +"rewrites it on the next refresh from logs still on disk. What does NOT come back: "
-    +"sessions whose logs a tool already deleted."));
+  document.getElementById("cacheRebuild").addEventListener("click",()=>cacheDo("rebuild",{
+    title:"Rebuild the analytics cache?", ok:"Rebuild", danger:true,
+    body:`<p>Every log is re-read from scratch. This can take a minute.</p>
+      <div class="modal-note bad">Sessions whose logs a tool has already deleted <b>can't be
+      recovered</b> and will disappear from your totals.</div>`}));
+  document.getElementById("cacheDelete").addEventListener("click",()=>cacheDo("delete",{
+    title:"Delete the analytics cache?", ok:"Delete", danger:true,
+    body:`<p>The file is removed now, but a running server writes it again on the next refresh,
+      from the logs still on disk.</p>
+      <div class="modal-note bad">What does <b>not</b> come back: sessions whose logs a tool
+      already deleted.</div>`}));
+
+  loadDevices();
 
   const pwaBtn=document.getElementById("pwaBtn");
   if(pwaBtn && pwaSupported()) pwaBtn.addEventListener("click",async()=>{
@@ -1232,6 +1255,108 @@ function renderSettings(cfg){
       }
     }catch(e){ pwaBtn.disabled=false; m.className="stg-msg err"; m.textContent=e.message; }
   });
+}
+
+/* Your devices — see another computer's usage here, and let it see this one's.
+   Off until turned on, and the only thing that sends data off this machine, so
+   each switch asks first. Sharing and connecting are separate: do both on both
+   machines to see each from the other. */
+async function loadDevices(msg){
+  const box=document.getElementById("devBox"); if(!box) return;
+  try{ renderDevices(await (await fetch("/api/devices")).json(), msg); }
+  catch(e){ box.innerHTML='<div class="stg-msg err">Could not read the device settings.</div>'; }
+}
+function renderDevices(st, msg){
+  const box=document.getElementById("devBox"); if(!box) return;
+  const me=st.this||{}, peers=st.peers||[];
+  const addrs=(me.addresses||[]).map(a=>`<code>${esc(a)}:${me.port}</code>`).join(" or ");
+  const by=(me.pulled_by||[]).map(x=>`${esc(x.name||x.ip)}${x.name?` <span class="dev-meta">(${esc(x.ip)})</span>`:""} ${ago(x.at)}`);
+  box.innerHTML = `
+    <div class="stg-note">See your usage from your other computers here, all in one place. It works
+      over your <b>local network</b> and only if you turn it on. One device <b>shares</b>, and the
+      other <b>connects</b> to it with its address and pairing code. To see each device from the
+      other, do both on both.</div>
+    <div class="dev-sub">Share this device</div>
+    ${me.sharing ? `<div class="dev-card">
+        <div>Address: ${addrs || '<span class="dev-meta">no network address found</span>'}</div>
+        <div>Pairing code: <code class="dev-code">${esc(me.code||"")}</code></div>
+        <div class="dev-meta">${by.length ? "Read by "+by.join(", ") : "No device has connected yet."}</div>
+        <div class="stg-actions"><button class="btn" id="devShareOff">Stop sharing</button>
+          <button class="btn" id="devNewCode">New code</button></div>
+      </div>
+      <div class="stg-hint" style="margin-top:8px">If macOS asks whether Python may accept incoming
+        connections, allow it, or the other device can't reach this one.</div>`
+    : `<div class="stg-hint">Off. Nothing on this device can be reached from the network.</div>
+      <div class="stg-actions"><button class="btn primary" id="devShareOn">Share this device…</button></div>`}
+    ${me.error?`<div class="stg-msg err">${esc(me.error)}</div>`:""}
+    <div class="dev-sub">Connected devices</div>
+    ${peers.map(p=>`<div class="dev-card">
+        <div><span class="dev-name">${esc(p.name)}</span> <span class="dev-meta">${esc(p.os||"")} · ${esc(p.addr||"")}</span></div>
+        <div class="dev-meta">${p.last_ok?`Synced ${ago(p.last_ok)}`:"Never synced"}${p.shown?` · ${fmtNum(p.logs)} logs`:""}${p.app?` · ${esc(p.app)}`:""}</div>
+        ${p.error?`<div class="dev-err">${esc(p.error)}</div>`:""}
+        <div class="stg-actions"><button class="btn" data-dev-sync>Sync now</button>
+          <button class="btn" data-dev-off="${esc(p.id)}" data-dev-name="${esc(p.name)}">Disconnect</button></div>
+      </div>`).join("") || `<div class="stg-hint">None yet. On the other device, turn on sharing, then enter its address and code here.</div>`}
+    <div class="dev-form">
+      <input class="field" id="devAddr" placeholder="other-mac.local or 192.168.1.20" aria-label="Other device's address" autocomplete="off" spellcheck="false">
+      <input class="field" id="devCode" placeholder="Pairing code" aria-label="Pairing code" autocomplete="off" spellcheck="false">
+      <button class="btn" id="devConnect">Connect…</button>
+    </div>
+    <div class="stg-msg" id="devMsg"></div>`;
+  const m=document.getElementById("devMsg");
+  if(msg){ m.textContent=msg[0]; m.className="stg-msg "+(msg[1]||""); }
+  const act=async(body, busy, ok)=>{
+    box.querySelectorAll(".btn").forEach(b=>b.disabled=true);
+    m.className="stg-msg"; m.textContent=busy;
+    try{
+      const r=await fetch("/api/devices",{method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify(body)});
+      const out=await r.json();
+      if(!r.ok) throw new Error(out.error||"request failed");
+      renderDevices(out, ok?[ok,"ok"]:null);
+      if(body.action!=="share" && body.action!=="new_code") await load();
+    }catch(e){ box.querySelectorAll(".btn").forEach(b=>b.disabled=false);
+      m.className="stg-msg err"; m.textContent=e.message; }
+  };
+  const on=(id,fn)=>{ const el=document.getElementById(id); if(el) el.addEventListener("click",fn); };
+  on("devShareOn",async()=>{
+    if(!await askConfirm({title:"Share this device's usage on your network?", ok:"Start sharing",
+      body:`<p>This is the only mode in which AgentTelemetry sends anything off this machine.
+        It opens port <code>${me.port}</code> on your local network, and any device there with
+        the pairing code can read:</p>
+        <ul><li>session titles (often the start of a prompt)</li>
+          <li>project and branch names, and log file paths</li>
+          <li>models, token counts, costs and times</li></ul>
+        <p>Full prompts, replies and file contents are <b>never</b> sent.</p>
+        <div class="modal-note">The connection is <b>not encrypted</b>. Turn this on only on a
+        network you trust. You can turn it off here at any time.</div>`})) return;
+    act({action:"share",on:true},"Opening the port…","Sharing. Enter this address and code on your other device.");
+  });
+  on("devShareOff",()=>act({action:"share",on:false},"Stopping…","Sharing stopped. This device can't be reached from the network."));
+  on("devNewCode",async()=>{
+    if(!await askConfirm({title:"Make a new pairing code?", ok:"New code",
+      body:`<p>Devices connected with the old code lose access until you enter the new one on
+        them.</p>`})) return;
+    act({action:"new_code"},"Making a new code…","New code made. The old one no longer works.");
+  });
+  on("devConnect",async()=>{
+    const address=document.getElementById("devAddr").value.trim(), code=document.getElementById("devCode").value.trim();
+    if(!address||!code){ m.className="stg-msg err"; m.textContent="Enter the other device's address and its pairing code."; return; }
+    if(!await askConfirm({title:"Connect to this device?", ok:"Connect",
+      body:`<p><code>${esc(address)}</code></p>
+        <p>This device will fetch its usage over your local network every
+        ${Math.round((st.pull_every||60)/60)} min and keep a copy here, in <code>.peers/</code>,
+        so it still shows while the other one is off. Disconnecting deletes that copy.</p>`})) return;
+    act({action:"connect",address,code},"Connecting…","Connected. Its usage is now in the data, and a Devices filter has been added.");
+  });
+  box.querySelectorAll("[data-dev-sync]").forEach(b=>b.addEventListener("click",()=>
+    act({action:"sync"},"Syncing…","Synced.")));
+  box.querySelectorAll("[data-dev-off]").forEach(b=>b.addEventListener("click",async()=>{
+    if(!await askConfirm({title:`Disconnect ${b.dataset.devName}?`, ok:"Disconnect", danger:true,
+      body:`<p>Its usage leaves this dashboard and the copy kept here is deleted. Nothing on
+        that device changes.</p>`})) return;
+    act({action:"disconnect",id:b.dataset.devOff},"Disconnecting…","Disconnected.");
+  }));
 }
 
 /* ---------------- OPTIMIZE ----------------
@@ -1342,7 +1467,7 @@ function findIdleMCP(d){
   const norm = x => String(x||"").toLowerCase().replace(/[^a-z0-9]/g,"");
   const used = {};
   for(const t of RAW.tools){
-    if(!t.name.startsWith("mcp__")) continue;
+    if(!t.name.startsWith("mcp__") || !isLocal(t)) continue;
     const rest = t.name.slice(5), i = rest.indexOf("__");
     const srv = norm(i>0 ? rest.slice(0,i) : rest);
     used[srv] = (used[srv]||0) + t.count;
@@ -1463,7 +1588,7 @@ function findLowCache(d){
    fires often and pulls a lot of context is worth tightening or scoping. */
 function findSkills(d){
   if(!RAW.skills || !RAW.skills.length) return null;
-  const inRange = RAW.skills.filter(x => x.date>=d.r.from && x.date<=d.r.to);
+  const inRange = RAW.skills.filter(x => passDev(x.device) && x.date>=d.r.from && x.date<=d.r.to);
   if(!inRange.length) return null;
   const by={};
   for(const x of inRange){
@@ -1492,7 +1617,7 @@ function findSkills(d){
 function findBigContext(d){
   if(!RAW.ctx || !RAW.ctx.length) return null;
   // ctx rows carry a source but no model/project, so only the tool filter applies
-  const inRange = RAW.ctx.filter(x => passSrc(x.source) && x.date>=d.r.from && x.date<=d.r.to);
+  const inRange = RAW.ctx.filter(x => passSrc(x.source) && passDev(x.device) && x.date>=d.r.from && x.date<=d.r.to);
   if(!inRange.length) return null;
   const by={}; let tot=0; const srcs=new Set();
   for(const x of inRange){ by[x.bucket]=(by[x.bucket]||{tok:0,n:0});
@@ -1691,7 +1816,7 @@ function findHeavyOpeners(d){
 /* Re-reading an unchanged file, or reading generated / vendored folders, adds tokens
    to context for nothing. Lower-bound cost: each such token written to cache once. */
 function findReadWaste(d){
-  const rs = (RAW.reads||[]).filter(x => passSrc(x.source) && passProj(x.project) && inRangeD(x, d));
+  const rs = (RAW.reads||[]).filter(x => passSrc(x.source) && passProj(x.project) && passDev(x.device) && inRangeD(x, d));
   const t = rs.reduce((a,x)=>({rr:a.rr+x.rereads, j:a.j+x.junk, rt:a.rt+x.reread_tok, jt:a.jt+x.junk_tok, n:a.n+x.reads}), {rr:0,j:0,rt:0,jt:0,n:0});
   const tok = t.rt + t.jt;
   if(tok < 20000) return null;
@@ -1725,7 +1850,7 @@ function findUnusedInstalled(d){
   const norm = x => String(x||"").toLowerCase().replace(/^.*:/,"");
   const used = new Set();
   for(const u of (RAW.installed.used||[])) if(inRangeD(u, d)) used.add(u.kind+"\t"+norm(u.name));
-  for(const x of (RAW.skills||[])) if(inRangeD(x, d)) used.add("skill\t"+norm(x.name));
+  for(const x of (RAW.skills||[])) if(isLocal(x) && inRangeD(x, d)) used.add("skill\t"+norm(x.name));
   const idle = inst.filter(i => !used.has(i.kind+"\t"+norm(i.name)));
   if(!idle.length) return null;
   const {n, per} = perTokenCost(d, r => famOf(r.source)==="claude", false);
@@ -1753,7 +1878,7 @@ function findMcpShape(d){
   for(const x of (inv.calls||[])) if(inRangeD(x, d)){ calls[x.server]=(calls[x.server]||0)+x.calls;
     (projC[x.server]=projC[x.server]||new Set()).add(x.project); }
   const usedTools = {};
-  for(const t of toolCounts(d.r)){ if(!t.name.startsWith("mcp__")) continue;
+  for(const t of toolCounts(d.r, isLocal)){ if(!t.name.startsWith("mcp__")) continue;
     const sv = t.name.slice(5).split("__")[0]; usedTools[sv]=(usedTools[sv]||0)+1; }
   const rows = [];
   for(const sv in loaded){
@@ -1776,11 +1901,20 @@ function findMcpShape(d){
   };
 }
 
+/* The setup checks judge THIS machine's files (instruction files, installed skills,
+   MCP config), so only this machine's usage is measured against them — another
+   device has its own files, which never leave it. */
+const isLocal = x => !x.device || !RAW.device || x.device === RAW.device.id;
+function localSlice(d){
+  return Object.assign({}, d, {recs:d.recs.filter(isLocal), sessions:d.sessions.filter(isLocal)});
+}
+const onThisDevice = fn => d => { const f = fn(localSlice(d)); if(f) f.local = true; return f; };
 const OPT_FINDERS = [findBigContext, findCacheWaste, findModelFit, findContextTax,
                      findSubagents, findSubagentShare, findSkills, findCodexEffort,
-                     d => findIdleMCP(d, "claude"), d => findIdleMCP(d, "codex"),
-                     findThinking, findLowCache, findRetryTax, findInstructionFiles,
-                     findHeavyOpeners, findReadWaste, findUnusedInstalled, findMcpShape];
+                     onThisDevice(d => findIdleMCP(d, "claude")), onThisDevice(d => findIdleMCP(d, "codex")),
+                     findThinking, findLowCache, findRetryTax, onThisDevice(findInstructionFiles),
+                     findHeavyOpeners, findReadWaste, onThisDevice(findUnusedInstalled),
+                     onThisDevice(findMcpShape)];
 
 /* Say plainly when a suggestion only applies to one tool — the MCP, Skills and
    /compact advice is Claude Code's, and a Codex or Cursor user should not read it
@@ -1805,15 +1939,19 @@ function stripeStyle(f){
 }
 
 function scopeLabel(f){
+  const chips = [];
   const t = (f.tools||[]).filter(Boolean);
-  if(!t.length) return "";
   const present = new Set(SLICE_SOURCES);
-  if(t.length >= present.size && [...present].every(x=>t.includes(x))) return "";
-  const names = t.map(x=>(SRC[x]||{label:x}).label);
-  // "X only" reads right for a single tool; for several it is nonsense ("A only,
-  // B only"), so just name them.
-  const text = names.length === 1 ? names[0] + " only" : names.join(" · ");
-  return `<div class="finding-scope"><span class="scope-chip">${esc(text)}</span></div>`;
+  if(t.length && !(t.length >= present.size && [...present].every(x=>t.includes(x)))){
+    const names = t.map(x=>(SRC[x]||{label:x}).label);
+    // "X only" reads right for a single tool; for several it is nonsense ("A only,
+    // B only"), so just name them.
+    chips.push(names.length === 1 ? names[0] + " only" : names.join(" · "));
+  }
+  // a setup check reads this machine's files; with other devices in the data, say so
+  if(f.local && multiDevice()) chips.push(deviceName(RAW.device.id) + " only");
+  return chips.length ? `<div class="finding-scope">${chips.map(c=>
+    `<span class="scope-chip">${esc(c)}</span>`).join(" ")}</div>` : "";
 }
 let SLICE_SOURCES=[];
 
@@ -1932,8 +2070,13 @@ async function load(){
     renderVersion();
     const dev = RAW.device || {};
     document.getElementById("devName").textContent = dev.name || "This computer";
-    document.getElementById("devOs").textContent = dev.os || "";
-    document.getElementById("device").title = [dev.name, dev.host, dev.os].filter(Boolean).join(" · ");
+    const others = devices().filter(v=>!v.local);
+    document.getElementById("devOs").textContent = others.length
+      ? `+ ${others.length} other device${others.length>1?"s":""}` : (dev.os || "");
+    document.getElementById("device").title = [dev.name, dev.host, dev.os].filter(Boolean).join(" · ")
+      + others.map(v=>`\n+ ${v.name}${v.synced?" · synced "+ago(v.synced):""}${v.error?" · "+v.error:""}`).join("");
+    // a device that was disconnected can't stay selected, or it would filter out everything
+    for(const id of [...S.devs]) if(!devices().some(v=>v.id===id)) S.devs.delete(id);
     document.getElementById("pricingNote").textContent=RAW.pricing_note;
     renderAll();
   }catch(e){
@@ -1991,6 +2134,7 @@ wireMulti("provPanel",()=>S.provs,false);
 wireMulti("modelPanel",()=>S.models,false);
 wireMulti("projPanel",()=>S.projs,false);
 wireMulti("idePanel",()=>S.ides,false);
+wireMulti("devPanel",()=>S.devs,false);
 document.getElementById("filtersPanel").addEventListener("click",e=>{
   const a=e.target.closest("[data-fall],[data-fnone],[data-fclear]"); if(!a) return;
   e.preventDefault();
@@ -2011,6 +2155,7 @@ document.getElementById("pills").addEventListener("click",e=>{
   else if(k.startsWith("prov:")) S.provs.delete(k.slice(5));
   else if(k.startsWith("proj:")) S.projs.delete(k.slice(5));
   else if(k.startsWith("ide:")) S.ides.delete(k.slice(4));
+  else if(k.startsWith("dev:")) S.devs.delete(k.slice(4));
   else if(k.startsWith("model:")) S.models.delete(k.slice(6));
   renderAll();
 });

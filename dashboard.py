@@ -3,8 +3,9 @@
 dashboard.py — Live local usage analytics for your AI coding tools.
 
 Covers Claude Code, Claude Desktop, Codex, GitHub Copilot, Cursor, opencode and Hermes Agent.
-Parses your local interaction logs (no data leaves the machine), aggregates usage by
-day / model / tool / project / hour, and serves an interactive dashboard.
+Parses your local interaction logs (no data leaves the machine unless you turn on device
+sharing in Settings), aggregates usage by day / model / tool / project / hour, and serves
+an interactive dashboard.
 
     python3 dashboard.py            # serve at http://127.0.0.1:7878
     python3 dashboard.py --port 9000
@@ -14,6 +15,7 @@ Stdlib only. First run parses everything (one large Codex log makes that take a
 moment); results are cached, and subsequent refreshes are incremental & instant.
 """
 import os, re, sys, json, time, glob, threading, argparse, shutil, mimetypes, platform, subprocess
+import gzip, hmac, io, secrets, socket, uuid, urllib.parse, urllib.request, urllib.error
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import parser as P
@@ -67,8 +69,9 @@ DEVICE = _device()
 
 # ---------------------------------------------------------------------------
 # Version + self-update. The version comes from this checkout's git metadata.
-# Checking for an update is the ONLY thing here that touches the network, and it
-# runs only when the user clicks "Check for updates" — never on a timer.
+# Apart from opt-in device sharing (see Devices below), checking for an update is the
+# only thing here that touches the network, and it runs only when the user clicks
+# "Check for updates" — never on a timer.
 # ---------------------------------------------------------------------------
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -166,6 +169,7 @@ def _restart():
     os.execv(sys.executable, [sys.executable, *argv])
 
 _dirty = {"v": True}          # cache is only rewritten when a file actually changed
+_gen = {"v": 0}               # bumped whenever the local data changes (the export's ETag)
 # Only one refresh at a time: the background timer and the Rebuild button can now
 # collide, and `gone = [p for p in files ...]` iterating while another thread
 # inserts raises "dictionary changed size during iteration".
@@ -254,6 +258,7 @@ def _refresh_locked(verbose=False):
     if _dirty["v"]:
         save_cache()
         _dirty["v"] = False
+        _gen["v"] += 1                # a connected device's next pull gets the new data
 
 
 # ---------------------------------------------------------------------------
@@ -328,30 +333,39 @@ def _did_something(s):
 
 
 def build_payload():
-    records = {}      # (date, source, model, project) -> aggregates
-    tools = {}        # (date, source, name) -> count
+    records = {}      # (date, source, model, project, ide, device) -> aggregates
+    tools = {}        # (date, source, name, device) -> count
     projects = {}     # (project, source) -> {tokens, msgs, sessions, cost}
-    hourly = {}       # (date, hour, source) -> {tokens, msgs}
+    hourly = {}       # (date, hour, source, device) -> {tokens, msgs}
     sessions = []
-    skills = {}       # (date, skill) -> tokens/cost
-    ctxb = {}         # (date, bucket) -> tokens/requests
+    skills = {}       # (date, skill, device) -> tokens/cost
+    ctxb = {}         # (date, bucket, source, device) -> tokens/requests
     model_meta = {}   # model -> vendor
     ai_lines = {}     # date -> Cursor's suggested/accepted line counts
-    activity = {}     # (date, source, model, category, project, ide) -> turn counts + cost
+    activity = {}     # (date, source, model, category, project, ide, device) -> turn counts + cost
     mcp_inv = {}      # server -> set of tool names Claude Code offered
     mcp_loaded = {}   # (date, server, project) -> sessions it was offered in
     mcp_calls = {}    # (date, server, project) -> calls
-    reads = {}        # (date, source, project) -> [reads, re-reads, junk, re-read tok, junk tok]
+    reads = {}        # (date, source, project, device) -> [reads, re-reads, junk, re-read tok, junk tok]
     used_ext = {}     # (date, kind, name) -> uses of an installed skill / agent
     cwds = {}         # (source family, cwd) -> first day Claude Code there read AGENTS.md
     undecoded = 0     # OpenClaw events stored compressed that couldn't be read here
 
     with _lock:
         items = list(_state["files"].items())
+    # a connected device's aggregates join the loop under its own id; everything
+    # below is keyed by device the same way it is by IDE
+    items += _peer_items()
     files = _one_per_conversation(items)
+    local = _local_id()
 
     for agg in files:
         source = agg["source"]
+        # A connected device's copy is usage only. Its setup (instruction files, MCP
+        # config, installed skills) lives on ITS disk, so the Optimize setup checks,
+        # which read this machine's, skip it.
+        device = agg.get("_device") or local
+        remote = device != local
         # Only the SQLite store records a real per-message cost. The older
         # opencode JSON layout logs none, so its records carry a placeholder
         # 0.0 that must NOT be mistaken for "this was free".
@@ -361,7 +375,9 @@ def build_payload():
         # One IDE per file for every source (Copilot's is the editor whose storage
         # it came from; Claude/Codex stamp an entrypoint; the rest run in exactly
         # one place), so it is resolved here rather than per record.
-        ide = P._ide_of(source, agg)
+        # the exporting device resolved its own IDE (Codex's editor lookup reads that
+        # machine's editor storage, not this one's)
+        ide = agg.get("ide") if remote and agg.get("ide") else P._ide_of(source, agg)
         file_tokens = 0
         file_msgs = 0
         file_cost = 0.0
@@ -372,12 +388,12 @@ def build_payload():
                 # the gap before a prompt (opencode does) — the Sessions tab's
                 # per-day split already includes it, so leaving it out here made the
                 # two disagree (96s vs 318s for one session)
-                rk = (date, source, "(user)", project, ide)
+                rk = (date, source, "(user)", project, ide, device)
                 slot = records.setdefault(rk, _zero())
                 slot["user"] += r.get("user", 0)
                 slot["active"] += r.get("active", 0.0)
                 continue
-            rk = (date, source, model, project, ide)
+            rk = (date, source, model, project, ide, device)
             slot = records.setdefault(rk, _zero())
             for f in ("in", "out", "cr", "cc", "cc5", "cc1", "reason", "asst", "user", "req", "tools", "active", "ws"):
                 slot[f] += r.get(f, 0)
@@ -393,7 +409,7 @@ def build_payload():
             file_cost += c
         for ak, v in P.activity_of(agg).items():
             date, model, cat = ak.split("\t")
-            e = activity.setdefault((date, source, model, cat, project, ide),
+            e = activity.setdefault((date, source, model, cat, project, ide, device),
                                     {"turns": 0, "edits": 0, "oneshot": 0, "retries": 0,
                                      "tok": 0, "cost": 0.0, "edit_cost": 0.0, "retry_cost": 0.0})
             for f in ("turns", "edits", "oneshot", "retries"):
@@ -409,26 +425,29 @@ def build_payload():
                 e["retry_cost"] += _cost(source, model, v.get("rin", 0), v.get("rout", 0),
                                          v.get("rcr", 0), v.get("rcc5", 0), v.get("rcc1", 0), 0,
                                          date, ws=v.get("rws", 0))
-        if not agg.get("subagent"):
+        if not agg.get("subagent") and not remote:
             for server, e in (agg.get("mcp_offered") or {}).items():
                 mcp_inv.setdefault(server, set()).update(e.get("tools") or ())
                 k = (e.get("d") or "", server, project)
                 mcp_loaded[k] = mcp_loaded.get(k, 0) + 1
         for tk, c in agg.get("tools", {}).items():
             date, _, name = tk.partition("\t")
-            if name.startswith("mcp__"):
+            if name.startswith("mcp__") and not remote:
                 k = (date, name[5:].split("__", 1)[0], project)
                 mcp_calls[k] = mcp_calls.get(k, 0) + c
         for date, e in (agg.get("reads") or {}).items():
-            slot = reads.setdefault((date, source, project), [0, 0, 0, 0, 0])
+            slot = reads.setdefault((date, source, project, device), [0, 0, 0, 0, 0])
             for i, v in enumerate(e[:5]):
                 slot[i] += v
         for k, c in (agg.get("used_ext") or {}).items():
+            if remote:                        # measured against THIS machine's installs
+                break
             date, kind, name = (k.split("\t") + ["", "", ""])[:3]
             used_ext[(date, kind, name)] = used_ext.get((date, kind, name), 0) + c
-        if source == "openclaw":
+        if source == "openclaw" and not remote:
             undecoded += int((agg.get("state") or {}).get("undecoded") or 0)
-        if agg.get("cwd") and source in ("claude", "claude-desktop", "codex") and not agg.get("archived"):
+        if (agg.get("cwd") and source in ("claude", "claude-desktop", "codex")
+                and not agg.get("archived") and not remote):
             ck = ("codex" if source == "codex" else "claude", agg["cwd"])
             # when Claude Code started reading AGENTS.md here. A file keeps only its
             # newest version, so take its LAST day: `since` can start late, never early
@@ -441,7 +460,7 @@ def build_payload():
             date, _, name = sk.partition("\t")
             if not name:
                 continue
-            e = skills.setdefault((date, name), {"tok": 0, "asst": 0, "cost": 0.0})
+            e = skills.setdefault((date, name, device), {"tok": 0, "asst": 0, "cost": 0.0})
             e["tok"] += v.get("tok", 0)
             e["asst"] += v.get("asst", 0)
             # price the skill's own tokens at this file's dominant model
@@ -452,19 +471,20 @@ def build_payload():
             date, _, b = ck.partition("\t")
             if not b:
                 continue
-            e = ctxb.setdefault((date, b, source), {"tok": 0, "n": 0})
+            e = ctxb.setdefault((date, b, source, device), {"tok": 0, "n": 0})
             e["tok"] += v.get("tok", 0)
             e["n"] += v.get("n", 0)
         for tk, c in agg.get("tools", {}).items():
             date, _, name = tk.partition("\t")
             if not name:                      # pre-v16 cache shape — skip
                 continue
-            tools[(date, source, name)] = tools.get((date, source, name), 0) + c
+            k = (date, source, name, device)
+            tools[k] = tools.get(k, 0) + c
         for hk, v in agg.get("hourly", {}).items():
             date, _, hour = hk.partition("\t")
             if not hour:                      # pre-v16 cache shape — skip
                 continue
-            slot = hourly.setdefault((date, int(hour), source), {"tokens": 0, "msgs": 0})
+            slot = hourly.setdefault((date, int(hour), source, device), {"tokens": 0, "msgs": 0})
             slot["tokens"] += v["tokens"]; slot["msgs"] += v["msgs"]
         # project rollup
         pk = (project, source)
@@ -522,6 +542,7 @@ def build_payload():
             # so read it from the aggregate rather than the frozen session copy
             s2["archived"] = bool(agg.get("archived"))
             s2["subagent"] = bool(s.get("subagent"))
+            s2["device"] = device
             s2["cost"] = _cost(source, s["model"], s["in"], s["out"], s["cr"],
                                s.get("cc5", 0), s.get("cc1", 0), s.get("cc", 0),
                                (s.get("end") or s.get("start") or "")[:10],
@@ -530,30 +551,30 @@ def build_payload():
             sessions.append(s2)
 
     rec_list = []
-    for (date, source, model, project, ide), v in records.items():
+    for (date, source, model, project, ide, device), v in records.items():
         rec_list.append({"date": date, "source": source, "model": model,
-                         "project": project, "ide": ide, **v})
+                         "project": project, "ide": ide, "device": device, **v})
     rec_list.sort(key=lambda x: (x["date"], x["source"]))
 
     # keep the payload bounded: the long tail of one-off tool names folds into
     # a single "(other)" row rather than shipping thousands of day rows
     name_tot = {}
-    for (d, s, n), c in tools.items():
+    for (d, s, n, dv), c in tools.items():
         name_tot[n] = name_tot.get(n, 0) + c
     keep = set(sorted(name_tot, key=lambda n: -name_tot[n])[:60])
     tl = {}
-    for (d, s, n), c in tools.items():
-        k = (d, s, n if n in keep else "(other)")
+    for (d, s, n, dv), c in tools.items():
+        k = (d, s, n if n in keep else "(other)", dv)
         tl[k] = tl.get(k, 0) + c
-    tool_list = [{"date": d, "source": s, "name": n, "count": c}
-                 for (d, s, n), c in tl.items()]
+    tool_list = [{"date": d, "source": s, "name": n, "device": dv, "count": c}
+                 for (d, s, n, dv), c in tl.items()]
     tool_list.sort(key=lambda x: -x["count"])
 
     proj_list = [{"project": p, "source": s, **v} for (p, s), v in projects.items()]
     proj_list.sort(key=lambda x: -x["tokens"])
 
-    hour_list = [{"date": d, "hour": h, "source": s, **v}
-                 for (d, h, s), v in hourly.items()]
+    hour_list = [{"date": d, "hour": h, "source": s, "device": dv, **v}
+                 for (d, h, s, dv), v in hourly.items()]
 
     # A session where you typed but never got a reply is still something that
     # happened — `records` counts those user turns, so dropping the session here
@@ -564,7 +585,9 @@ def build_payload():
     return {
         "generated_at": time.time(),
         "meta": dict(_meta),
-        "device": DEVICE,
+        "device": dict(DEVICE, id=local),
+        # every device in the data: this one first, then each connected one
+        "devices": _devices_meta(),
         "version": VERSION,
         "home": P.HOME,        # to show instruction-file paths as ~/...
         "openclaw_undecoded": undecoded,
@@ -573,26 +596,28 @@ def build_payload():
         # cost a "what if this had run on X" without any hardcoded model list.
         "prices": {m: list(P.price_of(m)) for m in model_meta},
         "codex_effort": _codex_config()["effort"],
-        "skills": [{"date": d, "name": n, **v} for (d, n), v in skills.items()],
+        "skills": [{"date": d, "name": n, "device": dv, **v} for (d, n, dv), v in skills.items()],
         # what each turn was for (Claude Code, Claude Desktop, Codex) — see parser.py ACTIVITY
         "activity": [{"date": d, "source": src, "model": m, "category": c, "project": pj, "ide": i,
+                      "device": dv,
                       **{k: (round(x, 6) if isinstance(x, float) else x) for k, x in v.items()}}
-                     for (d, src, m, c, pj, i), v in activity.items()],
+                     for (d, src, m, c, pj, i, dv), v in activity.items()],
         "mcp_inventory": {"servers": {sv: {"tools": sorted(t)} for sv, t in mcp_inv.items()},
                           "loaded": [{"date": d, "server": sv, "project": pj, "sessions": n}
                                      for (d, sv, pj), n in sorted(mcp_loaded.items())],
                           "calls": [{"date": d, "server": sv, "project": pj, "calls": n}
                                     for (d, sv, pj), n in sorted(mcp_calls.items())]},
         # reads that added tokens for nothing (Claude Code) — see parser.py READ HYGIENE
-        "reads": [{"date": d, "source": src, "project": pj, "reads": v[0], "rereads": v[1],
+        "reads": [{"date": d, "source": src, "project": pj, "device": dv, "reads": v[0], "rereads": v[1],
                    "junk": v[2], "reread_tok": v[3], "junk_tok": v[4]}
-                  for (d, src, pj), v in reads.items()],
+                  for (d, src, pj, dv), v in reads.items()],
         # sizes of the CLAUDE.md / AGENTS.md files each request carries
         "context_files": _context_files(cwds),
         "installed": {"items": _installed(cwds),
                       "used": [{"date": d, "kind": k, "name": n, "n": c}
                                for (d, k, n), c in used_ext.items()]},
-        "ctx": [{"date": d, "bucket": b, "source": src, **v} for (d, b, src), v in ctxb.items()],
+        "ctx": [{"date": d, "bucket": b, "source": src, "device": dv, **v}
+                for (d, b, src, dv), v in ctxb.items()],
         "records": rec_list,
         "tools": tool_list,
         "projects": proj_list,
@@ -1001,6 +1026,7 @@ def cache_action(action):
     with _lock:
         had = len(_state["files"])
         _state["files"] = {}
+    _gen["v"] += 1
     removed = False
     if os.path.exists(CACHE_PATH):
         try:
@@ -1165,6 +1191,471 @@ def build_storage():
     }
 
 
+# ---------------------------------------------------------------------------
+# Devices — see your other machines' usage here, and let them see this one's.
+# Strictly opt-in from Settings, over the local network, and the ONLY mode in
+# which anything leaves this machine. Two separate switches:
+#   * Share: a SECOND, read-only listener on the network (PEER_PORT) answering one
+#     route, GET /api/peer/export, and only to a caller holding this device's
+#     pairing code. The dashboard itself stays on 127.0.0.1, so its write
+#     endpoints are never reachable from the network.
+#   * Connect: pull another device's export every PEER_PULL_EVERY seconds and keep
+#     the last copy in .peers/<id>.json, so it still shows while that one sleeps.
+# An export carries only this machine's OWN logs, never the copies it pulled, so
+# two devices connected both ways never count each other twice. Nothing is
+# encrypted: the code keeps others on the Wi-Fi from reading it, not from sniffing.
+# ---------------------------------------------------------------------------
+PEERS_PATH = os.path.join(HERE, ".peers.json")   # this install's id, sharing code, connections
+PEER_DIR = os.path.join(HERE, ".peers")          # the last copy pulled from each device
+PEER_PORT = 7879
+PEER_PULL_EVERY = 60
+PEER_PROTO = 1
+PEER_MAX_BYTES = 512 * 1024 * 1024               # decompressed; a typical export is a few MB
+_CODE_ALPHA = "ABCDEFGHJKMNPQRSTVWXYZ23456789"   # no 0/O, 1/I/L or U: it is typed by hand
+_ID_RE = re.compile(r"^[0-9a-f]{32}$")
+_START = int(time.time())
+
+_peer_lock = threading.RLock()
+_sync_lock = threading.Lock()     # one pull / connect / disconnect at a time
+_peer = {"cfg": None, "mirrors": {}, "server": None, "share_error": None,
+         "pulled_by": {}, "export": None}
+
+
+def _new_code():
+    raw = "".join(secrets.choice(_CODE_ALPHA) for _ in range(12))
+    return "-".join(raw[i:i + 4] for i in range(0, 12, 4))
+
+
+def _norm_code(c):
+    return re.sub(r"[^A-Z0-9]", "", str(c or "").upper())
+
+
+def _save_peer_cfg():
+    """Atomic, and 0600: it holds pairing codes."""
+    tmp = PEERS_PATH + ".tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump(_peer["cfg"], f, indent=1)
+    os.replace(tmp, PEERS_PATH)
+
+
+def _peer_cfg():
+    with _peer_lock:
+        if _peer["cfg"] is None:
+            cfg, fresh = {}, not os.path.exists(PEERS_PATH)
+            if not fresh:
+                try:
+                    with open(PEERS_PATH, encoding="utf-8") as f:
+                        cfg = json.load(f)
+                except (OSError, ValueError) as e:
+                    sys.stderr.write(f"[devices] {PEERS_PATH} unreadable, starting empty: {e}\n")
+            if not isinstance(cfg, dict):
+                cfg = {}
+            if not _ID_RE.match(str(cfg.get("device_id") or "")):
+                cfg["device_id"], fresh = uuid.uuid4().hex, True
+            share = cfg.setdefault("share", {})
+            share.setdefault("on", False)
+            share.setdefault("code", None)
+            share.setdefault("port", PEER_PORT)
+            cfg.setdefault("peers", {})
+            _peer["cfg"] = cfg
+            if fresh:
+                _save_peer_cfg()
+        return _peer["cfg"]
+
+
+def _local_id():
+    return _peer_cfg()["device_id"]
+
+
+def _mirror_path(pid):
+    return os.path.join(PEER_DIR, pid + ".json")
+
+
+def _set_mirror(pid, m):
+    """Make a pulled copy part of the data. A copy from another CACHE_VERSION may
+    have another shape, so it is held back with a reason rather than mixed in."""
+    with _peer_lock:
+        p = _peer_cfg()["peers"].get(pid)
+        if p is None:                          # disconnected while the pull ran
+            return
+        if m.get("cache_version") != CACHE_VERSION:
+            _peer["mirrors"].pop(pid, None)
+            p["error"] = ("Its saved copy is from a different AgentTelemetry version. "
+                          "Update both devices to the same version.")
+            return
+        files = m.get("files") or {}
+        for a in files.values():
+            a["_device"] = pid
+        _peer["mirrors"][pid] = files
+
+
+def _load_mirrors():
+    for pid in list(_peer_cfg()["peers"]):
+        try:
+            with open(_mirror_path(pid), encoding="utf-8") as f:
+                m = json.load(f)
+        except FileNotFoundError:
+            continue
+        except (OSError, ValueError) as e:
+            sys.stderr.write(f"[devices] copy of {pid} unreadable: {e}\n")
+            continue
+        _set_mirror(pid, m)
+
+
+def _peer_items():
+    with _peer_lock:
+        return [(f"peer:{pid}:{path}", a) for pid, files in _peer["mirrors"].items()
+                for path, a in files.items()]
+
+
+def _devices_meta():
+    cfg = _peer_cfg()
+    out = [{"id": cfg["device_id"], "name": DEVICE["name"], "os": DEVICE["os"], "local": True}]
+    with _peer_lock:
+        for pid, p in cfg["peers"].items():
+            out.append({"id": pid, "name": p.get("name") or "Other device", "os": p.get("os") or "",
+                        "local": False, "synced": p.get("last_ok"), "error": p.get("error"),
+                        "shown": pid in _peer["mirrors"]})
+    return out
+
+
+# What leaves this machine for each log: what build_payload reads, nothing else.
+# Parser resume state, the working directory and MCP/skill setup stay here.
+_EXPORT_KEYS = ("source", "path", "mtime", "archived", "project", "title", "branch", "editor",
+                "entry", "cliver", "subagent", "first_ts", "last_ts", "records", "tools",
+                "skills", "ctx", "hourly", "reads", "totals", "sessions", "open_ctx")
+
+
+def _export_agg(agg):
+    a = {k: agg[k] for k in _EXPORT_KEYS if k in agg}
+    # resolved here: Codex's editor lookup reads THIS machine's editor storage
+    a["ide"] = P._ide_of(agg["source"], agg)
+    # the still-open last turn folded in, so the importer needs no parser state
+    a["activity"] = P.activity_of(agg)
+    st = agg.get("state") or {}
+    a["state"] = {k: st[k] for k in ("dom_model", "ai_lines") if k in st}
+    return a
+
+
+def _export_body():
+    """gzip'd JSON of this machine's own aggregates, rebuilt only when they changed."""
+    etag = f'"{_local_id()[:12]}-{_START}-{_gen["v"]}-{CACHE_VERSION}"'
+    cached = _peer["export"]
+    if cached and cached[0] == etag:
+        return cached
+    # the parser mutates aggregates in place while it runs
+    if not _refresh_lock.acquire(timeout=20):
+        raise TimeoutError
+    try:
+        with _lock:
+            items = list(_state["files"].items())
+        files = {path: _export_agg(a) for path, a in items}
+    finally:
+        _refresh_lock.release()
+    doc = {"proto": PEER_PROTO, "cache_version": CACHE_VERSION, "device_id": _local_id(),
+           "device": DEVICE, "app": VERSION.get("describe") or VERSION.get("commit"),
+           "files": files}
+    _peer["export"] = (etag, gzip.compress(json.dumps(doc).encode("utf-8"), 6))
+    return _peer["export"]
+
+
+class PeerHandler(BaseHTTPRequestHandler):
+    """The only thing on this machine reachable from the network, and only while
+    sharing is on: one read-only route behind the pairing code."""
+    server_version = "AgentTelemetry"
+
+    def log_message(self, *a):
+        pass
+
+    def _plain(self, code, text):
+        body = text.encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        if self.path.split("?")[0] != "/api/peer/export":
+            self._plain(404, "not found")
+            return
+        share = _peer_cfg()["share"]
+        auth = self.headers.get("Authorization") or ""
+        given = _norm_code(auth[7:] if auth[:7].lower() == "bearer " else "")
+        want = _norm_code(share.get("code"))
+        if not (share.get("on") and want and hmac.compare_digest(given.encode(), want.encode())):
+            time.sleep(1)                      # every wrong guess costs a second
+            self._plain(401, "pairing code required")
+            return
+        with _peer_lock:
+            _peer["pulled_by"][self.client_address[0]] = {
+                "at": time.time(),
+                "name": urllib.parse.unquote(self.headers.get("X-AgentTelemetry-Device") or "")[:80]}
+        try:
+            etag, body = _export_body()
+        except TimeoutError:
+            self._plain(503, "busy parsing, try again shortly")
+            return
+        if self.headers.get("If-None-Match") == etag:
+            self.send_response(304)
+            self.send_header("ETag", etag)
+            self.end_headers()
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Encoding", "gzip")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("ETag", etag)
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
+
+def _share_start():
+    port = int(_peer_cfg()["share"].get("port") or PEER_PORT)
+    with _peer_lock:
+        if _peer["server"]:
+            return True
+        try:
+            srv = Server(("0.0.0.0", port), PeerHandler)
+        except OSError as e:
+            _peer["share_error"] = f"Couldn't open port {port}: {e.strerror or e}"
+            sys.stderr.write(f"[devices] {_peer['share_error']}\n")
+            return False
+        _peer["server"], _peer["share_error"] = srv, None
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    sys.stderr.write(f"[devices] sharing this device's usage on port {port}\n")
+    return True
+
+
+def _share_stop():
+    with _peer_lock:
+        srv, _peer["server"] = _peer["server"], None
+        _peer["pulled_by"].clear()
+    if srv:
+        srv.shutdown()
+        srv.server_close()
+        sys.stderr.write("[devices] sharing stopped\n")
+
+
+def _lan_addrs():
+    """How the other device can reach this one: its .local name (stable across
+    networks) and its current IP."""
+    out = []
+    if sys.platform == "darwin":
+        try:
+            n = subprocess.run(["scutil", "--get", "LocalHostName"], capture_output=True,
+                               text=True, timeout=2).stdout.strip()
+            if n:
+                out.append(n + ".local")
+        except (OSError, subprocess.SubprocessError) as e:
+            sys.stderr.write(f"[devices] scutil failed: {e}\n")
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.connect(("192.0.2.1", 9))        # a UDP connect only picks a route; nothing is sent
+            ip = s.getsockname()[0]
+        finally:
+            s.close()
+        if ip and not ip.startswith("127."):
+            out.append(ip)
+    except OSError:
+        pass
+    return out
+
+
+def _peer_url(addr):
+    a = re.sub(r"^\s*https?://", "", str(addr or "").strip()).split("/")[0]
+    m = re.fullmatch(r"([A-Za-z0-9.-]+)(?::(\d{1,5}))?", a)
+    if not m:
+        raise ValueError("Enter the other device's address, like 192.168.1.20 or its-name.local")
+    return f"http://{m.group(1)}:{int(m.group(2) or PEER_PORT)}/api/peer/export"
+
+
+_NO_PROXY = urllib.request.build_opener(urllib.request.ProxyHandler({}))   # it's the LAN
+
+
+def _pull(addr, code, etag=None):
+    """(export, etag) from another device, or (None, etag) when it hasn't changed."""
+    req = urllib.request.Request(_peer_url(addr), headers={
+        "Authorization": "Bearer " + _norm_code(code), "Accept-Encoding": "gzip",
+        # quoted: a header is Latin-1, and names are not ("Uttam’s MacBook Air")
+        "X-AgentTelemetry-Device": urllib.parse.quote(DEVICE["name"])})
+    if etag:
+        req.add_header("If-None-Match", etag)
+    try:
+        with _NO_PROXY.open(req, timeout=20) as r:
+            raw = r.read(PEER_MAX_BYTES + 1)
+            new_etag = r.headers.get("ETag")
+            gz = (r.headers.get("Content-Encoding") or "").lower() == "gzip"
+    except urllib.error.HTTPError as e:
+        if e.code == 304:
+            return None, etag
+        if e.code == 401:
+            raise ValueError("The pairing code was rejected. Check it in the other device's "
+                             "Settings → Your devices.")
+        if e.code == 503:
+            raise ValueError("That device is still parsing its logs; it will be retried.")
+        raise ValueError(f"That address answered HTTP {e.code}, not as AgentTelemetry.")
+    except (urllib.error.URLError, OSError) as e:
+        raise ValueError(f"Couldn't reach {addr}: {getattr(e, 'reason', e)}. Both devices must be "
+                         "on the same network, with sharing turned on over there.")
+    if gz:
+        with gzip.GzipFile(fileobj=io.BytesIO(raw)) as g:
+            raw = g.read(PEER_MAX_BYTES + 1)
+    if len(raw) > PEER_MAX_BYTES:
+        raise ValueError("That device's export is too large.")
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        data = None
+    if (not isinstance(data, dict) or data.get("proto") != PEER_PROTO
+            or not isinstance(data.get("files"), dict)
+            or not _ID_RE.match(str(data.get("device_id") or ""))):
+        raise ValueError("That address answered, but not as AgentTelemetry.")
+    if data.get("cache_version") != CACHE_VERSION:
+        raise ValueError(f"That device runs a different AgentTelemetry version "
+                         f"({data.get('app') or 'unknown'}). Update both to the same version.")
+    # a malformed entry would break the whole payload; drop it rather than guess
+    data["files"] = {p: a for p, a in data["files"].items()
+                     if isinstance(a, dict) and isinstance(a.get("source"), str)
+                     and isinstance(a.get("records", {}), dict)
+                     and isinstance(a.get("sessions", []), list)}
+    return data, new_etag
+
+
+def _store_mirror(pid, data):
+    m = {"cache_version": data["cache_version"], "device": data.get("device") or {},
+         "app": data.get("app"), "pulled_at": time.time(), "files": data["files"]}
+    os.makedirs(PEER_DIR, exist_ok=True)
+    tmp = _mirror_path(pid) + ".tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump(m, f)
+    os.replace(tmp, _mirror_path(pid))
+    _set_mirror(pid, m)
+
+
+def _sync_peer(pid):
+    """Pull one connected device. Call with _sync_lock held."""
+    p = _peer_cfg()["peers"].get(pid)
+    if p is None:
+        return
+    p["last_try"] = time.time()
+    try:
+        data, etag = _pull(p.get("addr"), p.get("code"),
+                           p.get("etag") if pid in _peer["mirrors"] else None)
+        if data is not None:
+            if data["device_id"] != pid:
+                raise ValueError("A different device now answers at that address. "
+                                 "Disconnect this one and connect again.")
+            dev = data.get("device") or {}
+            p.update(name=dev.get("name") or p.get("name"), os=dev.get("os") or p.get("os"),
+                     app=data.get("app"))
+            _store_mirror(pid, data)
+        p.update(etag=etag, last_ok=time.time(), error=None)
+    except ValueError as e:
+        p["error"] = str(e)
+    with _peer_lock:
+        _save_peer_cfg()
+
+
+def peer_puller():
+    while True:
+        for pid in list(_peer_cfg()["peers"]):
+            try:
+                with _sync_lock:
+                    _sync_peer(pid)
+            except Exception as e:             # never let one bad pull stop the loop
+                sys.stderr.write(f"[devices] pulling {pid}: {e}\n")
+        time.sleep(PEER_PULL_EVERY)
+
+
+def devices_status():
+    cfg = _peer_cfg()
+    share = cfg["share"]
+    with _peer_lock:
+        sharing = bool(_peer["server"])
+        by = sorted(({"ip": ip, **v} for ip, v in _peer["pulled_by"].items()),
+                    key=lambda x: -x["at"])
+        peers = [{"id": pid, "name": p.get("name") or "Other device", "os": p.get("os") or "",
+                  "addr": p.get("addr"), "app": p.get("app"), "last_ok": p.get("last_ok"),
+                  "last_try": p.get("last_try"), "error": p.get("error"),
+                  "logs": len(_peer["mirrors"].get(pid) or {}), "shown": pid in _peer["mirrors"]}
+                 for pid, p in cfg["peers"].items()]
+        err = _peer["share_error"]
+    return {"this": {"id": cfg["device_id"], "name": DEVICE["name"], "os": DEVICE["os"],
+                     "addresses": _lan_addrs() if sharing else [],
+                     "port": int(share.get("port") or PEER_PORT), "sharing": sharing,
+                     "code": share.get("code") if sharing else None, "error": err,
+                     "pulled_by": by},
+            "peers": peers, "pull_every": PEER_PULL_EVERY}
+
+
+def devices_action(body):
+    act = body.get("action")
+    cfg = _peer_cfg()
+    if act == "share":
+        on = bool(body.get("on"))
+        with _peer_lock:
+            if on and not cfg["share"].get("code"):
+                cfg["share"]["code"] = _new_code()
+            cfg["share"]["on"] = on
+            _save_peer_cfg()
+        if not on:
+            _share_stop()
+        elif not _share_start():
+            with _peer_lock:
+                cfg["share"]["on"] = False
+                _save_peer_cfg()
+            raise ValueError(_peer["share_error"])
+    elif act == "new_code":
+        # every device connected with the old code loses access until it reconnects
+        with _peer_lock:
+            cfg["share"]["code"] = _new_code()
+            _save_peer_cfg()
+    elif act == "connect":
+        addr, code = str(body.get("address") or "").strip(), body.get("code")
+        if not addr:
+            raise ValueError("Enter the other device's address.")
+        if not _norm_code(code):
+            raise ValueError("Enter the pairing code shown on the other device.")
+        with _sync_lock:
+            data, etag = _pull(addr, code)
+            pid = data["device_id"]
+            if pid == cfg["device_id"]:
+                raise ValueError("That's this device. Enter the address of your other one.")
+            dev = data.get("device") or {}
+            now = time.time()
+            with _peer_lock:
+                cfg["peers"][pid] = {"addr": addr, "code": _norm_code(code),
+                                     "name": dev.get("name"), "os": dev.get("os"),
+                                     "app": data.get("app"), "added": now, "last_ok": now,
+                                     "last_try": now, "etag": etag, "error": None}
+                _save_peer_cfg()
+            _store_mirror(pid, data)
+    elif act == "disconnect":
+        pid = str(body.get("id") or "")
+        with _sync_lock, _peer_lock:
+            if pid not in cfg["peers"]:
+                raise ValueError("That device isn't connected.")
+            del cfg["peers"][pid]
+            _peer["mirrors"].pop(pid, None)
+            _save_peer_cfg()
+            try:
+                os.remove(_mirror_path(pid))
+            except FileNotFoundError:
+                pass
+    elif act == "sync":
+        with _sync_lock:
+            for pid in list(cfg["peers"]):
+                _sync_peer(pid)
+    else:
+        raise ValueError("unknown action")
+    return devices_status()
+
+
 def _zero():
     return {"in": 0, "out": 0, "cr": 0, "cc": 0, "cc5": 0, "cc1": 0, "reason": 0,
             "asst": 0, "user": 0, "req": 0, "tools": 0, "prem": 0.0, "cost": 0.0,
@@ -1238,6 +1729,12 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 import traceback; traceback.print_exc()
                 self._send(500, json.dumps({"error": str(e)}))
+        elif route == "/api/devices":
+            try:
+                self._send(200, json.dumps(devices_status()))
+            except Exception as e:
+                import traceback; traceback.print_exc()
+                self._send(500, json.dumps({"error": str(e)}))
         elif route == "/api/settings":
             try:
                 self._send(200, json.dumps(build_settings()))
@@ -1290,7 +1787,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         route = self.path.split("?")[0]
-        if route in ("/api/settings", "/api/cache", "/api/update"):
+        if route in ("/api/settings", "/api/cache", "/api/update", "/api/devices"):
             if not self._csrf_ok():
                 self._send(403, json.dumps({"error": "cross-site request refused"}))
                 return
@@ -1306,6 +1803,8 @@ class Handler(BaseHTTPRequestHandler):
                     result = cache_action(body.get("action"))
                 elif route == "/api/update":
                     result = update_action(body.get("action"))
+                elif route == "/api/devices":
+                    result = devices_action(body)
                 else:
                     result = save_claude_cleanup_days(body.get("cleanupPeriodDays"))
                 self._send(200, json.dumps(result))
@@ -1360,6 +1859,12 @@ def main():
     sys.stderr.write(f"[init] {_meta['files']} files in {_meta['last_duration']:.1f}s\n")
 
     threading.Thread(target=background_refresher, args=(args.interval,), daemon=True).start()
+
+    # other devices: only if the user turned them on in Settings
+    _load_mirrors()
+    if _peer_cfg()["share"].get("on"):
+        _share_start()
+    threading.Thread(target=peer_puller, daemon=True).start()
 
     BIND.update(host=args.host, port=args.port)
     srv = Server((args.host, args.port), Handler)

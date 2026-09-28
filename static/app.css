@@ -182,6 +182,8 @@ a{color:inherit}
 .btn.on{color:var(--text);border-color:var(--text-3);background:var(--surface-2)}
 .btn.primary{background:var(--text);border-color:var(--text);color:var(--bg)}
 .btn.primary:hover{opacity:.9;color:var(--bg)}
+.btn.danger{background:var(--bad);border-color:var(--bad);color:var(--bg)}
+.btn.danger:hover{opacity:.9;color:var(--bg)}
 .btn[disabled]{opacity:.5;pointer-events:none}
 .btn-count{min-width:18px;height:18px;padding:0 5px;border-radius:9px;background:var(--text);color:var(--bg);
   font-size:10.5px;font-weight:700;display:inline-flex;align-items:center;justify-content:center}
@@ -422,6 +424,20 @@ code.cmd{display:block;background:var(--surface-2);border:1px solid var(--border
 .stg-path b{display:block;font-weight:640;color:var(--text-2);margin-bottom:3px;text-transform:uppercase;letter-spacing:.04em;font-size:10px}
 .stg-path span{font-family:var(--mono);word-break:break-all}
 .stg-sec{margin-top:28px}
+/* Settings → Your devices */
+.dev-sub{margin:18px 0 8px;font-size:10px;font-weight:640;color:var(--text-2);text-transform:uppercase;letter-spacing:.04em}
+.dev-card{border:1px solid var(--border);border-radius:10px;padding:11px 13px;background:var(--surface);font-size:12.5px;line-height:1.6}
+.dev-card + .dev-card{margin-top:8px}
+.dev-card code{font-family:var(--mono);font-size:12px;background:var(--surface-3);border-radius:4px;padding:1px 5px;word-break:break-all}
+.dev-code{font-size:15px!important;letter-spacing:.08em;font-weight:600}
+.dev-name{font-weight:620}
+.dev-meta{color:var(--text-3);font-size:11.5px}
+.dev-err{color:var(--bad);font-size:11.5px}
+.dev-card .stg-actions{margin-top:9px}
+.dev-form{display:grid;grid-template-columns:1fr 1fr auto;gap:8px;margin-top:10px}
+.dev-form input{min-width:0;font-size:13px;padding:7px 9px;color:var(--text)}
+.dev-form input:focus{outline:none;border-color:var(--text-3)}
+@media (max-width:520px){ .dev-form{grid-template-columns:1fr} }
 
 /* ---------- optimize ---------- */
 .finding{background:var(--surface);border:1px solid var(--border);border-left:3px solid var(--border-2);
@@ -510,3 +526,23 @@ code.cmd{display:block;background:var(--surface-2);border:1px solid var(--border
   .dd-panel.right{right:auto;left:0}
   #ddFilters .dd-panel.right{left:auto;right:0}
 }
+
+/* ---------- confirm dialog (askConfirm) ---------- */
+.modal{border:1px solid var(--border);border-radius:14px;background:var(--surface);color:var(--text);
+  padding:0;width:min(460px,calc(100vw - 32px));max-height:calc(100vh - 48px);box-shadow:var(--shadow-lg)}
+.modal::backdrop{background:rgba(4,6,10,.5)}
+.modal[open]{animation:modal-in .14s ease-out}
+@keyframes modal-in{from{opacity:0;transform:translateY(6px) scale(.985)}}
+@media (prefers-reduced-motion:reduce){ .modal[open]{animation:none} }
+.modal-in{padding:20px 22px 18px}
+.modal-h{margin:0 0 10px;font-size:16px;font-weight:650;letter-spacing:-.01em}
+.modal-body{font-size:13px;line-height:1.6;color:var(--text-2)}
+.modal-body p{margin:0 0 10px}
+.modal-body b{color:var(--text);font-weight:620}
+.modal-body ul{margin:0 0 10px;padding-left:18px}
+.modal-body li{margin:2px 0}
+.modal-body code{font-family:var(--mono);font-size:11.5px;background:var(--surface-3);border-radius:4px;padding:1px 5px;color:var(--text)}
+.modal-note{background:var(--surface-2);border:1px solid var(--border);border-left:3px solid var(--warn);
+  border-radius:8px;padding:8px 11px;margin:0 0 10px}
+.modal-note.bad{border-left-color:var(--bad)}
+.modal-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:18px}

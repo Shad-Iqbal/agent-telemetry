@@ -2,7 +2,8 @@
 
 **AgentTelemetry** — a local, **stdlib-only** dashboard that reads the logs your AI coding tools already write
 to this machine and shows tokens, estimated cost, and breakdowns by model / day / tool /
-project / hour. Nothing leaves the machine. Nothing to install.
+project / hour. Nothing leaves the machine unless the user turns on sharing (see "Your
+devices"). Nothing to install.
 
 ```bash
 python3 dashboard.py            # http://127.0.0.1:7878
@@ -16,7 +17,7 @@ first — it may already be up.
 
 | File | Role |
 |---|---|
-| `dashboard.py` | stdlib `http.server`. Serves `/`, `/static/*`, `/chart.js`, `/manifest.json`, `/sw.js`, `/api/{data,storage,refresh,settings,cache}`. Owns the cache, the aggregate merge and `_cost()`. |
+| `dashboard.py` | stdlib `http.server`. Serves `/`, `/static/*`, `/chart.js`, `/manifest.json`, `/sw.js`, `/api/{data,storage,refresh,settings,cache,update,devices}`. Owns the cache, the aggregate merge, `_cost()` and the device sharing listener. |
 | `parser.py` | `discover()` lists log files; `update_file()` routes each to a `parse_*`. Holds `PRICING` and the model-name normalizers. |
 | `static/core.js` | `SRC`/`ORDER`, state `S`, formatting, date ranges, filtering. |
 | `static/charts.js` | Chart.js theming, `mk()`/`hbar()`/`areaDS()`, calendar + heatmap SVG. |
@@ -43,12 +44,14 @@ for the machine (`scutil --get ComputerName` on macOS, `%COMPUTERNAME%`, `/etc/m
 
 Aggregates are keyed `records["date\tmodel"]`, `tools["date\tname"]`,
 `hourly["date\thour"]` — **every dimension carries a date** so the UI can filter by range.
+In the payload every usage row (records, sessions, activity, tools, hourly, ctx, skills,
+reads) also carries a `device` id; see "Your devices".
 
 ## Rules
 
 1. **Stdlib only, offline.** No runtime dependencies. Vendor any JS (Chart.js already is).
-2. **Never commit `.usage_cache.json`** or `server.log` — that's the user's own prompts,
-   projects and costs. A fresh clone must start empty.
+2. **Never commit `.usage_cache.json`**, `server.log`, `.peers.json` or `.peers/` — that's
+   the user's own prompts, projects, costs and pairing codes. A fresh clone must start empty.
 3. **Never hardcode a path.** Derive from `HOME` / `%APPDATA%` / `%LOCALAPPDATA%` /
    `$XDG_*`. Split path components with `_leaf()` (handles `/` and `\`) — logs written on
    one OS get read on another.
@@ -497,12 +500,50 @@ must not report three days of "active" time. Formatted client-side by `fmtDur()`
   it by index elsewhere needs to change. `static/core.js`'s `clipSession()` is the one
   place that unpacks it.
 
+## Your devices — the one opt-in exception to "nothing leaves this machine"
+
+Settings → **Your devices** combines two (or more) of the user's own computers over the
+local network. Both switches are off until the user turns them on, and each asks first
+(an `askConfirm()` dialog that says exactly what is sent). Everything lives in
+`dashboard.py`'s Devices section.
+
+- **Share** starts a *second* `Server` on `0.0.0.0:7879` (`share.port` in `.peers.json`)
+  with `PeerHandler`, which answers ONE route, `GET /api/peer/export`, and only with
+  `Authorization: Bearer <pairing code>` (`hmac.compare_digest`; a wrong code waits 1s).
+  The main dashboard never leaves `127.0.0.1`. Don't bind it to the network instead: it
+  has no auth, and `/api/update`, `/api/settings` and `/api/cache` would be exposed.
+- **An export carries only this machine's own aggregates** (`_state["files"]`), never
+  the copies it pulled. That is what lets two devices connect both ways without counting
+  each other twice. Each aggregate passes through `_export_agg`, a whitelist: no parser
+  resume state, no `cwd`, no MCP/skill setup. `ide` and `activity_of()` are resolved on
+  the exporting side, because Codex's editor lookup reads that machine's editor storage.
+  The body is gzip'd JSON with an ETag (`_gen`, bumped whenever the cache is rewritten),
+  so an unchanged pull is a 304.
+- **Connect** pulls every `PEER_PULL_EVERY` (60s) seconds (`peer_puller`) and saves the
+  copy to `.peers/<device id>.json` (0600). While the other machine sleeps, the copy still
+  shows, along with the error explaining why it couldn't be reached. An export or saved
+  copy from another `CACHE_VERSION` is refused with "update both", never mixed in.
+- `build_payload` adds the copies to its file loop as `peer:<id>:<path>` with
+  `agg["_device"]`, keys everything by device the way it already does by IDE, and prices
+  them with THIS machine's `PRICING`. Setup data (MCP inventory and calls, installed-skill
+  use, instruction-file cwds, OpenClaw's undecoded count) is skipped for remote copies.
+  On the client, the Optimize setup finders are wrapped in `onThisDevice()`, which judges
+  only this machine's usage against this machine's files and adds a "<device> only" chip.
+- The client's `passDev()` filter and the "on all devices" phrase (`#qDev`) appear only
+  when `RAW.devices` has more than one entry. A single-device install looks exactly as
+  it did before.
+- No encryption: the pairing code keeps others on the Wi-Fi from *reading* the export,
+  not from sniffing it. The UI says so.
+- The device name goes in `X-AgentTelemetry-Device` URL-quoted. A header is Latin-1, and
+  "Uttam’s MacBook Air" is not; unquoted, every connection attempt failed.
+
 ## Version and self-update
 
 The sidebar footer shows the running version from this checkout's git metadata
-(`VERSION` in `dashboard.py`: `git describe --tags`, commit, branch). **Checking for an
-update is the only thing that touches the network, and only on a click** — never on a
-timer, which would break "nothing leaves this machine". `POST /api/update` (through
+(`VERSION` in `dashboard.py`: `git describe --tags`, commit, branch). **Apart from the
+opt-in device sharing above, checking for an update is the only thing that touches the
+network, and only on a click** — never on a timer, which would break "nothing leaves
+this machine". `POST /api/update` (through
 `_csrf_ok()`): `check` fetches the upstream and reports how far behind; `apply`
 fast-forwards only — it refuses local edits to tracked files and commits the upstream
 doesn't have — then saves the cache and re-execs the process (`_restart`), and the page
@@ -520,6 +561,13 @@ second sets `data-js-error` — it used to be reported as the server being down,
 render bug from the headless sweep.
 
 ## Gotchas
+
+- **Never use the browser's `confirm()` / `alert()` / `prompt()`.** Every dialog is the
+  app's own: `askConfirm({title, body, ok, danger})` in `core.js`, a styled `<dialog>`
+  that resolves true only on the confirm button. `body` is HTML, so escape anything that
+  came from data. `danger:true` paints the button `--bad` for anything destructive.
+  Results and errors go inline (`.stg-msg`), never in a popup. While a dialog is open it
+  owns the keyboard, and Esc closes it alone, not the drawer behind it.
 
 - The **PWA service worker is opt-in** (gear menu, `localStorage` `aiu.pwa`) and never
   registered without consent — a service worker controls the origin until unregistered,
