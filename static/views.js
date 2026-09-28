@@ -958,6 +958,7 @@ async function updateAction(action){
       UPD = {error:"Restart is taking long — reload the page"}; renderVersion(); return;
     }
     UPD = out;
+    if(out.current && RAW) RAW.version = out.current;   // a new tag on this same commit
   }catch(e){ UPD = {error: String(e.message||e)}; }
   renderVersion();
 }

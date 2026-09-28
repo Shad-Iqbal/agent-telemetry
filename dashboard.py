@@ -127,7 +127,10 @@ def update_action(action):
     try:
         up = _upstream()
         remote = up.split("/", 1)[0]
-        _git("fetch", "--quiet", remote, timeout=30)
+        _git("fetch", "--quiet", "--tags", remote, timeout=30)
+        # re-read: a release can tag a commit this checkout already has, which is
+        # "up to date", so nothing restarts, and the label would name the old tag
+        VERSION.update(_version())
         behind = int(_git("rev-list", "--count", f"HEAD..{up}") or 0)
         ahead = int(_git("rev-list", "--count", f"{up}..HEAD") or 0)
         log = _git("log", "--format=%h %cs %s", "-n", "8", f"HEAD..{up}") if behind else ""
