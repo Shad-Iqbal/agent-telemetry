@@ -517,8 +517,15 @@ local network. Both switches are off until the user turns them on, and each asks
   each other twice. Each aggregate passes through `_export_agg`, a whitelist: no parser
   resume state, no `cwd`, no MCP/skill setup. `ide` and `activity_of()` are resolved on
   the exporting side, because Codex's editor lookup reads that machine's editor storage.
-  The body is gzip'd JSON with an ETag (`_gen`, bumped whenever the cache is rewritten),
-  so an unchanged pull is a 304.
+  The body is gzip'd JSON with an ETag (`_gen`, bumped by any refresh that changed
+  something), so an unchanged pull is a 304. **"Changed" is where the parse stopped
+  (`_parse_mark`: size, mtime, offset), not whether `update_file` returned a new dict.**
+  An appended Claude/Codex/Copilot log is parsed in place and comes back as the same
+  object, so the identity check alone never saw a running session grow: the ETag stayed
+  put and the other device showed the snapshot from when it connected (16.1M there,
+  22.3M on the machine itself). The same check decides when the cache is saved: a log
+  that only grew is saved at most every `CACHE_SAVE_EVERY` (300s), since a restart
+  re-reads it from the saved offset anyway.
 - **Connect** pulls every `PEER_PULL_EVERY` (60s) seconds (`peer_puller`) and saves the
   copy to `.peers/<device id>.json` (0600). While the other machine sleeps, the copy still
   shows, along with the error explaining why it couldn't be reached. An export or saved

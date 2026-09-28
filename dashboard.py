@@ -171,8 +171,15 @@ def _restart():
     argv = [a for a in sys.argv if not (len(a) > 2 and "--rebuild".startswith(a))]
     os.execv(sys.executable, [sys.executable, *argv])
 
-_dirty = {"v": True}          # cache is only rewritten when a file actually changed
+_dirty = {"v": True}          # a log was added, replaced or archived: save the cache now
+_grew = {"v": False, "saved": 0.0}   # a log was appended to since the last save
+CACHE_SAVE_EVERY = 300
 _gen = {"v": 0}               # bumped whenever the local data changes (the export's ETag)
+
+
+def _parse_mark(agg):
+    """Where update_file got to in a log: it moves whenever the log was read further."""
+    return agg and (agg.get("size"), agg.get("mtime"), agg.get("offset"))
 # Only one refresh at a time: the background timer and the Rebuild button can now
 # collide, and `gone = [p for p in files ...]` iterating while another thread
 # inserts raises "dictionary changed size during iteration".
@@ -227,13 +234,21 @@ def _refresh_locked(verbose=False):
     found = P.discover()
     files = _state["files"]
     seen = set()
+    changed = False
     for i, (source, path, editor) in enumerate(found):
         seen.add(path)
         prev = files.get(path)
+        # Claude, Codex and Copilot logs are appended to and parsed in place: the
+        # same dict comes back, grown. So compare where the parse stopped, not just
+        # identity, which missed every appended turn: a connected device's pulls
+        # stayed "unchanged" for as long as a session kept running.
+        mark = _parse_mark(prev)
         try:
             updated = P.update_file(prev, source, path, editor, proj_map)
             if updated is not prev:
-                _dirty["v"] = True
+                changed = _dirty["v"] = True
+            elif mark != _parse_mark(updated):
+                changed = _grew["v"] = True
             files[path] = updated
         except Exception as e:
             if verbose:
@@ -248,7 +263,7 @@ def _refresh_locked(verbose=False):
     gone = [p for p in files if p not in seen]
     for p in gone:
         if not files[p].get("archived"):
-            _dirty["v"] = True
+            changed = _dirty["v"] = True
         files[p]["archived"] = True
     if verbose and gone:
         sys.stderr.write(f"\n[ledger] retaining {len(gone)} pruned-from-disk session(s)\n")
@@ -256,12 +271,16 @@ def _refresh_locked(verbose=False):
         sys.stderr.write("\n")
     _meta.update(last_refresh=time.time(), last_duration=time.time() - t0,
                  files=len(files), building=False)
+    if changed:
+        _gen["v"] += 1                # a connected device's next pull gets the new data
     # The cache is ~1MB; rewriting it every interval when nothing changed is a
     # pointless few GB of disk writes a day (and this machine is short on space).
-    if _dirty["v"]:
+    # A log that only grew is saved at most every CACHE_SAVE_EVERY: until then it is
+    # re-read from the saved offset on a restart, so nothing is lost meanwhile.
+    if _dirty["v"] or (_grew["v"] and time.time() - _grew["saved"] >= CACHE_SAVE_EVERY):
         save_cache()
-        _dirty["v"] = False
-        _gen["v"] += 1                # a connected device's next pull gets the new data
+        _dirty["v"] = _grew["v"] = False
+        _grew["saved"] = time.time()
 
 
 # ---------------------------------------------------------------------------
