@@ -2012,6 +2012,7 @@ function renderAll(){
     const p=providerOf(m); (MODEL_RANK[p]=MODEL_RANK[p]||[]).push(m); });
 
   syncRangeUI(); syncMetricUI(); buildFilterPanels(); renderPills();
+  filtersToURL();
   document.querySelectorAll(".view").forEach(v=>v.classList.toggle("on", v.id==="v-"+S.view));
   document.querySelectorAll("#tabs button").forEach(b=>b.classList.toggle("on", b.dataset.v===S.view));
   document.getElementById("pageTitle").textContent = VIEW_TITLES[S.view] || "Overview";
@@ -2220,8 +2221,7 @@ matchMedia("(prefers-color-scheme: dark)").addEventListener("change",()=>{
 const QP=new URLSearchParams(location.search);
 { let saved="auto"; try{ saved=localStorage.getItem("aiu.theme")||"auto"; }catch(e){}
   applyTheme(QP.get("theme")||saved); }
-if(QP.get("range")) S.preset=QP.get("range");
-if(QP.get("metric") && ["cost","tokens","time","messages"].includes(QP.get("metric"))) S.metric=QP.get("metric");
+filtersFromURL(); syncSearchBoxes();
 if(location.hash && VIEW_TITLES[location.hash.slice(1)]) S.view=location.hash.slice(1);
 load().then(()=>{ if(S.view==="storage") loadStorage(); });
 setTimeout(loadStorage, 1200);

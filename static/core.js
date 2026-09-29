@@ -183,6 +183,57 @@ function devices(){ return (RAW && RAW.devices) || []; }
 function multiDevice(){ return devices().length > 1; }
 function deviceName(id){ const d=devices().find(x=>x.id===id); return d ? d.name : "This device"; }
 
+/* ---------- filters ⇄ the URL ----------
+   Every filter is in the query string too, so a reload, a bookmark or a pasted link opens
+   the same view. Only what differs from the default is written, and a param that isn't
+   ours (?theme=, ?side=) is left alone. The tab stays in the hash. A change replaces the
+   history entry rather than adding one, the way switching tab does. */
+const Q_DEFAULT = {preset:S.preset, metric:S.metric, rateMetric:S.rateMetric};
+const Q_SETS = [["provs","providers"],["models","models"],["projs","projects"],["ides","ides"],["devs","devices"]];
+const Q_OWNED = ["range","from","to","metric","rate","tools","exact","q", ...Q_SETS.map(x=>x[1])];
+const isDay = s => /^\d{4}-\d{2}-\d{2}$/.test(s||"") && dkey(new Date(s+"T00:00:00"))===s;
+
+/* A link is somebody else's text. Dates, tool ids, the range and the measure are checked
+   here; project, model and search text is only ever put on the page through esc() or
+   .textContent, and a value that matches nothing shows as a chip you can remove. */
+function filtersFromURL(){
+  const q = new URLSearchParams(location.search), rg = q.get("range");
+  if(PRESETS.some(p=>p[0]===rg) || /^[1-9]\d{0,3}d$/.test(rg||"")) S.preset = rg;
+  else if(isDay(q.get("from")) && isDay(q.get("to"))){
+    const a = q.get("from"), b = q.get("to");
+    S.preset = "custom"; S.from = a<b ? a : b; S.to = a<b ? b : a;
+  }
+  if(["tokens","cost","messages","time"].includes(q.get("metric"))) S.metric = q.get("metric");
+  if(["all","out"].includes(q.get("rate"))) S.rateMetric = q.get("rate");
+  const tools = q.getAll("tools").filter(s=>ORDER.includes(s));
+  if(tools.length) S.tools = new Set(tools);
+  for(const [key, param] of Q_SETS){
+    const vals = q.getAll(param).map(v=>v.slice(0,200)).filter(Boolean).slice(0,200);
+    if(vals.length) S[key] = new Set(vals);
+  }
+  S.exactOnly = ["1","true"].includes(q.get("exact"));
+  S.search = (q.get("q")||"").trim().slice(0,200);
+}
+/* Called after every render, so a filter set by a key, a chip, a link or a click on the
+   calendar is covered without each of them knowing about the URL. */
+function filtersToURL(){
+  const q = new URLSearchParams(location.search);
+  Q_OWNED.forEach(k=>q.delete(k));
+  if(S.preset==="custom"){
+    if(isDay(S.from) && isDay(S.to)){ q.set("range","custom"); q.set("from",S.from); q.set("to",S.to); }
+  } else if(S.preset!==Q_DEFAULT.preset) q.set("range", S.preset);
+  if(S.metric!==Q_DEFAULT.metric) q.set("metric", S.metric);
+  if(S.rateMetric!==Q_DEFAULT.rateMetric) q.set("rate", S.rateMetric);
+  if(ORDER.some(s=>!S.tools.has(s))) ORDER.filter(s=>S.tools.has(s)).forEach(s=>q.append("tools", s));
+  for(const [key, param] of Q_SETS) [...S[key]].sort().forEach(v=>q.append(param, v));
+  if(S.exactOnly) q.set("exact","1");
+  if(S.search) q.set("q", S.search);
+  const qs = q.toString(), next = location.pathname + (qs ? "?"+qs : "") + location.hash;
+  if(next !== location.pathname + location.search + location.hash){
+    try{ history.replaceState(history.state, "", next); }catch(e){}
+  }
+}
+
 function slice(r){
   r = r || range();
   const recs = RAW.records.filter(x => passSrc(x.source) && passModel(x.model)

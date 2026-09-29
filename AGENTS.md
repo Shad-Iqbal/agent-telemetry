@@ -25,10 +25,19 @@ first — it may already be up.
 | `index.html` | Shell only: sidebar (device name, tabs, live/refresh/theme/settings), page header (period, range, metric, filters), card markup, an SVG icon sprite. |
 
 Eight tabs in the sidebar: Overview · Cost · Models · Tools · Projects · Sessions ·
-**Optimize** · Storage. Tab lives in `location.hash`; `?theme=`, `?range=`, `?metric=`
-(`tokens|cost|messages|time`) and `?side=collapsed|open` preset the UI (handy for headless
-screenshots). The sidebar collapses to an icon rail (`[`, remembered as `aiu.side`); below
-900px it becomes a top bar instead.
+**Optimize** · Storage. Tab lives in `location.hash`. **Every filter lives in the query
+string too**, so a reload, bookmark or pasted link opens the same view: `filtersFromURL()`
+reads it at boot and `filtersToURL()` writes it after every `renderAll()`, both in `core.js`.
+The params are `?range=` (a preset, or `custom` with `&from=&to=` as YYYY-MM-DD),
+`?metric=` (`tokens|cost|messages|time`), `?rate=out`, `?tools=`, `?providers=`, `?models=`,
+`?projects=`, `?ides=`, `?devices=` (each repeated once per value), `?exact=1` and `?q=`.
+Only what differs from the default is written, params that aren't the filters' own are left
+alone, and a change replaces the history entry the way switching tab does. `?theme=` and
+`?side=collapsed|open` preset the look (handy for headless screenshots). **A new filter goes
+in `S` and in both functions**, or it silently resets on reload; sort order, table twins,
+muted series and expanded rows are display state and stay out of the URL. The sidebar
+collapses to an icon rail (`[`, remembered as `aiu.side`); below 900px it becomes a top bar
+instead.
 
 **The controls are a sentence**, not a toolbar: "**Tokens** from **all tools** over **the last
 30 days** ‹ ›". Each bold phrase is a `.dd` that opens its menu (`#metricPanel`,
@@ -597,6 +606,12 @@ render bug from the headless sweep.
   Results and errors go inline (`.stg-msg`), never in a popup. While a dialog is open it
   owns the keyboard, and Esc closes it alone, not the drawer behind it.
 
+- **A link is untrusted input.** Whatever `filtersFromURL()` reads may have been written by
+  another page, and this app has write endpoints behind only a same-origin check, so script
+  injected through a crafted `?projects=` would get past it. Dates, tool ids, `range`,
+  `metric` and `rate` are validated on the way in (`renderPills` calls `SRC[s].label`, so an
+  unknown tool id would also throw); project, model, IDE, provider and search text only ever
+  reach the page through `esc()` or `.textContent`. Keep it so for any new param.
 - The **PWA service worker is opt-in** (gear menu, `localStorage` `aiu.pwa`) and never
   registered without consent — a service worker controls the origin until unregistered,
   and localhost ports get reused by other tools. It is network-first: the cache is an

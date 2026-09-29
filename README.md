@@ -135,6 +135,14 @@ your data supports it, and because the estimates overlap they are never summed.
 period, `Shift`+`T`/`C`/`M`/`A` tokens / cost / messages / active time, `[` sidebar, `/`
 search, `t` theme, `r` refresh.
 
+**Links** — every filter is in the address bar, so a reload, a bookmark or a pasted link opens
+the same view. `?range=` takes `today`, `7d`, `30d`, `mtd`… or `custom` with
+`&from=2026-09-01&to=2026-09-15`; then `?metric=`, `?tools=`, `?providers=`, `?models=`,
+`?projects=`, `?ides=`, `?devices=` (repeat a param for each value), `?exact=1`, `?q=` for the
+search box, and `#cost`, `#sessions`… for the tab. For example
+`/?range=7d&metric=cost&tools=claude&projects=sims#cost`. Only what differs from the default
+is written, and changing a filter never adds a browser-history entry.
+
 **Version and updates** — the sidebar footer shows the running version. *Check for updates*
 asks GitHub (the only time the dashboard goes online, and only when you click); *Update*
 fast-forwards your checkout and restarts the server. It refuses if you have local edits or
