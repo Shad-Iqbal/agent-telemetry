@@ -651,9 +651,9 @@ def build_payload():
         "pricing": {k: list(v) for k, v in P.PRICING.items()},
         "pricing_history": {k: [[u, list(p)] for u, p in v] for k, v in P.PRICE_HISTORY.items()},
         "pricing_note": ("Anthropic costs use current list pricing (Fable 5 $10/$50, Opus 5.5 "
-                         "$4/$20, Opus 5 & 4.x $5/$25, Sonnet 5 $2/$10, Sonnet 4.x $3/$15, "
-                         "Haiku $1/$5 per Mtok) with cache write billed at 1.25x (5-min) / 2x "
-                         "(1-hour) input and cache read at 0.1x (0.05x on Opus 5.5); OpenAI/"
+                         "$4/$20, Opus 5 & 4.x $5/$25, Sonnet 5 & 5.5 $2/$10, Sonnet 4.x "
+                         "$3/$15, Haiku $1/$5 per Mtok) with cache write billed at 1.25x (5-min) "
+                         "/ 2x (1-hour) input and cache read at 0.1x (0.05x on Opus 5.5); OpenAI/"
                          "Codex/Copilot/Cursor prices are estimates. Codex GPT-5.4/5.5/5.6/6 use "
                          "verified OpenAI list rates (e.g. GPT-6 Sol $2/$10, cached $0.20), each "
                          "day priced at the rate in force then — OpenAI cut GPT-5.6 prices on "

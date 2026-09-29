@@ -159,6 +159,12 @@ so that file stops being a cache and becomes the sole record. Two consequences:
   `version`), so any record whose `uuid` was already seen in that file is skipped —
   `state.seen_uuids`, 12 hex chars per record, persisted for incremental parsing.
   Summing records instead inflated Claude usage ~2.3x (Sep 2026: 3.16B for 1.35B billed).
+- **A session's model is ranked on the whole file, never on what one parse saw.** A log
+  is parsed in pieces as it grows, so a tally kept inside `parse_claude` holds only the
+  newest piece: a session of 2.2M Opus tokens was labelled "Sonnet 5.5" after 15 records
+  of it, and listed first in `models`. `dom_model` comes from the file's own `records`,
+  as Codex's already does. A session nobody has appended to since keeps its
+  old label until it is.
 - **A Claude "prompt" is only what the user typed.** Newer builds stamp `origin.kind` on
   a user turn (`human`, `task-notification`); anything not `human` is dropped. So is every
   `isMeta` record — screenshot captions (older builds omit `turnCompanion`), skill bodies,
@@ -313,6 +319,9 @@ so that file stops being a cache and becomes the sole record. Two consequences:
 page lists one, else 0, which bills at the input rate — 0 in cw1, and the cached rate last), and
 make the normalizer map the raw id to that name. Pricing applies at request time — no
 re-parse needed; a normalizer change needs `--rebuild` + a `CACHE_VERSION` bump.
+A new `claude-<tier>-<n>-<m>` id normalises by itself, so only the price row is missing and
+nothing warns: the model just costs $0 (Sonnet 5.5 did, for its first day). Diff the vendor's
+whole table against `PRICING`, and look for all-zero rows in the payload's `prices`.
 
 **A vendor changed a price** → the new tuple goes in `PRICING` (always today's rate — the
 Optimize tab re-prices savings from it) and the old one moves into `PRICE_HISTORY` with

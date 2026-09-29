@@ -176,12 +176,14 @@ EDITOR_LABEL = {
 # freely, no re-parse needed.
 # ---------------------------------------------------------------------------
 PRICING = {
-    # Anthropic Claude 5 family — verified against platform.claude.com pricing (2026-09-23).
+    # Anthropic Claude 5 family — verified against platform.claude.com pricing (2026-09-29).
     # 5.1 keeps 5's $10/$50 but cuts cache reads to 0.025x input ($0.25, not $1).
     "Claude Fable 5.1": (10, 50, 12.5, 20, 0.25),
     "Claude Mythos 5.1": (10, 50, 12.5, 20, 0.25),
     "Claude Fable 5": (10, 50, 12.5, 20, 1.0),
     "Claude Mythos 5": (10, 50, 12.5, 20, 1.0),
+    # Sonnet 5.5 lists the same $2/$10 as Sonnet 5, with the usual 0.1x cache read.
+    "Claude Sonnet 5.5": (2, 10, 2.5, 4, 0.20),
     # Sonnet 5's $2/$10 launch "intro" rate became its standard price — Anthropic
     # cancelled the $3/$15 increase scheduled for 2026-09-01, so there's no date split.
     "Claude Sonnet 5": (2, 10, 2.5, 4, 0.20),
@@ -962,7 +964,6 @@ _SLASH_CMD = re.compile(r"/[a-z][\w:.-]*(?:\s|$)")
 
 def parse_claude(agg, lines):
     project = agg["project"]
-    model_tokens = {}
     st = agg["state"]
     # Every record already counted in this file, as the first 12 hex chars of its
     # uuid (plenty to be unique within one file), packed into one string to keep
@@ -1135,7 +1136,6 @@ def parse_claude(agg, lines):
                 T["asst"] += int(first)
                 if side:                      # spawned subagent, not the main loop
                     T["side"] += inp + out + cr + cc
-                model_tokens[model] = model_tokens.get(model, 0) + inp + out
         elif t == "user" and msg:
             # Only count what the user actually typed. type:"user" is also how
             # Claude Code logs tool_result echoes and much of its own traffic:
@@ -1216,8 +1216,16 @@ def parse_claude(agg, lines):
 
     agg["project"] = project
     agg["editor"] = "Claude Code (CLI)"
-    if model_tokens:
-        agg["state"]["dom_model"] = max(model_tokens, key=model_tokens.get)
+    # A file is parsed in pieces as it grows, so what this call saw is only its newest
+    # piece. Ranking on that labelled a session by the model it touched last (2M Opus
+    # tokens read "Sonnet 5.5" after 15 records of it); rank on the whole file.
+    whole = {}
+    for key, rec in agg["records"].items():
+        mdl = key.split("\t", 1)[1]
+        if mdl != "(user)":
+            whole[mdl] = whole.get(mdl, 0) + rec["in"] + rec["out"]
+    if whole:
+        agg["state"]["dom_model"] = max(whole, key=whole.get)
     st["seen_uuids"] = packed + "".join(fresh_uuids)
     st["resp"] = resp
 
