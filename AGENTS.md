@@ -148,10 +148,20 @@ so that file stops being a cache and becomes the sole record. Two consequences:
   them — where they exist, the transcript matches them exactly *except* for those calls,
   typically a few percent of cost. Don't estimate them from `compactMetadata` token sizes.
 - **`codex-auto-review` has no public price**, so its tokens are counted but cost $0.
-- **OpenAI long-context rates are not billed.** The pricing page lists a higher rate for
-  long prompts on GPT-5.4+ but states no threshold, so there is nothing to apply it to
-  without guessing. 35 Codex requests here passed 272K input tokens; they bill at the
+- **OpenAI long-context rates are not billed.** The pricing page now states the threshold
+  (a prompt over 272K input tokens; the GPT-6.1 Sol model page gives 2x input and cache
+  rates and 1.5x output for the whole request), but it is a per-request rule and the
+  aggregates are per day and model, so applying it means pricing each request inside
+  `parse_codex`. Until then the 35 Codex requests here that passed 272K bill at the
   standard rate.
+- **Gemini prices cover the text models only, at the short-prompt Standard rate.** Pro over
+  200K input tokens (2x input), audio input, and the Live / TTS / image / embedding / Veo
+  models are not priced: they bill audio, image or video tokens at other rates and are
+  per-request rules like OpenAI's 272K one. Gemini bills no cache write (only storage per
+  hour), so cw is 0. 3.6 to 3.8 Flash are a promo through 2026-12-31 that doubles on
+  2027-01-01 — move it into `PRICE_HISTORY` then. `_canonicalize` gives every source one
+  spelling ("Gemini 3.1 Pro"); `price_of` also tries it, so a row cached under an older
+  spelling still prices.
 - **Claude's advisor iterations** (`usage.iterations[].type == "advisor_message"`) are not
   priced separately — none exist in any log seen, so their shape can't be verified. Every
   iteration here is a plain `message`, already covered by the response's own `usage`.

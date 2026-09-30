@@ -213,8 +213,8 @@ PRICING = {
     # the launch prices, which PRICE_HISTORY keeps for usage dated before them.
     # cache read = 0.1x input; cache write = 1.25x input (the pricing page lists it
     # for GPT-5.6 and GPT-6 only — older rows keep 0, which _cost() bills at the
-    # plain input rate). The page lists long-context rates but states no threshold,
-    # so they are not modeled; see AGENTS.md "What the logs cannot show".
+    # plain input rate). Long-context (>272K input) rates are per request and not
+    # modeled; see AGENTS.md "What the logs cannot show".
     # Sol's $4/$20 is a promo "at least through November 21, 2026" — if it reverts,
     # move this tuple into PRICE_HISTORY and restore $5/$30 here.
     "GPT-5.6 Sol": (4, 20, 5.00, 0, 0.40),
@@ -227,6 +227,11 @@ PRICING = {
     "GPT-6 Astra": (10, 50, 12.50, 0, 1),
     "GPT-6 Sol": (2, 10, 2.50, 0, 0.20),
     "GPT-6 Luna": (0.10, 0.50, 0.125, 0, 0.01),
+    # GPT-6.1 Sol — same $2/$10 as GPT-6 Sol, but cached input is 5% of input, not 10%
+    # (verified against the model page and the pricing page, 2026-09-30). Sol is the
+    # only 6.1 variant listed. The page now states the 272K long-context threshold; it
+    # is still not modeled (the one 6.1 request seen here has 136K of input).
+    "GPT-6.1 Sol": (2, 10, 2.50, 0, 0.10),
     # OpenAI GPT-5.4 / 5.5 — verified from OpenAI API pricing docs (2026-07).
     # NOTE: GPT-5.5 has a >272K-input surcharge (2x in / 1.5x out for the session)
     # not modeled here, so heavy-context Codex sessions may cost somewhat more.
@@ -235,13 +240,16 @@ PRICING = {
     "GPT-5.4": (2.5, 15, 0, 0, 0.25),
     "GPT-5.4 Mini": (0.75, 4.5, 0, 0, 0.075),
     "GPT-5.4 Nano": (0.20, 1.25, 0, 0, 0.02),
-    # older GPT-5.x — delisted from OpenAI's current table, kept as estimates
+    # GPT-5.3 Codex, 5.2, 5.1, 5, 5 Mini and 5 Nano verified against the pricing page
+    # (2026-09-30). 5.2 and 5.3 Codex are $1.75/$14 — they were carried at 5.1's $1.25/$10.
+    # The page has no plain "GPT-5.3" row, so that one is still an estimate.
     "GPT-5.3": (2.5, 15, 0, 0, 0.25),
-    "GPT-5.3 Codex": (2.5, 15, 0, 0, 0.25),
-    "GPT-5.2": (1.25, 10, 0, 0, 0.125),
+    "GPT-5.3 Codex": (1.75, 14, 0, 0, 0.175),
+    "GPT-5.2": (1.75, 14, 0, 0, 0.175),
     "GPT-5.1": (1.25, 10, 0, 0, 0.125),
     "GPT-5": (1.25, 10, 0, 0, 0.125),
     "GPT-5 Mini": (0.25, 2, 0, 0, 0.025),
+    "GPT-5 Nano": (0.05, 0.40, 0, 0, 0.005),
     # Microsoft, via Copilot — docs.github.com/en/copilot/reference/copilot-billing/
     # models-and-pricing (2026-09-27): the per-token rate Copilot bills past a plan's
     # included allowance. No cache-write column is listed.
@@ -252,6 +260,27 @@ PRICING = {
     "GPT-4o": (2.5, 10, 0, 0, 1.25),
     "o4-mini": (1.1, 4.4, 0, 0, 0.275),
     "o3": (2, 8, 0, 0, 0.5),
+    # Google Gemini — Standard paid tier for text/image/video input, read from
+    # ai.google.dev/gemini-api/docs/pricing (2026-09-30). Gemini bills no cache write,
+    # only storage per hour, so cw stays 0. Not modeled, as with OpenAI's long context:
+    # prompts over 200K on Pro (2x input, 1.2-1.5x output), audio input (about 2x), and
+    # the Live / TTS / image / embedding / Veo models, which bill audio, image and video
+    # tokens at rates one tuple cannot express and no coding agent logs.
+    # 3.6 to 3.8 Flash are a promo "through December 31, 2026" and double on 2027-01-01:
+    # then move these tuples into PRICE_HISTORY dated 2026-12-31 and put the doubled
+    # ones here ($1.50 / $7.50, cache read $0.15).
+    "Gemini 3.8 Flash": (0.75, 3.75, 0, 0, 0.075),
+    "Gemini 3.7 Flash": (0.75, 3.75, 0, 0, 0.075),
+    "Gemini 3.6 Flash": (0.75, 3.75, 0, 0, 0.075),
+    "Gemini 3.5 Flash": (1.50, 9.00, 0, 0, 0.15),
+    "Gemini 3.5 Flash-Lite": (0.30, 2.50, 0, 0, 0.03),
+    "Gemini 3.1 Pro": (2.00, 12.00, 0, 0, 0.20),
+    "Gemini 3.1 Flash-Lite": (0.25, 1.50, 0, 0, 0.025),
+    "Gemini 3 Flash": (0.50, 3.00, 0, 0, 0.05),
+    "Gemini 2.5 Pro": (1.25, 10.00, 0, 0, 0.125),
+    "Gemini 2.5 Computer Use": (1.25, 10.00, 0, 0, 0),   # the page lists no caching
+    "Gemini 2.5 Flash": (0.30, 2.50, 0, 0, 0.03),
+    "Gemini 2.5 Flash-Lite": (0.10, 0.40, 0, 0, 0.01),
 }
 
 
@@ -299,7 +328,11 @@ def price_of(display, date=None):
         for until, p in PRICE_HISTORY.get(display, ()):
             if date <= until:
                 return p
-    return PRICING.get(display, (0, 0, 0, 0, 0))
+    p = PRICING.get(display)
+    if p is None:
+        # a row cached under an older spelling ("gemini-3.1-pro-preview") still prices
+        p = PRICING.get(_canonicalize(display), (0, 0, 0, 0, 0))
+    return p
 
 
 def vendor_of(display):
@@ -388,6 +421,16 @@ def _canonicalize(name):
         elif nums:
             ver = nums[0]
         return f"Claude {tier} {ver}".strip()
+
+    # Gemini — "gemini-3.1-pro-preview", "Google: Gemini 3.5 Flash-Lite", "gemini-2.5-pro"
+    # → "Gemini 3.1 Pro". Preview/date/effort suffixes drop; Live, TTS, image, embedding and
+    # the like are different products with their own rates, so they keep their own spelling.
+    mgm = re.match(r"gemini-?\s*(\d+(?:\.\d+)?)-?\s*(pro|flash[\s\-]*lite|flash|computer-use)\b(.*)$", low)
+    if mgm and not re.search(r"live|tts|image|audio|embed|transcribe|translate|robot|omni",
+                             mgm.group(3)):
+        kind = {"pro": "Pro", "flash": "Flash", "computer-use": "Computer Use"}.get(
+            mgm.group(2), "Flash-Lite")
+        return f"Gemini {mgm.group(1)} {kind}"
 
     # GPT with a version number → GPT-x.y (keep named/size variants distinct)
     mg = re.match(r"gpt-?\s*(\d+(?:\.\d+)?)", low)

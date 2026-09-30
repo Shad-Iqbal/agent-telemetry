@@ -190,6 +190,10 @@ dollars**, so cost is always derived. Rates live in `parser.py → PRICING` as
   searches ($10/1K). A forked or subagent Codex thread's replay of its parent is skipped,
   so it isn't billed twice.
 - A model with no price row reads as **$0** — add it to `PRICING` (see below).
+- **Gemini** (2.5, 3, 3.1 and 3.5 to 3.8: Pro, Flash, Flash-Lite, Computer Use) is priced
+  when it runs through Copilot, Cursor or opencode, at the Standard rate for prompts up to 200K
+  tokens. Live, TTS, image and embedding models are not priced, and nor are the higher Pro rate
+  for longer prompts or audio input. The Gemini CLI itself writes no token counts to read.
 
 ## Note on log retention
 
