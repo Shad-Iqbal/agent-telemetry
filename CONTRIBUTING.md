@@ -84,6 +84,9 @@ your live cache:
 python3 -m unittest discover -s tests -v
 ```
 
+For frontend accounting and filter changes, also run `node tests/test_frontend.js`.
+Node is a development check only; the dashboard remains stdlib-only.
+
 Then verify representative logs and the UI. At minimum:
 
 ```bash
@@ -121,8 +124,9 @@ breaks silently on another.
 ## Adding or fixing a model price
 
 1. `PRICING["<Display Name>"] = (input, output, cache_write_5m, cache_write_1h, cache_read)`
-   — USD per 1M tokens. OpenAI rows use `0, 0` for the cache-write tiers and put the
-   cached rate in the last slot.
+   — USD per 1M tokens. OpenAI rows put a published cache-write rate in the 5-minute
+   slot (otherwise `0`, which falls back to the input rate), `0` in the 1-hour slot,
+   and the cached-input rate in the last slot.
 2. Make sure the relevant normalizer maps the raw id to that display name.
 3. Pricing applies at request time, so no re-parse is needed after a `PRICING` edit.
    A normalizer change needs a `CACHE_VERSION` bump and a normal restart, which

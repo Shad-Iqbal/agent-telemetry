@@ -12,7 +12,7 @@ Mac/Linux install of the same tools.
 
 No third-party dependencies — stdlib only.
 """
-import os, sys, json, glob, re, time, shutil, subprocess
+import os, sys, json, glob, re, time, shutil, subprocess, copy
 from datetime import datetime, timezone
 
 HOME = os.path.expanduser("~")
@@ -331,6 +331,7 @@ def price_of(display, date=None):
     if display.endswith(FAST_SUFFIX):
         # a model with no published fast rate prices at zero rather than at a guess
         return FAST_PRICING.get(display[:-len(FAST_SUFFIX)], (0, 0, 0, 0, 0))
+    display = _canonicalize(display)
     if date:
         for until, p in PRICE_HISTORY.get(display, ()):
             if date <= until:
@@ -534,13 +535,42 @@ def _blank_agg(source, path):
 
 def _rec(agg, date, model):
     key = f"{date}\t{model}"
-    r = agg["records"].get(key)
+    sid = agg.get("_record_session")
+    bucket = (agg.setdefault("_session_records", {}).setdefault(sid, {})
+              if sid is not None else agg["records"])
+    r = bucket.get(key)
     if r is None:
         r = {"in": 0, "out": 0, "cr": 0, "cc": 0, "cc5": 0, "cc1": 0, "reason": 0,
               "asst": 0, "user": 0, "req": 0, "prem": 0.0, "tools": 0, "cost": 0.0,
               "active": 0.0}
-        agg["records"][key] = r
+        bucket[key] = r
     return r
+
+
+def _finish_store_records(agg):
+    """Retain session attribution, then derive the store's date/model rollup."""
+    rows = agg.pop("_session_records", {})
+    agg.pop("_record_session", None)
+    for s in agg["sessions"]:
+        s["records"] = rows.get(s.pop("_sid"), {})
+        weights = {}
+        for key, row in s["records"].items():
+            model = key.split("\t", 1)[1]
+            if model != "(user)":
+                weights[model] = weights.get(model, 0) + sum(row.get(k, 0) for k in ("in", "out", "cr", "cc"))
+        ranked = sorted(weights, key=weights.get, reverse=True)
+        if ranked:
+            s["model"] = ranked[0]
+            s["models"] = ranked[:6]
+            s["nmodels"] = len(ranked)
+    agg["records"] = {}
+    for bucket in rows.values():
+        for key, row in bucket.items():
+            date, model = key.split("\t", 1)
+            total = _rec(agg, date, model)
+            for field, value in row.items():
+                if isinstance(value, (int, float)):
+                    total[field] = total.get(field, 0) + value
 
 
 # "Active time" — a gap-capped estimate of how long a real person was actually
@@ -1624,7 +1654,9 @@ def _copilot_apply_request(agg, r, fallback_ts=None):
     # patched in once the request finishes — prefer those over the char/4 guess,
     # which is all that's available for a request still mid-stream.
     prompt_tok, completion_tok = r.get("promptTokens"), r.get("completionTokens")
-    if isinstance(prompt_tok, (int, float)) and isinstance(completion_tok, (int, float)):
+    exact = (isinstance(prompt_tok, (int, float)) and not isinstance(prompt_tok, bool)
+             and isinstance(completion_tok, (int, float)) and not isinstance(completion_tok, bool))
+    if exact:
         est_in, est_out = int(prompt_tok), int(completion_tok)
     else:
         est_in = in_chars // 4
@@ -1641,7 +1673,13 @@ def _copilot_apply_request(agg, r, fallback_ts=None):
     rec["req"] += 1; rec["user"] += 1; rec["asst"] += 1
     rec["prem"] += mult; rec["tools"] += ntools
     _bump_time(agg, dt, est_in + est_out, 1)
-    rec["active"] += _active_gap(agg["_active_last"], dt)
+    gap = _active_gap(agg["_active_last"], dt)
+    rec["active"] += gap
+    if exact:
+        counts = rec.setdefault("exact", {})
+        for field, value in (("in", est_in), ("out", est_out), ("req", 1), ("user", 1),
+                             ("asst", 1), ("prem", mult), ("tools", ntools), ("active", gap)):
+            counts[field] = counts.get(field, 0) + value
     agg["_active_last"] = dt.isoformat()
     T = agg["totals"]
     T["in"] += est_in; T["out"] += est_out
@@ -1734,7 +1772,11 @@ def parse_copilot_jsonl(agg, lines):
                     else:
                         draft[field] = o.get("v")
                 touched.add(rid)
-    for rid in touched:
+    # Request order is chronological; set iteration made active gaps depend on
+    # hash order and differ between a full reparse and incremental reads.
+    for rid in req_order:
+        if rid not in touched:
+            continue
         draft = pending.get(rid)
         if draft is not None and draft.get("result") is not None:
             _copilot_apply_request(agg, draft)
@@ -1996,6 +2038,7 @@ def _parse_cursor_store(agg, con):
                 continue
             date = _buckets(dt)[0]
             model = _normalize_cursor_model(c.get("model"))
+            agg["_record_session"] = cid
             r = _rec(agg, date, model)
             r["in"] += it
             r["out"] += ot
@@ -2056,7 +2099,7 @@ def _parse_cursor_store(agg, con):
         c = comp.get(cid, {})
         mode = {1: "chat", 2: "agent"}.get(c.get("mode"), c.get("mode"))
         out.append({
-            "id": (cid or "")[:8], "source": "cursor", "ide": IDE_FIXED["cursor"], "editor": "Cursor",
+            "_sid": cid, "id": (cid or "")[:8], "source": "cursor", "ide": IDE_FIXED["cursor"], "editor": "Cursor",
             "title": c.get("name"),   # Cursor stores the current name
             "project": _top(s["proj"]) or "Cursor",
             "model": _normalize_cursor_model(c.get("model")),
@@ -2070,6 +2113,7 @@ def _parse_cursor_store(agg, con):
             "archived_session": bool(c.get("archived")),
         })
     agg["sessions"] = out
+    _finish_store_records(agg)
 
 
 # ===========================================================================
@@ -2149,15 +2193,16 @@ def _opencode_project(session_dir, sid):
     try:
         storage = os.path.dirname(os.path.dirname(session_dir))   # .../storage
         for sf in glob.glob(os.path.join(storage, "session", "*", sid + ".json")):
-            o = json.load(open(sf))
+            with open(sf) as f:
+                o = json.load(f)
             d = o.get("directory") or o.get("cwd") or ""
             if d:
                 return _leaf(d) or d
             if o.get("title"):
                 return str(o["title"])[:40]
             break
-    except Exception:
-        pass
+    except Exception as e:
+        sys.stderr.write(f"[opencode:metadata] {session_dir}: {type(e).__name__}: {e}\n")
     return "opencode"
 
 
@@ -2167,11 +2212,10 @@ def parse_opencode(agg, session_dir, msg_files):
     sid = os.path.basename(session_dir)
     agg["project"] = _opencode_project(session_dir, sid)
     model_tokens = {}
+    agg["opencode_messages"] = []
     for mf in msg_files:
-        try:
-            o = json.load(open(mf))
-        except Exception:
-            continue
+        with open(mf) as f:
+            o = json.load(f)
         if o.get("role") != "assistant":
             continue
         t = o.get("tokens") or {}
@@ -2189,15 +2233,18 @@ def parse_opencode(agg, session_dir, msg_files):
         # tool invocations ride along as typed parts on the message; the shape has
         # moved between opencode versions, so accept either spelling defensively
         ntools = 0
+        tool_names = []
         for part in (o.get("parts") or o.get("content") or []):
             if not isinstance(part, dict):
                 continue
             if part.get("type") in ("tool", "tool-invocation", "tool_use", "tool-call"):
                 name = (part.get("tool") or part.get("name")
                         or (part.get("toolInvocation") or {}).get("toolName") or "tool")
+                tool_names.append(str(name))
                 _tool(agg, date, str(name))
                 ntools += 1
         r = _rec(agg, date, model)
+        before = dict(r)
         r["tools"] += ntools
         r["in"] += inp; r["out"] += out; r["reason"] += reason
         r["cr"] += cr; r["cc"] += cw; r["cc5"] += cw  # untiered cache write -> 5m rate
@@ -2205,6 +2252,10 @@ def parse_opencode(agg, session_dir, msg_files):
         _bump_time(agg, dt, inp + out + cr + cw, 1)
         r["active"] += _active_gap(agg["_active_last"], dt)
         agg["_active_last"] = dt.isoformat()
+        mid = o.get("id") or os.path.splitext(_leaf(mf))[0]
+        agg["opencode_messages"].append({"id": [sid, mid], "key": date + "\t" + model,
+            "ts": dt.isoformat(), "tools": tool_names,
+            "usage": {k: v - before.get(k, 0) for k, v in r.items()}})
         T = agg["totals"]
         T["in"] += inp; T["out"] += out; T["reason"] += reason
         T["cr"] += cr; T["cc"] += cw; T["cc5"] += cw; T["asst"] += 1
@@ -2231,6 +2282,7 @@ def parse_opencode_db(agg, db_path):
             return None
 
     sessions_meta = {}
+    agg["opencode_ids"] = []
     sess = {}          # sid -> running totals
     model_tokens = {}
     # Per-session last-message timestamp for active-time gaps (see parse_cursor
@@ -2293,6 +2345,7 @@ def parse_opencode_db(agg, db_path):
             if not dt:
                 continue
             date = _buckets(dt)[0]
+            agg["_record_session"] = sid
 
             if role == "user":
                 r = _rec(agg, date, "(user)")
@@ -2338,6 +2391,7 @@ def parse_opencode_db(agg, db_path):
             if not (inp or out or cr or cw):
                 # token-less assistant bookkeeping rows (flow control, etc.)
                 continue
+            agg["opencode_ids"].append([sid, mid])
             provider = o.get("providerID") or (meta.get("provider_id") if meta else None)
             model = _normalize_opencode(o.get("modelID"), provider)
 
@@ -2393,7 +2447,7 @@ def parse_opencode_db(agg, db_path):
             start_dt = _from_ms_or_s(meta.get("start"))
             end_dt = _from_ms_or_s(meta.get("end"))
             out.append({
-                "id": (sid or "")[:8],
+                "_sid": sid, "id": (sid or "")[:8],
                 "source": "opencode", "ide": IDE_FIXED["opencode"],
                 "editor": "opencode",
                 "title": title,
@@ -2410,6 +2464,7 @@ def parse_opencode_db(agg, db_path):
                 "mode": agent,
             })
         agg["sessions"] = sorted(out, key=lambda x: x.get("end") or "", reverse=True)
+        _finish_store_records(agg)
         if model_tokens:
             agg["state"]["dom_model"] = max(model_tokens, key=model_tokens.get)
     finally:
@@ -2491,6 +2546,7 @@ def _parse_hermes_store(agg, con):
         disp = _normalize_hermes(model)
         it, ot, cr, cw = int(it or 0), int(ot or 0), int(cr or 0), int(cw or 0)
         reason, calls = int(reason or 0), int(calls or 0)
+        agg["_record_session"] = sid
         r = _rec(agg, date, disp)
         r["in"] += it; r["out"] += ot; r["cr"] += cr; r["cc"] += cw
         r["cc5"] += cw          # untiered cache write -> 5m rate, like opencode
@@ -2532,6 +2588,7 @@ def _parse_hermes_store(agg, con):
             continue
         date = _buckets(dt)[0]
         model = dom_model.get(sid) or _normalize_hermes(s.get("model")) or "Unknown"
+        agg["_record_session"] = sid
         r = _rec(agg, date, model)
         dd = s["days"].setdefault(date, {"in": 0, "out": 0, "cr": 0, "cc": 0,
                                           "asst": 0, "user": 0, "tools": 0, "active": 0.0})
@@ -2574,7 +2631,7 @@ def _parse_hermes_store(agg, con):
         start = _from_ms_or_s(s["started"])
         end = _from_ms_or_s(s["ended"]) or start
         out.append({
-            "id": (sid or "")[:8], "source": "hermes", "ide": IDE_FIXED["hermes"], "editor": "Hermes Agent",
+            "_sid": sid, "id": (sid or "")[:8], "source": "hermes", "ide": IDE_FIXED["hermes"], "editor": "Hermes Agent",
             "title": s.get("title"), "project": _leaf(s["cwd"]) or s["cwd"] or "(unknown)",
             "model": dom, "models": models[:6], "nmodels": len(mt),
             "branch": s.get("branch"), "entry": s.get("channel"),
@@ -2588,6 +2645,7 @@ def _parse_hermes_store(agg, con):
             "archived_session": bool(s.get("archived")),
         })
     agg["sessions"] = out
+    _finish_store_records(agg)
 
 
 
@@ -2748,6 +2806,7 @@ def parse_openclaw(agg, agent_dir):
     out, tally = [], {}
     T = agg["totals"]
     for sid, evs in events.items():
+        agg["_record_session"] = sid
         m0 = meta.get(sid, {})
         cur_model = m0.get("model")
         cwd, start, end = None, None, None
@@ -2830,7 +2889,7 @@ def parse_openclaw(agg, agent_dir):
         ranked = [m for m, _ in sorted(mt.items(), key=lambda kv: -kv[1])] or [_normalize_hermes(m0.get("model"))]
         title = m0.get("title") or ((m0.get("_first") or "").strip()[:90] or None)
         out.append({
-            "id": (sid or "")[:8], "source": "openclaw", "ide": IDE_FIXED["openclaw"],
+            "_sid": sid, "id": (sid or "")[:8], "source": "openclaw", "ide": IDE_FIXED["openclaw"],
             "editor": "OpenClaw", "title": title, "project": project,
             "model": ranked[0], "models": ranked[:6], "nmodels": len(mt),
             "branch": None, "entry": agent,
@@ -2842,6 +2901,7 @@ def parse_openclaw(agg, agent_dir):
         })
     agg["project"] = max(tally, key=tally.get) if tally else f"OpenClaw · {agent}"
     agg["sessions"] = out
+    _finish_store_records(agg)
 
 # ===========================================================================
 # Incremental file scanning
@@ -3089,6 +3149,9 @@ def update_file(agg, source, path, editor_hint, proj_map):
     if size == offset and agg.get("mtime") == mtime:
         return agg  # unchanged
     lines, new_offset = _read_new_bytes(path, offset)
+    # Stage counters and stream state together, retaining a retryable snapshot.
+    previous = agg
+    agg = copy.deepcopy(agg)
     if lines:
         if source in ("claude", "claude-desktop"):
             agg["subagent"] = _is_subagent_path(path)
@@ -3108,7 +3171,9 @@ def update_file(agg, source, path, editor_hint, proj_map):
     agg["size"], agg["mtime"] = size, mtime
     agg["editor"] = agg.get("editor") or editor_hint
     _finalize_session(agg, source, path)
-    return agg
+    previous.clear()
+    previous.update(agg)
+    return previous
 
 
 # ---------------------------------------------------------------------------

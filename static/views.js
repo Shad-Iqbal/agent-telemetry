@@ -231,7 +231,7 @@ function thead(cols, st, tag){
 function priceOf(m, date){
   if(date) for(const [until,p] of (RAW.pricing_history && RAW.pricing_history[m]) || [])
     if(date <= until) return p;
-  return (RAW.pricing && RAW.pricing[m]) || [0,0,0,0,0];
+  return (RAW.pricing && RAW.pricing[m]) || (RAW.prices && RAW.prices[m]) || [0,0,0,0,0];
 }
 /* Per-day series for the metric, plus the same for the previous period (for tiles). */
 function dailySeries(recs, days, f){
@@ -241,6 +241,28 @@ function dailySeries(recs, days, f){
 function sparkFor(vals){ return vals.length > 1 ? sparkline(vals, cssv("--text-3"), 72, 22) : ""; }
 
 /* ---------------- OVERVIEW ---------------- */
+function deviceDistribution(d){
+  const val=metricOf(), by={};
+  for(const r of d.recs){
+    const id=r.device || (RAW.device && RAW.device.id);
+    by[id]=(by[id]||0)+val(r);
+  }
+  return devices().filter(x=>passDev(x.id)).map(x=>({id:x.id,name:x.name,value:by[x.id]||0}))
+    .sort((a,b)=>b.value-a.value);
+}
+function renderDeviceDistribution(d){
+  const card=document.getElementById("deviceDistributionCard");
+  card.hidden=!multiDevice();
+  if(card.hidden){ if(charts.deviceChart){charts.deviceChart.destroy();delete charts.deviceChart;} return; }
+  const rows=deviceDistribution(d), total=rows.reduce((n,x)=>n+x.value,0), fmt=fmtOf();
+  document.getElementById("deviceDistributionSub").textContent="share of " + metricNoun() + " in the selected range and filters";
+  document.getElementById("deviceChart").parentElement.style.height=Math.max(150,rows.length*38+35)+"px";
+  mk("deviceChart",{type:"bar", $fmt:fmt, $xLabel:"Device",
+    data:{labels:rows.map(x=>x.name),datasets:[{label:metricTitle(),data:rows.map(x=>x.value),
+      backgroundColor:cssv("--bar"),borderRadius:3,maxBarThickness:22}]},
+    options:{indexAxis:"y",scales:axes({x:{ticks:{callback:v=>tickOf()(v)}},y:{grid:{display:false}}}),
+      plugins:{tooltip:{callbacks:{label:c=>" "+fmt(c.parsed.x)+" · "+fmtPct(total?c.parsed.x/total:0)}}}}});
+}
 function viewOverview(d){
   const pd = hasPrev() ? slice(prevRange()) : null;
   const days = dateList(d.r), val = metricOf(), fmt = fmtOf();
@@ -296,6 +318,7 @@ function viewOverview(d){
   tiles.push({l:"Cache hit rate", v: ctx ? fmtPct(t.cr/ctx) : "—",
     d: pd && pctx && ctx ? deltaHTML(t.cr/ctx, pt.cr/pctx) : "", s: ctx ? "" : "no cached context"});
   document.getElementById("kpis").innerHTML = tilesHTML(tiles.slice(0,6));
+  renderDeviceDistribution(d);
 
   // tool mix
   document.getElementById("toolShareSub").textContent = "share of " + metricNoun();
@@ -381,7 +404,7 @@ function renderHeat(d){
   }
   renderHeatmap(cells,max);
   document.getElementById("hmHint").textContent =
-    "local hour × weekday, by tokens" + (dimFiltered()?" · tool and date filters only":"");
+    "local hour × weekday, by tokens" + (dimFiltered()?" · tool, date and device filters only":"");
 }
 const TOKEN_KINDS = () => [
   {key:"in", label:"Input", color:cssv("--k-in")}, {key:"cr", label:"Cache read", color:cssv("--k-cr")},
@@ -716,7 +739,8 @@ function viewTools(d){
   // Gap-capped (parser.py ACTIVE_GAP_CAP): a lower bound, not wall-clock length.
   const activeSecs = d.recs.reduce((a,r)=>a+(r.active||0),0);
   const prem = d.recs.reduce((a,r)=>a+(r.prem||0),0);
-  const al=(RAW.ai_lines||[]).filter(x=>x.date>=d.r.from&&x.date<=d.r.to);
+  const al=dimFiltered() ? [] : (RAW.ai_lines||[]).filter(x=>passSrc("cursor") && passDev(x.device)
+      && x.date>=d.r.from&&x.date<=d.r.to);
   const acc=al.reduce((a,x)=>a+x.tab_accepted+x.composer_accepted,0);
   const sug=al.reduce((a,x)=>a+x.tab_suggested+x.composer_suggested,0);
   const act = renderActivity(d);
@@ -725,7 +749,7 @@ function viewTools(d){
     {l:"Tool calls", v:fmtNum(totalCalls), s:`${fmtNum(tools.length)} distinct tools`},
     act && act.edits ? {l:"One-shot edits", v:fmtPct(act.oneshot/act.edits), s:`${fmtNum(act.edits)} editing prompts`,
       title:"Editing prompts whose edits needed no edit → run → re-edit of the same file (Claude Code & Codex)"} : null,
-    {l:"Calls per prompt", v:t.user?(totalCalls/t.user).toFixed(1):"—", s:`${fmtNum(t.user)} prompts`},
+    {l:"Calls per prompt", v:!dimFiltered()&&t.user?(totalCalls/t.user).toFixed(1):"—", s:dimFiltered()?"tool calls lack this filter detail":`${fmtNum(t.user)} prompts`},
     {l:"Tokens per prompt", v:t.user?fmtTok(t.tok/t.user):"—", s:"context amplification"},
     {l:"Replies per session", v:d.sessions.length?(t.msgs/d.sessions.length).toFixed(1):"—", s:`${fmtNum(d.sessions.length)} sessions`},
     {l:"Subagent tokens", v:t.tok?fmtPct(side/t.tok):"—", s:`${fmtTok(side)} in spawned agents`},
@@ -859,7 +883,7 @@ function viewSessions(d){
       <td class="dim">${s.when?s.when.slice(0,16).replace("T"," "):"—"}</td>
       <td>${srcBadge(s.source)}</td>
       <td class="name" title="${esc(s.title||"")}">${
-        s.clipped?`<span class="dim" style="margin-right:5px" title="This session also ran outside the selected range — the figures cover only its activity inside it (it spans ${s.span} days).">◔</span>`:""}${
+        s.clipped?`<span class="dim" style="margin-right:5px" title="Figures reflect the selected range and model filters.">◔</span>`:""}${
         s.subagent?`<span class="sub-badge" title="A subagent transcript — work its parent delegated.">sub</span>`:""}${esc(s.name)}</td>
       <td class="dim">${esc(s.project||"—")}</td>
       <td>${esc(s.model)}${s.nmodels>1?` <span class="dim" title="${esc((s.models||[]).join(" · "))}">+${s.nmodels-1}</span>`:""}</td>
@@ -872,7 +896,7 @@ function viewSessions(d){
   const clipped = rows.filter(x=>x.clipped).length;
   document.getElementById("sessHint").textContent =
     `${fmtNum(rows.length)} sessions active in range`
-    + (clipped?` · ${clipped} also ran outside it (◔ = figures cover the range only)`:"")
+    + (clipped?` · ${clipped} with scoped figures (◔ = range and model filters)`:"")
     + (rows.length>400?" · showing the top 400 by the current sort":"")
     + (capped?` · of the ${fmtNum(RAW.sessions_total)} most recent loaded`:"")
     + " · click a row for detail";
@@ -890,8 +914,9 @@ function openSession(i){
     ${row("Model",esc((s.models||[s.model]).join(" · ")))}
     ${row("Git branch",s.branch?esc(s.branch):null)}
     ${row("Entrypoint",s.entry?esc(s.entry):null)}
+    ${row("Daily detail",s.detail_limited?"Limited in this older ledger entry":null)}
     ${row("Tool version",s.cliver?esc(s.cliver):null)}
-    ${s.clipped?`<div class="warnbar">Figures below cover the selected range only — this session spans ${s.span} days in total.</div>`:""}
+    ${s.clipped?`<div class="warnbar">Figures below reflect the selected range and model filters.${s.range_clipped?` This session spans ${s.span} days in total.`:""}</div>`:""}
     ${row("Started",s.start?s.start.slice(0,19).replace("T"," "):"—")}
     ${row("Last activity",s.end?s.end.slice(0,19).replace("T"," "):"—")}
     ${row("Est. cost",fmtUSD2(s.cost))}
@@ -903,7 +928,7 @@ function openSession(i){
     ${row("Cache hit rate",s.cache?fmtPct(s.cache):"—")}
     ${row("Your prompts",fmtNum(s.user))}
     ${row("Assistant replies",fmtNum(s.asst||s.req))}
-    ${row("Model calls",s.asst&&s.req&&s.req!==s.asst&&!s.clipped?fmtNum(s.req):null)}
+    ${row("Model calls",s.asst&&s.req&&s.req!==s.asst?fmtNum(s.req):null)}
     ${row("Tool calls",fmtNum(s.tools))}
     ${row("Active time",s.active?fmtDur(s.active):null)}
     ${row("Mode",s.mode?esc(s.mode):null)}
@@ -1381,16 +1406,15 @@ function findCacheWaste(d){
   const bad = d.sessions.filter(s => s.cc > 20000 && s.cr < s.cc * 0.5);
   if(!bad.length) return null;
   const cc = bad.reduce((a,s)=>a+s.cc,0);
-  const est = bad.reduce((a,s)=>a + s.cc/1e6 * 5, 0);   // ~1.25x a $4-ish blended input
   return {
-    id:"cache-waste", impact: est, sev: est>5?"high":"low", tools:[...new Set(bad.map(x=>x.source))],
-    title:"Cache written but never read back",
+    id:"cache-waste", impact:0, sev:"info", tools:[...new Set(bad.map(x=>x.source))],
+    title:"Cache written with little reuse",
     body:`${bad.length} session${bad.length>1?"s":""} wrote <b>${fmtNum(cc)}</b> cache tokens and `
-      +`read back less than half of it. A cache write costs 1.25–2× the input rate and only pays `
-      +`off when later turns read it — these paid the premium and ended first.`,
-    todo:"Usually a session opened, loaded a lot of context, then stopped. Batch related questions "
-      +"into one session instead of starting a fresh one per question.",
-    rows: bad.sort((a,b)=>b.cc-a.cc).slice(0,5).map(s=>
+      +`read back less than half that amount. Cache billing differs by model and retention tier; `
+      +`low reuse alone cannot establish how much money could have been saved.`,
+    todo:"Keep related questions in the same session when useful. Check your tool's cache retention "
+      +"before paying for longer-lived writes.",
+    rows:bad.sort((a,b)=>b.cc-a.cc).slice(0,5).map(s=>
       [sessName(s), `${fmtNum(s.cc)} written`, `${fmtNum(s.cr)} read`, fmtUSD(s.cost)])
   };
 }
@@ -1473,13 +1497,20 @@ function findIdleMCP(d){
   if(!RAW.mcp_servers || !RAW.mcp_servers.length) return null;
   const norm = x => String(x||"").toLowerCase().replace(/[^a-z0-9]/g,"");
   const used = {};
-  for(const t of RAW.tools){
-    if(!t.name.startsWith("mcp__") || !isLocal(t)) continue;
+  const wanted = arguments[1];
+  if(!passSrc(wanted) || (RAW.device && !passDev(RAW.device.id))) return null;
+  // Inventory calls retain every server, even when the top-tools table folds a
+  // rare tool into "(other)". Fall back only for older payloads without source tags.
+  const calls=RAW.mcp_inventory && RAW.mcp_inventory.calls;
+  if(calls && calls.every(x=>x.source)){
+    for(const x of calls) if(x.source===wanted && x.date>=d.r.from && x.date<=d.r.to)
+      used[norm(x.server)]=(used[norm(x.server)]||0)+x.calls;
+  }else for(const t of toolCounts(d.r, x=>isLocal(x) && x.source===wanted)){
+    if(!t.name.startsWith("mcp__")) continue;
     const rest = t.name.slice(5), i = rest.indexOf("__");
     const srv = norm(i>0 ? rest.slice(0,i) : rest);
     used[srv] = (used[srv]||0) + t.count;
   }
-  const wanted = arguments[1];
   const idle = RAW.mcp_servers.filter(m => (m.tool||"claude")===wanted).filter(m => {
     const n = norm(m.name);
     // loose match: a server may appear in tool names under a shortened alias
@@ -1882,11 +1913,15 @@ function findMcpShape(d){
   const loaded = {}, calls = {}, projL = {}, projC = {};
   for(const x of inv.loaded) if(inRangeD(x, d)){ loaded[x.server]=(loaded[x.server]||0)+x.sessions;
     (projL[x.server]=projL[x.server]||new Set()).add(x.project); }
-  for(const x of (inv.calls||[])) if(inRangeD(x, d)){ calls[x.server]=(calls[x.server]||0)+x.calls;
+  for(const x of (inv.calls||[])) if((!x.source || x.source==="claude") && inRangeD(x, d)){ calls[x.server]=(calls[x.server]||0)+x.calls;
     (projC[x.server]=projC[x.server]||new Set()).add(x.project); }
   const usedTools = {};
-  for(const t of toolCounts(d.r, isLocal)){ if(!t.name.startsWith("mcp__")) continue;
-    const sv = t.name.slice(5).split("__")[0]; usedTools[sv]=(usedTools[sv]||0)+1; }
+  const names=new Set();
+  for(const x of (inv.calls||[])) if(x.source==="claude" && inRangeD(x,d))
+    for(const name of x.tools||[]) names.add(name);
+  if(!(inv.calls||[]).every(x=>x.source))
+    for(const t of toolCounts(d.r,x=>isLocal(x)&&x.source==="claude")) if(t.name.startsWith("mcp__")) names.add(t.name);
+  for(const name of names){ const sv=name.slice(5).split("__")[0];usedTools[sv]=(usedTools[sv]||0)+1; }
   const rows = [];
   for(const sv in loaded){
     const offered = ((inv.servers[sv]||{}).tools||[]).length, used = usedTools[sv]||0;
@@ -1915,7 +1950,10 @@ const isLocal = x => !x.device || !RAW.device || x.device === RAW.device.id;
 function localSlice(d){
   return Object.assign({}, d, {recs:d.recs.filter(isLocal), sessions:d.sessions.filter(isLocal)});
 }
-const onThisDevice = fn => d => { const f = fn(localSlice(d)); if(f) f.local = true; return f; };
+const onThisDevice = fn => d => {
+  if(RAW.device && !passDev(RAW.device.id)) return null;
+  const f=fn(localSlice(d));if(f) f.local=true;return f;
+};
 const OPT_FINDERS = [findBigContext, findCacheWaste, findModelFit, findContextTax,
                      findSubagents, findSubagentShare, findSkills, findCodexEffort,
                      onThisDevice(d => findIdleMCP(d, "claude")), onThisDevice(d => findIdleMCP(d, "codex")),
@@ -2075,6 +2113,7 @@ async function load(){
     document.getElementById("statusText").textContent = (S.live ? "Live" : "Paused") + " · updated " + fresh;
     document.getElementById("coverage").textContent = `${fmtNum(RAW.meta.files)} logs · ${lo} → ${hi}`
       + (RAW.openclaw_undecoded ? ` · ${fmtNum(RAW.openclaw_undecoded)} OpenClaw events unread — install zstd` : "");
+    if(RAW.cache_error) document.getElementById("coverage").textContent += " · " + RAW.cache_error;
     renderVersion();
     const dev = RAW.device || {};
     document.getElementById("devName").textContent = dev.name || "This computer";
@@ -2177,7 +2216,7 @@ document.getElementById("themeBtn").addEventListener("click",cycleTheme);
 document.getElementById("settingsBtn").addEventListener("click",openSettings);
 document.getElementById("refreshBtn").addEventListener("click",async e=>{
   const b=e.currentTarget; b.style.opacity=".4";
-  try{ await fetch("/api/refresh"); await load(); await loadStorage(); } finally { b.style.opacity=""; }
+  try{ await fetch("/api/refresh",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"}); await load(); await loadStorage(); } finally { b.style.opacity=""; }
 });
 document.getElementById("liveBtn").addEventListener("click",e=>{
   S.live=!S.live;

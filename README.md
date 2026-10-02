@@ -95,6 +95,9 @@ readable only by hovering.
 the previous period · per-day chart stacked by tool · tiles for the rest — spend, tokens,
 active time, prompts, replies, sessions and cache hit rate — each with a sparkline · **tool, model and project mix** (each one's share of the chosen measure) · highlights ·
 **hour × weekday heatmap** · token mix per tool · 12-month activity calendar (click a day).
+With another device connected, **By device** compares each computer's share of the
+selected measure (tokens, messages, estimated cost or active time), with a table view.
+It follows the same date and usage filters as the rest of Overview.
 
 **Cost** — total with per-active-day, 30-day run rate, per session and per prompt ·
 cumulative spend by tool against the previous period · **cache hit rate and what caching

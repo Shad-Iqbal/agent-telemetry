@@ -143,6 +143,11 @@ so that file stops being a cache and becomes the sole record. Two consequences:
 - A failed full reparse leaves the previous ledger entry and signature intact; the
   next refresh retries it. Parser failures propagate to `_refresh_locked`, which reports
   the source, path and exception on stderr even for background refreshes.
+- Incremental parsing stages a deep copy and commits it only after parsing succeeds.
+  A failed append leaves the previous aggregate and byte offset intact, so retrying
+  cannot count a partly parsed append twice. Failed cache saves retain pending flags
+  and retry. An unreadable ledger is preserved and blocks saving until restored and
+  restarted, or explicitly deleted through the existing warned cache action.
 - Payload construction and cache actions share `_refresh_lock` with parsing. Aggregates
   mutate in place, so copying only the outer file list is not a consistent snapshot.
 
@@ -440,7 +445,9 @@ build / dependency folders, with the tokens they returned (`reads`, Claude Code 
 already answers an unchanged re-read with a short stub, so this rarely fires); installed
 skills and subagents unused over ≥ 14 days (`installed`, description lengths only); MCP
 servers used for ≤ 10% of the tools they offer, or used in one project while loaded in
-several (`mcp_inventory.loaded/calls`, now per project).
+several (`mcp_inventory.loaded/calls`, per project). Inventory calls retain their
+source and distinct tool names before the top-tools table folds its long tail into
+"(other)"; setup findings must use that complete inventory for zero-call claims.
 
 It leans on three signals the other tabs don't use: `attributionSkill` (which Skill
 drove a request — this is how "/dataviz cost you $20" is possible), a per-request
@@ -536,15 +543,18 @@ must not report three days of "active" time. Formatted client-side by `fmtDur()`
 - **Copilot legitimately measures near-zero.** Its interactions are one-shot
   completions, not an agentic tool loop, so consecutive events are usually well over
   the 5-minute cap apart. That is the heuristic doing its job, not a parsing gap.
-- **opencode's SQLite sessions inherit an existing imprecision**, not a new one: they
-  have no per-session `days` breakdown (only Cursor and Hermes build one), so
-  `dashboard.py` falls back to the whole-DB `file_days` for their per-day figures —
-  true for every field, not just `active`. The session-level total (not per-day) is
-  exact.
-- The positional `s.days[date]` array gained a 10th slot, **appended, not inserted** —
-  `[cost,in,out,cr,cc,asst,user,tools,prem,active]` — specifically so nothing that reads
-  it by index elsewhere needs to change. `static/core.js`'s `clipSession()` is the one
-  place that unpacks it.
+  Completed mutation-log requests are finalized in their recorded request order;
+  iterating a set would make active-time gaps change between reparses.
+- Cursor, opencode SQLite, Hermes and OpenClaw retain per-session `records` keyed by
+  date/model. Payload records use each session's project; session days price each
+  model and cache tier before summing. `model_days` allows filtering secondary models.
+  Copilot additionally retains an `exact` contribution per record, with `exact_days`
+  and `exact_model_days` in the payload; exact-only excludes its estimated component.
+  Older archived stores cannot recover missing detail: show `detail_limited`, never
+  fill a session's days with the whole database's usage.
+- The positional `s.days[date]` array preserves its first ten slots and appends fields:
+  `[cost,in,out,cr,cc,asst,user,tools,prem,active,req,cc5,cc1,reason,ws]`.
+  `static/core.js`'s `clipSession()` also reads older ten-slot entries.
 
 ## Your devices — the one opt-in exception to "nothing leaves this machine"
 
@@ -575,7 +585,10 @@ local network. Both switches are off until the user turns them on, and each asks
 - **Connect** pulls every `PEER_PULL_EVERY` (60s) seconds (`peer_puller`) and saves the
   copy to `.peers/<device id>.json` (0600). While the other machine sleeps, the copy still
   shows, along with the error explaining why it couldn't be reached. An export or saved
-  copy from another `CACHE_VERSION` is refused with "update both", never mixed in.
+  copy with an incompatible `CACHE_VERSION` is refused with "update both". The
+  version-53 reader explicitly accepts version 52 (v1.7.0), whose missing optional
+  precision/attribution fields retain the older detail limits; all other versions
+  are refused.
 - `build_payload` adds the copies to its file loop as `peer:<id>:<path>` with
   `agg["_device"]`, keys everything by device the way it already does by IDE, and prices
   them with THIS machine's `PRICING`. Setup data (MCP inventory and calls, installed-skill
@@ -585,6 +598,9 @@ local network. Both switches are off until the user turns them on, and each asks
 - The client's `passDev()` filter and the "on all devices" phrase (`#qDev`) appear only
   when `RAW.devices` has more than one entry. A single-device install looks exactly as
   it did before.
+- Overview adds one **By device** horizontal bar chart when multiple devices are
+  present. It uses filtered records and the global measure, literal device labels,
+  the existing neutral bar colour, and a table twin.
 - No encryption: the pairing code keeps others on the Wi-Fi from *reading* the export,
   not from sniffing it. The UI says so.
 - **The address shown under Share is every address ranked, not the route to the

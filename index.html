@@ -142,6 +142,14 @@
             </div>
           </div>
           <div class="tiles col-12" id="kpis"></div>
+          <div class="card col-12" id="deviceDistributionCard" hidden>
+            <div class="card-h">
+              <div><h3>By device</h3><p class="card-sub" id="deviceDistributionSub"></p></div>
+              <div class="card-a"><button class="tv" data-tv="deviceChart" title="Show as table" aria-label="Show device distribution as table"><svg class="ic"><use href="#i-table"/></svg></button></div>
+            </div>
+            <div class="chartbox" style="height:150px"><canvas id="deviceChart"></canvas></div>
+            <div class="tv-table" id="tv-deviceChart" hidden></div>
+          </div>
           <div class="card col-5">
             <div class="card-h"><div><h3>Tool mix</h3><p class="card-sub" id="toolShareSub">share of the selected range</p></div></div>
             <div id="toolShare"></div>

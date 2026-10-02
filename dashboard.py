@@ -22,13 +22,20 @@ import parser as P
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CACHE_PATH = os.path.join(HERE, ".usage_cache.json")
-CACHE_VERSION = 52
+CACHE_VERSION = 53
+
+
+def _peer_cache_ok(version):
+    # v1.7.0 mirrors lack optional attribution/precision fields, but the reader
+    # still supports their rows just as it supports archived local entries.
+    return type(version) is int and version in (52, CACHE_VERSION)
 
 # ---------------------------------------------------------------------------
 # In-memory store of per-file aggregates, refreshed on a background interval.
 # ---------------------------------------------------------------------------
 _lock = threading.Lock()
 _state = {"files": {}, "version": CACHE_VERSION}
+_cache_error = {"v": None}
 _meta = {"last_refresh": 0.0, "last_duration": 0.0, "files": 0, "building": False}
 
 
@@ -161,9 +168,12 @@ def _restart():
     time.sleep(0.8)
     try:
         with _refresh_lock, _lock:
-            save_cache()
-    except Exception as e:                      # never lose the restart over the cache
+            if not save_cache():
+                sys.stderr.write("[update] restart deferred until the ledger can be saved\n")
+                return
+    except Exception as e:
         sys.stderr.write(f"[update] cache save before restart failed: {e}\n")
+        return
     sys.stderr.write("[update] restarting on the new version\n")
     # never carry --rebuild over: it deletes the cache just saved, archived history
     # included (./run.sh --rebuild once, then Update, would wipe the ledger)
@@ -190,10 +200,17 @@ def load_cache():
     if not os.path.exists(CACHE_PATH):
         return
     try:
-        data = json.load(open(CACHE_PATH))
-    except Exception:
+        with open(CACHE_PATH) as f:
+            data = json.load(f)
+        if (not isinstance(data, dict) or not isinstance(data.get("files"), dict)
+                or any(not isinstance(a, dict) for a in data["files"].values())):
+            raise ValueError("invalid ledger structure")
+    except Exception as e:
+        _cache_error["v"] = "Ledger unreadable; original preserved. Restore a backup and restart."
+        sys.stderr.write(f"[cache] {type(e).__name__}: {e}; preserving {CACHE_PATH}\n")
         return
     files = data.get("files", {})
+    _cache_error["v"] = None
     if data.get("version") == CACHE_VERSION:
         _state["files"] = files
         return
@@ -212,13 +229,21 @@ def load_cache():
 
 
 def save_cache():
+    if _cache_error["v"]:
+        return False
     try:
         tmp = CACHE_PATH + ".tmp"
         with open(tmp, "w") as f:
             json.dump(_state, f)
+            f.flush()
+            os.fsync(f.fileno())
         os.replace(tmp, CACHE_PATH)
+        _meta.pop("cache_error", None)
+        return True
     except Exception as e:
+        _meta["cache_error"] = "Ledger save failed; will retry: " + str(e)
         sys.stderr.write(f"[cache] save failed: {e}\n")
+        return False
 
 
 def refresh(verbose=False):
@@ -281,9 +306,9 @@ def _refresh_locked(verbose=False):
     # A log that only grew is saved at most every CACHE_SAVE_EVERY: until then it is
     # re-read from the saved offset on a restart, so nothing is lost meanwhile.
     if _dirty["v"] or (_grew["v"] and time.time() - _grew["saved"] >= CACHE_SAVE_EVERY):
-        save_cache()
-        _dirty["v"] = _grew["v"] = False
-        _grew["saved"] = time.time()
+        if save_cache():
+            _dirty["v"] = _grew["v"] = False
+            _grew["saved"] = time.time()
 
 
 # ---------------------------------------------------------------------------
@@ -340,7 +365,20 @@ def _one_per_conversation(items):
     """Keep one copy of each conversation: the fullest (a later copy is a superset
     of an earlier one), then the live one, then the newest."""
     best, out = {}, []
+    migrated = {}
+    for _, agg in items:
+        if agg.get("source") == "opencode" and "opencode_ids" in agg:
+            migrated.setdefault(agg.get("_device"), set()).update(
+                tuple(x) for x in agg["opencode_ids"])
     for path, agg in items:
+        if agg.get("source") == "opencode" and "opencode_messages" in agg:
+            known = migrated.get(agg.get("_device"), set())
+            messages = agg["opencode_messages"]
+            remaining = [m for m in messages if tuple(m["id"]) not in known]
+            if len(remaining) != len(messages):
+                if not remaining:
+                    continue
+                agg = _opencode_remainder(agg, remaining)
         k = _conversation_key(path, agg)
         if k is None:
             out.append(agg)
@@ -351,6 +389,30 @@ def _one_per_conversation(items):
         if k not in best or rank > best[k][0]:
             best[k] = (rank, agg)
     return out + [a for _, a in best.values()]
+
+
+def _opencode_remainder(original, messages):
+    """Project a legacy ledger without DB-backed copies; retain the raw ledger."""
+    agg = P._blank_agg("opencode", original["path"])
+    for field in ("project", "editor", "title", "branch", "archived", "_device", "mtime", "size"):
+        if field in original:
+            agg[field] = original[field]
+    weights = {}
+    for msg in messages:
+        date, model = msg["key"].split("\t", 1)
+        row = P._rec(agg, date, model)
+        for field, value in msg["usage"].items():
+            row[field] = row.get(field, 0) + value
+            agg["totals"][field] = agg["totals"].get(field, 0) + value
+        dt = P._from_iso(msg["ts"])
+        P._bump_time(agg, dt, sum(msg["usage"].get(k, 0) for k in ("in", "out", "cr", "cc")), 1)
+        for name in msg["tools"]:
+            key = date + "\t" + name
+            agg["tools"][key] = agg["tools"].get(key, 0) + 1
+        weights[model] = weights.get(model, 0) + msg["usage"].get("in", 0) + msg["usage"].get("out", 0)
+    agg["state"]["dom_model"] = max(weights, key=weights.get)
+    P._finalize_session(agg, "opencode", agg["path"])
+    return agg
 
 
 def _did_something(s):
@@ -366,6 +428,50 @@ def build_payload():
         return _build_payload_locked()
 
 
+def _sum_usage(target, row):
+    for field in _zero():
+        target[field] = target.get(field, 0) + row.get(field, 0)
+
+
+def _priced_usage(source, model, date, row, logged):
+    out = {k: row.get(k, 0) for k in _zero()}
+    out["cost"] = (0.0 if model == "(user)" else _cost(
+        source, model, out["in"], out["out"], out["cr"], out["cc5"], out["cc1"],
+        out["cc"], date, logged_cost=row.get("cost", 0) if logged else None, ws=out["ws"]))
+    return out
+
+
+def _record_buckets(agg):
+    sessions = agg.get("sessions", [])
+    if sessions and all("records" in s for s in sessions):
+        return [(s.get("project") or agg.get("project") or "(unknown)", s["records"])
+                for s in sessions]
+    return [(agg.get("project") or "(unknown)", agg.get("records", {}))]
+
+
+def _priced_days(bucket, source, logged):
+    days, models = {}, {}
+    for key, row in bucket.items():
+        date, model = key.split("\t", 1)
+        priced = _priced_usage(source, model, date, row, logged)
+        _sum_usage(days.setdefault(date, _zero()), priced)
+        _sum_usage(models.setdefault(model, {}).setdefault(date, _zero()), priced)
+    return days, models
+
+
+def _day_vectors(days):
+    fields = ("cost", "in", "out", "cr", "cc", "asst", "user", "tools", "prem", "active",
+              "req", "cc5", "cc1", "reason", "ws")
+    return {d: [round(row.get(k, 0), 6) for k in fields] for d, row in sorted(days.items())}
+
+
+def _model_history(model):
+    base = model[:-len(P.US_SUFFIX)] if model.endswith(P.US_SUFFIX) else model
+    if base.endswith(P.FAST_SUFFIX):
+        return ()
+    return P.PRICE_HISTORY.get(P._canonicalize(base), ())
+
+
 def _build_payload_locked():
     records = {}      # (date, source, model, project, ide, device) -> aggregates
     tools = {}        # (date, source, name, device) -> count
@@ -375,11 +481,11 @@ def _build_payload_locked():
     skills = {}       # (date, skill, device) -> tokens/cost
     ctxb = {}         # (date, bucket, source, device) -> tokens/requests
     model_meta = {}   # model -> vendor
-    ai_lines = {}     # date -> Cursor's suggested/accepted line counts
+    ai_lines = {}     # (date, device) -> Cursor's suggested/accepted line counts
     activity = {}     # (date, source, model, category, project, ide, device) -> turn counts + cost
     mcp_inv = {}      # server -> set of tool names Claude Code offered
     mcp_loaded = {}   # (date, server, project) -> sessions it was offered in
-    mcp_calls = {}    # (date, server, project) -> calls
+    mcp_calls = {}    # (date, source, server, project) -> calls + distinct tool names
     reads = {}        # (date, source, project, device) -> [reads, re-reads, junk, re-read tok, junk tok]
     used_ext = {}     # (date, kind, name) -> uses of an installed skill / agent
     cwds = {}         # (source family, cwd) -> first day Claude Code there read AGENTS.md
@@ -412,35 +518,22 @@ def _build_payload_locked():
         # the exporting device resolved its own IDE (Codex's editor lookup reads that
         # machine's editor storage, not this one's)
         ide = agg.get("ide") if remote and agg.get("ide") else P._ide_of(source, agg)
-        file_tokens = 0
-        file_msgs = 0
-        file_cost = 0.0
-        for key, r in agg.get("records", {}).items():
-            date, model = key.split("\t", 1)
-            if model == "(user)":
-                # carries user-turn counts, plus any active time a source books on
-                # the gap before a prompt (opencode does) — the Sessions tab's
-                # per-day split already includes it, so leaving it out here made the
-                # two disagree (96s vs 318s for one session)
-                rk = (date, source, "(user)", project, ide, device)
+        for row_project, bucket in _record_buckets(agg):
+            pr = projects.setdefault((row_project, source),
+                                    {"tokens": 0, "msgs": 0, "sessions": 0, "cost": 0.0})
+            for key, r in bucket.items():
+                date, model = key.split("\t", 1)
+                priced = _priced_usage(source, model, date, r, has_logged_cost)
+                rk = (date, source, model, row_project, ide, device)
                 slot = records.setdefault(rk, _zero())
-                slot["user"] += r.get("user", 0)
-                slot["active"] += r.get("active", 0.0)
-                continue
-            rk = (date, source, model, project, ide, device)
-            slot = records.setdefault(rk, _zero())
-            for f in ("in", "out", "cr", "cc", "cc5", "cc1", "reason", "asst", "user", "req", "tools", "active", "ws"):
-                slot[f] += r.get(f, 0)
-            slot["prem"] += r.get("prem", 0.0)
-            c = _cost(source, model, r["in"], r["out"], r["cr"],
-                      r.get("cc5", 0), r.get("cc1", 0), r.get("cc", 0), date,
-                      logged_cost=r.get("cost", 0.0) if has_logged_cost else None,
-                      ws=r.get("ws", 0))
-            slot["cost"] += c
-            model_meta[model] = P.vendor_of(model)
-            file_tokens += r["in"] + r["out"] + r["cr"] + r["cc"]
-            file_msgs += r.get("asst", 0)
-            file_cost += c
+                _sum_usage(slot, priced)
+                if "exact" in r:
+                    exact = slot.setdefault("exact", _zero())
+                    _sum_usage(exact, _priced_usage(source, model, date, r["exact"], False))
+                model_meta[model] = P.vendor_of(model)
+                tokens = sum(r.get(k, 0) for k in ("in", "out", "cr", "cc"))
+                pr["tokens"] += tokens; pr["msgs"] += r.get("asst", 0)
+                pr["cost"] += priced["cost"]
         for ak, v in P.activity_of(agg).items():
             date, model, cat = ak.split("\t")
             e = activity.setdefault((date, source, model, cat, project, ide, device),
@@ -467,8 +560,10 @@ def _build_payload_locked():
         for tk, c in agg.get("tools", {}).items():
             date, _, name = tk.partition("\t")
             if name.startswith("mcp__") and not remote:
-                k = (date, name[5:].split("__", 1)[0], project)
-                mcp_calls[k] = mcp_calls.get(k, 0) + c
+                k = (date, source, name[5:].split("__", 1)[0], project)
+                call = mcp_calls.setdefault(k, {"calls": 0, "tools": set()})
+                call["calls"] += c
+                call["tools"].add(name)
         for date, e in (agg.get("reads") or {}).items():
             slot = reads.setdefault((date, source, project, device), [0, 0, 0, 0, 0])
             for i, v in enumerate(e[:5]):
@@ -520,68 +615,47 @@ def _build_payload_locked():
                 continue
             slot = hourly.setdefault((date, int(hour), source, device), {"tokens": 0, "msgs": 0})
             slot["tokens"] += v["tokens"]; slot["msgs"] += v["msgs"]
-        # project rollup
-        pk = (project, source)
-        pr = projects.setdefault(pk, {"tokens": 0, "msgs": 0, "sessions": 0, "cost": 0.0})
-        pr["tokens"] += file_tokens; pr["msgs"] += file_msgs
-        # sessions, not files: one Cursor store holds many, and a chat that was
-        # opened but never used is dropped from the Sessions list below
-        pr["sessions"] += sum(1 for s in agg.get("sessions", []) if _did_something(s))
-        pr["cost"] += file_cost
+        for session in agg.get("sessions", []):
+            if _did_something(session):
+                pk = (session.get("project") or project, source)
+                pr = projects.setdefault(pk, {"tokens": 0, "msgs": 0, "sessions": 0, "cost": 0.0})
+                pr["sessions"] += 1
         for day, v in (agg.get("state", {}).get("ai_lines") or {}).items():
-            slot = ai_lines.setdefault(day, {"tab_suggested": 0, "tab_accepted": 0,
+            slot = ai_lines.setdefault((day, device), {"tab_suggested": 0, "tab_accepted": 0,
                                              "composer_suggested": 0, "composer_accepted": 0})
             for f in slot:
                 slot[f] += v.get(f, 0)
-        # Per-session, per-day breakdown so the Sessions table can report what a
-        # session did INSIDE the selected range rather than over its whole life.
-        # For every source except Cursor one file is one session, so the file's
-        # own date-keyed records already are that breakdown; Cursor builds its
-        # own while parsing because one store holds many sessions.
-        file_days = {}
-        for key, r in agg.get("records", {}).items():
-            date, model = key.split("\t", 1)
-            dd = file_days.setdefault(date, {"in": 0, "out": 0, "cr": 0, "cc": 0,
-                                             "asst": 0, "user": 0, "tools": 0,
-                                             "prem": 0.0, "cost": 0.0, "active": 0.0})
-            if model == "(user)":
-                dd["user"] += r.get("user", 0)
-                dd["active"] += r.get("active", 0.0)
-                continue
-            for f in ("in", "out", "cr", "cc", "asst", "user", "tools", "active"):
-                dd[f] += r.get(f, 0)
-            dd["prem"] += r.get("prem", 0.0)
-            dd["cost"] += _cost(source, model, r["in"], r["out"], r["cr"],
-                                r.get("cc5", 0), r.get("cc1", 0), r.get("cc", 0), date,
-                                logged_cost=r.get("cost", 0.0) if has_logged_cost else None,
-                                ws=r.get("ws", 0))
-
-        # sessions
-        for s in agg.get("sessions", []):
-            s2 = dict(s)
-            own = s.get("days")
-            if own:                       # Cursor: price its own per-day split
-                days = {}
-                for date, v in own.items():
-                    days[date] = dict(v, cost=_cost(source, s["model"], v["in"], v["out"],
-                                                    v.get("cr", 0), 0, 0, v.get("cc", 0), date,
-                                                    logged_cost=v.get("cost") if source == "openclaw" else None))
+        # Model-specific contributions price before rolling into session days.
+        # Archived older stores can lack this detail; never copy a whole DB's
+        # daily totals into each session to fill that gap.
+        for session in agg.get("sessions", []):
+            s2 = dict(session)
+            bucket = session.get("records")
+            if bucket is None and len(agg.get("sessions", [])) == 1:
+                bucket = agg.get("records", {})
+            if bucket is not None:
+                days, model_days = _priced_days(bucket, source, has_logged_cost)
+                s2["model_days"] = {m: _day_vectors(ds) for m, ds in model_days.items()}
+                if source == "copilot":
+                    exact = {k: r["exact"] for k, r in bucket.items() if "exact" in r}
+                    exact_days, exact_models = _priced_days(exact, source, False)
+                    s2["exact_days"] = _day_vectors(exact_days)
+                    s2["exact_model_days"] = {m: _day_vectors(ds) for m, ds in exact_models.items()}
             else:
-                days = file_days
-            s2["days"] = {d: [round(v["cost"], 6), v["in"], v["out"], v["cr"], v["cc"],
-                              v["asst"], v["user"], v["tools"], round(v.get("prem", 0), 4),
-                              round(v.get("active", 0), 1)]
-                          for d, v in sorted(days.items())}
-            # `archived` is stamped on the aggregate by refresh() after the parse,
-            # so read it from the aggregate rather than the frozen session copy
+                own = session.get("days")
+                days = {}
+                if own:
+                    for date, r in own.items():
+                        days[date] = _priced_usage(source, session["model"], date, r, has_logged_cost)
+                s2["detail_limited"] = True
+            s2["days"] = _day_vectors(days) if days or bucket is not None else None
             s2["archived"] = bool(agg.get("archived"))
-            s2["subagent"] = bool(s.get("subagent"))
+            s2["subagent"] = bool(session.get("subagent"))
             s2["device"] = device
-            s2["cost"] = _cost(source, s["model"], s["in"], s["out"], s["cr"],
-                               s.get("cc5", 0), s.get("cc1", 0), s.get("cc", 0),
-                               (s.get("end") or s.get("start") or "")[:10],
-                               logged_cost=s.get("cost", 0.0) if has_logged_cost else None,
-                               ws=s.get("ws", 0))
+            s2["cost"] = (sum(d["cost"] for d in days.values()) if days else
+                          _priced_usage(source, session["model"],
+                                        (session.get("end") or session.get("start") or "")[:10],
+                                        session, has_logged_cost)["cost"])
             sessions.append(s2)
 
     rec_list = []
@@ -619,6 +693,7 @@ def _build_payload_locked():
     return {
         "generated_at": time.time(),
         "meta": dict(_meta),
+        "cache_error": _cache_error["v"] or _meta.get("cache_error"),
         "device": dict(DEVICE, id=local),
         # every device in the data: this one first, then each connected one
         "devices": _devices_meta(),
@@ -639,8 +714,9 @@ def _build_payload_locked():
         "mcp_inventory": {"servers": {sv: {"tools": sorted(t)} for sv, t in mcp_inv.items()},
                           "loaded": [{"date": d, "server": sv, "project": pj, "sessions": n}
                                      for (d, sv, pj), n in sorted(mcp_loaded.items())],
-                          "calls": [{"date": d, "server": sv, "project": pj, "calls": n}
-                                    for (d, sv, pj), n in sorted(mcp_calls.items())]},
+                          "calls": [{"date": d, "source": src, "server": sv, "project": pj,
+                                     "calls": v["calls"], "tools": sorted(v["tools"])}
+                                    for (d, src, sv, pj), v in sorted(mcp_calls.items())]},
         # reads that added tokens for nothing (Claude Code) — see parser.py READ HYGIENE
         "reads": [{"date": d, "source": src, "project": pj, "device": dv, "reads": v[0], "rereads": v[1],
                    "junk": v[2], "reread_tok": v[3], "junk_tok": v[4]}
@@ -659,9 +735,12 @@ def _build_payload_locked():
         "sessions": sessions[:2000],
         "sessions_total": len(sessions),
         "model_vendor": model_meta,
-        "ai_lines": [{"date": d, **v} for d, v in sorted(ai_lines.items())],
-        "pricing": {k: list(v) for k, v in P.PRICING.items()},
-        "pricing_history": {k: [[u, list(p)] for u, p in v] for k, v in P.PRICE_HISTORY.items()},
+        "ai_lines": [{"date": d, "source": "cursor", "device": dv, **v}
+                     for (d, dv), v in sorted(ai_lines.items())],
+        "pricing": {k: list(v) for k, v in {**P.PRICING,
+                    **{m: P.price_of(m) for m in model_meta}}.items()},
+        "pricing_history": {m: [[d, list(P.price_of(m, d))] for d, _ in _model_history(m)]
+                            for m in set(P.PRICE_HISTORY) | set(model_meta)},
         "pricing_note": ("Anthropic costs use current list pricing (Fable 5 $10/$50, Opus 5.5 "
                          "$4/$20, Opus 5 & 4.x $5/$25, Sonnet 5 & 5.5 $2/$10, Sonnet 4.x "
                          "$3/$15, Haiku $1/$5 per Mtok) with cache write billed at 1.25x (5-min) "
@@ -760,7 +839,6 @@ IS_WINDOWS = os.name == "nt"
 # What the server actually bound to, filled in by main(). The CSRF guard compares
 # the Host header against THIS, never against Host itself — see _csrf_ok.
 BIND = {"host": "127.0.0.1", "port": 7878}
-LOOPBACK = {"127.0.0.1", "localhost", "[::1]", "::1", "0.0.0.0"}
 
 # ---------------------------------------------------------------------------
 # Settings — lets the dashboard edit the *tool's own* config, not its own.
@@ -1067,10 +1145,6 @@ def _cache_action_locked(action):
     """
     if action not in ("rebuild", "delete"):
         raise ValueError("action must be 'rebuild' or 'delete'")
-    with _lock:
-        had = len(_state["files"])
-        _state["files"] = {}
-    _gen["v"] += 1
     removed = False
     if os.path.exists(CACHE_PATH):
         try:
@@ -1078,6 +1152,11 @@ def _cache_action_locked(action):
             removed = True
         except OSError as e:
             raise ValueError(f"could not delete the cache: {e}")
+    _cache_error["v"] = None       # explicitly confirmed destructive action
+    with _lock:
+        had = len(_state["files"])
+        _state["files"] = {}
+    _gen["v"] += 1
     if action == "rebuild":
         _dirty["v"] = True
         _refresh_locked(verbose=False)
@@ -1319,13 +1398,12 @@ def _mirror_path(pid):
 
 
 def _set_mirror(pid, m):
-    """Make a pulled copy part of the data. A copy from another CACHE_VERSION may
-    have another shape, so it is held back with a reason rather than mixed in."""
+    """Accept current or explicitly compatible copies; reject unknown shapes."""
     with _peer_lock:
         p = _peer_cfg()["peers"].get(pid)
         if p is None:                          # disconnected while the pull ran
             return
-        if m.get("cache_version") != CACHE_VERSION:
+        if not _peer_cache_ok(m.get("cache_version")):
             _peer["mirrors"].pop(pid, None)
             p["error"] = ("Its saved copy is from a different AgentTelemetry version. "
                           "Update both devices to the same version.")
@@ -1370,7 +1448,8 @@ def _devices_meta():
 # Parser resume state, the working directory and MCP/skill setup stay here.
 _EXPORT_KEYS = ("source", "path", "mtime", "archived", "project", "title", "branch", "editor",
                 "entry", "cliver", "subagent", "first_ts", "last_ts", "records", "tools",
-                "skills", "ctx", "hourly", "reads", "totals", "sessions", "open_ctx")
+                "skills", "ctx", "hourly", "reads", "totals", "sessions", "open_ctx",
+                "opencode_ids", "opencode_messages")
 
 
 def _export_agg(agg):
@@ -1646,7 +1725,7 @@ def _pull(addr, code, etag=None):
             or not isinstance(data.get("files"), dict)
             or not _ID_RE.match(str(data.get("device_id") or ""))):
         raise ValueError("That address answered, but not as AgentTelemetry.")
-    if data.get("cache_version") != CACHE_VERSION:
+    if not _peer_cache_ok(data.get("cache_version")):
         raise ValueError(f"That device runs a different AgentTelemetry version "
                          f"({data.get('app') or 'unknown'}). Update both to the same version.")
     # a malformed entry would break the whole payload; drop it rather than guess
@@ -1861,6 +1940,9 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, f.read(), ctype)
 
     def do_GET(self):
+        if not self._origin_ok():
+            self._send(403, json.dumps({"error": "cross-site request refused"}))
+            return
         route = self.path.split("?")[0]
         if route in ("/", "/index.html"):
             self._file("index.html", "text/html; charset=utf-8")
@@ -1879,8 +1961,7 @@ class Handler(BaseHTTPRequestHandler):
                 import traceback; traceback.print_exc()
                 self._send(500, json.dumps({"error": str(e)}))
         elif route == "/api/refresh":
-            refresh(verbose=False)
-            self._send(200, json.dumps({"ok": True, "meta": _meta}))
+            self._send(405, json.dumps({"error": "use POST with a JSON body"}))
         elif route == "/api/data":
             try:
                 payload = build_payload()
@@ -1903,50 +1984,46 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self._send(404, "not found", "text/plain")
 
-    def _csrf_ok(self):
-        """Reject cross-site writes.
-
-        The dashboard has no auth — it trusts anything that can reach the port.
-        A browser will happily let ANY page the user is visiting POST here: with
-        Content-Type text/plain the request is a CORS "simple request", so it is
-        sent with no preflight. The attacker cannot read our reply, but the write
-        still lands, which is enough to set cleanupPeriodDays=1 and make Claude
-        Code delete the user's transcripts. So: require a same-origin Origin (or
-        none, e.g. curl), and require a JSON content type, which forces a
-        preflight that we deliberately never answer.
-        """
-        ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
-        if ctype != "application/json":
+    def _origin_ok(self):
+        """Pin every dashboard request to this listener, including private GETs."""
+        try:
+            authority = urllib.parse.urlsplit("//" + (self.headers.get("Host") or ""))
+            host, port = authority.hostname, authority.port
+        except ValueError:
+            return False
+        if (authority.username is not None or authority.path or authority.query or authority.fragment):
+            return False
+        bound = str(BIND["host"]).strip().lower()
+        allowed_hosts = {"127.0.0.1", "localhost", "::1", "0.0.0.0", bound}
+        if bound in ("0.0.0.0", "::"):
+            allowed_hosts.update(str(x).lower() for x in _lan_addrs())
+        if not host or host.lower() not in allowed_hosts:
+            return False
+        if port is not None and port != BIND["port"]:
             return False
         site = (self.headers.get("Sec-Fetch-Site") or "").strip().lower()
         if site and site not in ("same-origin", "none"):
             return False
-
-        # The Host header is attacker-controlled. A DNS-rebinding page served from
-        # evil.example, resolved to 127.0.0.1, arrives with Host AND Origin both
-        # "evil.example" — so deriving the allowed origin FROM Host lets it match
-        # itself and walk straight through. Pin to what we actually bound instead.
-        host, _, port = (self.headers.get("Host") or "").partition(":")
-        host = host.strip().lower()
-        bound_host = str(BIND["host"]).strip().lower()
-        if host not in LOOPBACK and host != bound_host:
-            return False
-        if port and str(port) != str(BIND["port"]):
-            return False
-
         origin = self.headers.get("Origin")
         if origin:
-            p = BIND["port"]
-            allowed = set()
-            for h in ("127.0.0.1", "localhost", "[::1]", bound_host):
-                allowed |= {f"http://{h}:{p}", f"https://{h}:{p}", f"http://{h}", f"https://{h}"}
-            if origin.strip().lower() not in allowed:
+            try:
+                parsed = urllib.parse.urlsplit(origin)
+                origin_port = parsed.port or (443 if parsed.scheme == "https" else 80)
+            except ValueError:
+                return False
+            if (parsed.scheme not in ("http", "https") or parsed.hostname != host
+                    or origin_port != BIND["port"] or parsed.path not in ("", "/")
+                    or parsed.query or parsed.fragment or parsed.username is not None):
                 return False
         return True
 
+    def _csrf_ok(self):
+        ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        return ctype == "application/json" and self._origin_ok()
+
     def do_POST(self):
         route = self.path.split("?")[0]
-        if route in ("/api/settings", "/api/cache", "/api/update", "/api/devices"):
+        if route in ("/api/settings", "/api/cache", "/api/update", "/api/devices", "/api/refresh"):
             if not self._csrf_ok():
                 self._send(403, json.dumps({"error": "cross-site request refused"}))
                 return
@@ -1954,11 +2031,16 @@ class Handler(BaseHTTPRequestHandler):
             raw = self.rfile.read(length) if length else b"{}"
             try:
                 body = json.loads(raw or b"{}")
+                if not isinstance(body, dict):
+                    raise ValueError("expected a JSON object")
             except Exception:
                 self._send(400, json.dumps({"error": "invalid JSON body"}))
                 return
             try:
-                if route == "/api/cache":
+                if route == "/api/refresh":
+                    refresh(verbose=False)
+                    result = {"ok": True, "meta": dict(_meta)}
+                elif route == "/api/cache":
                     result = cache_action(body.get("action"))
                 elif route == "/api/update":
                     result = update_action(body.get("action"))

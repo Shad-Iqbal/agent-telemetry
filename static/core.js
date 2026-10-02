@@ -168,7 +168,7 @@ function dateList(r){
 
 /* ---------- filtering ---------- */
 const providerOf = m => (RAW && RAW.model_vendor && RAW.model_vendor[m]) || "Other";
-function passSrc(s){ return S.tools.has(s) && (!S.exactOnly || (SRC[s]||{}).exact); }
+function passSrc(s){ return S.tools.has(s) && (!S.exactOnly || (SRC[s]||{}).exact || s==="copilot"); }
 function passModel(m){
   if(m==="(user)") return true;                       // user-turn marker rows
   if(S.provs.size && !S.provs.has(providerOf(m))) return false;
@@ -236,39 +236,62 @@ function filtersToURL(){
 
 function slice(r){
   r = r || range();
-  const recs = RAW.records.filter(x => passSrc(x.source) && passModel(x.model)
+  const recs = RAW.records.map(x => S.exactOnly && x.source==="copilot"
+      ? (x.exact ? Object.assign({}, x, x.exact) : null) : x).filter(Boolean).filter(x => passSrc(x.source) && passModel(x.model)
       && passProj(x.project) && passIde(x.ide) && passDev(x.device) && x.date>=r.from && x.date<=r.to);
   const hourly = RAW.hourly.filter(x => passSrc(x.source) && passDev(x.device) && x.date>=r.from && x.date<=r.to);
   const sessions = RAW.sessions
-    .filter(x => passSrc(x.source) && passProj(x.project) && passModel(x.model)
+    .filter(x => passSrc(x.source) && passProj(x.project) && sessionMatchesModel(x)
                  && passIde(x.ide) && passDev(x.device) && activeInRange(x, r))
     .map(x => clipSession(x, r));
   return {recs, hourly, sessions, r};
 }
 /* A session is "in range" if it did anything inside it — not merely if it
    ENDED there. A resumed rollout can span weeks. */
+function sessionMatchesModel(s){
+  if(!S.models.size && !S.provs.size) return true;
+  const maps = S.exactOnly && s.source==="copilot" ? s.exact_model_days : s.model_days;
+  return maps ? Object.keys(maps).some(m=>m!=="(user)" && passModel(m)) : passModel(s.model);
+}
+function sessionDays(s){
+  const exact = S.exactOnly && s.source==="copilot";
+  const maps = exact ? s.exact_model_days : s.model_days;
+  if(maps && (S.models.size || S.provs.size)){
+    const days={};
+    for(const [model, entries] of Object.entries(maps)){
+      if(!passModel(model)) continue;
+      for(const [date, values] of Object.entries(entries)){
+        const row = days[date] || (days[date]=Array(15).fill(0));
+        values.forEach((v,i)=>{ row[i]+=v||0; });
+      }
+    }
+    return days;
+  }
+  return exact ? (s.exact_days || {}) : s.days;
+}
 function activeInRange(s, r){
-  const D = s.days;
+  const D = sessionDays(s);
   if(D){ for(const d in D) if(d>=r.from && d<=r.to) return true; return false; }
   const e = (s.end||s.start||"").slice(0,10);
   return e>=r.from && e<=r.to;
 }
-/* Report what a session did INSIDE the range. Without this a session that ran
-   for seven weeks reports all seven weeks under a one-day filter. */
+/* Keep the first ten legacy slots; newer maps add calls and write tiers. */
 function clipSession(s, r){
-  const D = s.days;
-  if(!D) return Object.assign({}, s, {span:1, clipped:false});
-  let cost=0,i=0,o=0,cr=0,cc=0,asst=0,user=0,tools=0,prem=0,active=0,inN=0,allN=0;
+  const D = sessionDays(s);
+  if(!D) return Object.assign({}, s, {span:1, clipped:false, detail_limited:true});
+  const total=Array(15).fill(0); let inN=0,allN=0,callsKnown=true;
   for(const d in D){
     allN++;
     if(d<r.from || d>r.to) continue;
     const v=D[d]; inN++;
-    cost+=v[0]; i+=v[1]; o+=v[2]; cr+=v[3]; cc+=v[4];
-    asst+=v[5]; user+=v[6]; tools+=v[7]; prem+=v[8]||0; active+=v[9]||0;
+    if(v.length<11) callsKnown=false;
+    v.forEach((n,i)=>{total[i]+=n||0;});
   }
+  const [cost,i,o,cr,cc,asst,user,tools,prem,active,req,cc5,cc1,reason,ws]=total;
   return Object.assign({}, s, {cost, in:i, out:o, cr, cc, asst, user, tools, prem, active,
-    // model calls aren't split per day, so they're only exact when the whole session is in range
-    req: inN<allN ? asst : s.req, span:allN, clipped:inN<allN});
+    cc5, cc1, reason, ws, req:callsKnown?req:(inN<allN?asst:s.req),
+    span:allN, range_clipped:inN<allN,
+    clipped:inN<allN || !!(S.models.size || S.provs.size)});
 }
 
 /* Tool-call rows carry a date + source but no project/model dimension, so the
@@ -284,7 +307,7 @@ function toolCounts(r, only){
   }
   return Object.values(out).sort((a,b)=>b.count-a.count);
 }
-function dimFiltered(){ return S.projs.size || S.provs.size || S.models.size; }
+function dimFiltered(){ return S.projs.size || S.provs.size || S.models.size || S.ides.size || S.exactOnly; }
 function totals(recs){
   const t = {tok:0,cost:0,msgs:0,user:0,tools:0,in:0,out:0,cr:0,cc:0,reason:0,req:0,prem:0,days:new Set()};
   for(const r of recs){
