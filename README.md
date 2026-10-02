@@ -191,9 +191,15 @@ dollars**, so cost is always derived. Rates live in `parser.py → PRICING` as
   so it isn't billed twice.
 - A model with no price row reads as **$0** — add it to `PRICING` (see below).
 - **Gemini** (2.5, 3, 3.1 and 3.5 to 3.8: Pro, Flash, Flash-Lite, Computer Use) is priced
-  when it runs through Copilot, Cursor or opencode, at the Standard rate for prompts up to 200K
+  when it runs through supported tools, at the Standard rate for prompts up to 200K
   tokens. Live, TTS, image and embedding models are not priced, and nor are the higher Pro rate
   for longer prompts or audio input. The Gemini CLI itself writes no token counts to read.
+- **Gemini 4 Argon** is recognized across the supported tools and uses Google's
+  [announced introductory rates](https://blog.google/innovation-and-ai/models-and-research/gemini-models/gemini-4-argon/):
+  $2 input, $10 output and $0.10 cached input per 1M tokens. Access is still limited to
+  trusted testers, and Google has not listed a public API model ID. These are API-equivalent
+  estimates for Argon usage found in logs. The later $4/$20 rate has no effective date yet
+  and is not applied ahead of time; cache storage charges are not modeled.
 
 ## Note on log retention
 

@@ -22,7 +22,7 @@ import parser as P
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CACHE_PATH = os.path.join(HERE, ".usage_cache.json")
-CACHE_VERSION = 51
+CACHE_VERSION = 52
 
 # ---------------------------------------------------------------------------
 # In-memory store of per-file aggregates, refreshed on a background interval.
@@ -245,14 +245,17 @@ def _refresh_locked(verbose=False):
         mark = _parse_mark(prev)
         try:
             updated = P.update_file(prev, source, path, editor, proj_map)
+            if updated is None:                # disappeared between discover and stat
+                continue
             if updated is not prev:
                 changed = _dirty["v"] = True
             elif mark != _parse_mark(updated):
                 changed = _grew["v"] = True
             files[path] = updated
         except Exception as e:
-            if verbose:
-                sys.stderr.write(f"[parse] {path}: {e}\n")
+            # A failed full reparse must not replace the last valid ledger entry
+            # with an empty aggregate or advance its signature. Retry next time.
+            sys.stderr.write(f"[parse:{source}] {path}: {type(e).__name__}: {e}\n")
         if verbose and (i % 5 == 0 or i == len(found) - 1):
             sys.stderr.write(f"\r[scan] {i+1}/{len(found)} files...")
             sys.stderr.flush()
@@ -321,13 +324,15 @@ def _conversation_key(path, agg):
     archived while the new one parses live. A Copilot chat can sit under two
     paths too: <uuid>.json and <uuid>.jsonl across its storage-format migration,
     or the same chat in Cursor's storage after Cursor imported VS Code's. Every
-    copy used to be counted in full."""
+    copy used to be counted in full. Copies are deduplicated within a device:
+    an imported conversation must not hide another device's usage."""
     src = agg.get("source")
+    device = agg.get("_device")              # None is this machine's own ledger
     if src == "codex":
-        return ("codex", os.path.basename(path))
+        return (device, "codex", P._leaf(path))
     if src == "copilot":
-        m = _UUID.search(os.path.basename(path)) or _UUID.search(path)
-        return ("copilot", m.group(0)) if m else None
+        m = _UUID.search(P._leaf(path)) or _UUID.search(path)
+        return (device, "copilot", m.group(0)) if m else None
     return None
 
 
@@ -341,7 +346,7 @@ def _one_per_conversation(items):
             out.append(agg)
             continue
         act = sum(r.get("asst", 0) + r.get("user", 0) + r.get("in", 0) + r.get("out", 0)
-                  + r.get("cr", 0) for r in agg.get("records", {}).values())
+                  + r.get("cr", 0) + r.get("cc", 0) for r in agg.get("records", {}).values())
         rank = (act, not agg.get("archived"), agg.get("mtime") or 0)
         if k not in best or rank > best[k][0]:
             best[k] = (rank, agg)
@@ -355,6 +360,13 @@ def _did_something(s):
 
 
 def build_payload():
+    # Parsers append to nested record dictionaries in place. Hold the same lock
+    # as refresh so a response is consistent and iteration cannot race an append.
+    with _refresh_lock:
+        return _build_payload_locked()
+
+
+def _build_payload_locked():
     records = {}      # (date, source, model, project, ide, device) -> aggregates
     tools = {}        # (date, source, name, device) -> count
     projects = {}     # (project, source) -> {tokens, msgs, sessions, cost}
@@ -658,22 +670,24 @@ def build_payload():
                          "verified OpenAI list rates (e.g. GPT-6 Sol $2/$10, cached $0.20; GPT-6.1 Sol cached $0.10), each "
                          "day priced at the rate in force then — OpenAI cut GPT-5.6 prices on "
                          "2026-07-30 and 2026-08-21; a >272K-input surcharge is not modeled, so "
-                         "heavy-context sessions may be higher. Gemini text models use Standard "
-                         "rates for prompts up to 200K tokens. "
+                         "heavy-context sessions may be higher. Gemini 4 Argon uses Google's "
+                         "announced introductory rates ($2 input/$10 output, cached input $0.10 "
+                         "per Mtok). Other Gemini text models use Standard rates for prompts "
+                         "up to 200K tokens. "
                          "Actual "
                          "billing may differ. Claude Code/Desktop & Codex can run on either "
                          "subscription or API billing and the logs don't record which, so $ is "
                          "shown as API-equivalent value (all such usage is included either way). "
-                         "IMPORTANT — GitHub Copilot logs NO token counts: its tokens here are "
-                         "estimated from visible message text only and EXCLUDE hidden context "
-                         "(file/repo context, system prompts, tool outputs), so they are a large "
-                         "undercount. Copilot's accurate usage metric is request count (the 'Msgs' "
-                         "column) and the premium-request multiplier, not tokens. "
+                         "GitHub Copilot uses recorded request token counts when available. "
+                         "Older chats and requests still in progress are estimated from visible "
+                         "message text, excluding hidden context (files, system prompts and tool "
+                         "outputs), so those estimates can undercount. Request count and the "
+                         "premium-request multiplier are also shown. "
                          "Cursor: messages, tool calls, per-session model, mode and timestamps are "
                          "exact, but it records token counts on only ~2% of messages (it meters usage "
                          "server-side for its request-based plan) — so Cursor tokens/cost here are a "
-                         "LOWER BOUND; see Cursor's own dashboard for real usage. Gemini is not shown: "
-                         "its local logs persist no usable prompt/token/model data."),
+                         "LOWER BOUND; see Cursor's own dashboard for real usage. Gemini CLI is "
+                         "not parsed: its local logs persist no usable prompt/token/model data."),
     }
 
 
@@ -1038,6 +1052,13 @@ def save_claude_cleanup_days(value):
 
 
 def cache_action(action):
+    # Clearing the store during a refresh otherwise strands its updates in the
+    # old dictionary and can race a cache save. Serialize both actions too.
+    with _refresh_lock:
+        return _cache_action_locked(action)
+
+
+def _cache_action_locked(action):
     """Rebuild or delete this app's OWN analytics cache (never a tool's logs).
 
     Both discard the durable ledger: sessions whose logs a tool has already pruned
@@ -1059,7 +1080,7 @@ def cache_action(action):
             raise ValueError(f"could not delete the cache: {e}")
     if action == "rebuild":
         _dirty["v"] = True
-        refresh(verbose=False)
+        _refresh_locked(verbose=False)
         with _lock:
             now = len(_state["files"])
         return {"action": "rebuild", "dropped": had, "files": now,
@@ -1151,8 +1172,10 @@ def _cleanup_plan(days=90):
 
 
 def build_storage():
-    with _lock:
-        files = list(_state["files"].values())
+    # Only scalar aggregate fields are used below; copy them under the refresh
+    # lock, then release it before the filesystem scans.
+    with _refresh_lock, _lock:
+        files = [dict(a) for a in _state["files"].values()]
     per, rows, growth = {}, [], {}
     for agg in files:
         src = agg.get("source", "?")

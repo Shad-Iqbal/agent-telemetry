@@ -77,18 +77,28 @@ These are not style preferences. A PR that breaks one will be asked to change.
 
 ## Testing before you open a PR
 
-There is no test suite; verification is empirical. At minimum:
+Run the stdlib regression suite first. It uses temporary fixtures and never rebuilds
+your live cache:
 
 ```bash
-# 1. It still parses, and the numbers didn't move for reasons you can't explain
-python3 dashboard.py --rebuild
+python3 -m unittest discover -s tests -v
+```
+
+Then verify representative logs and the UI. At minimum:
+
+```bash
+# 1. Start normally; a cache-version bump reparses live logs and keeps archived history
+python3 dashboard.py
 
 # 2. No render failures — uncaught and caught errors both land on data-js-error
 "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless=new \
   --virtual-time-budget=9000 --dump-dom "http://127.0.0.1:7878/#cost" | grep data-js-error
 ```
 
-Then click through all seven tabs, and **check `?range=today` as well as a multi-day
+Back up `.usage_cache.json` before a migration. **Do not use `--rebuild` for routine
+verification**: it permanently discards archived sessions whose logs are gone.
+
+Then click through all eight tabs, and **check `?range=today` as well as a multi-day
 range** — single-day ranges have their own failure mode. `?theme=dark|light|auto` and
 `?range=30d` preset the UI, which makes headless screenshots easy.
 
@@ -115,7 +125,8 @@ breaks silently on another.
    cached rate in the last slot.
 2. Make sure the relevant normalizer maps the raw id to that display name.
 3. Pricing applies at request time, so no re-parse is needed after a `PRICING` edit.
-   A normalizer change needs `--rebuild` and a `CACHE_VERSION` bump.
+   A normalizer change needs a `CACHE_VERSION` bump and a normal restart, which
+   reparses live logs while preserving archived entries.
 
 **Link the vendor's pricing page in the PR.** A wrong price silently misreports
 someone's spend.

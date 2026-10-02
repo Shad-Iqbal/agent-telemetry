@@ -138,7 +138,13 @@ so that file stops being a cache and becomes the sole record. Two consequences:
   archived, beside the new live one), and a Copilot chat can exist as both `<uuid>.json`
   and `<uuid>.jsonl` across its storage-format migration, or in both VS Code's and
   Cursor's storage after Cursor imported VS Code's. `build_payload` keeps one per
-  conversation (`_one_per_conversation`: fullest, then live, then newest).
+  conversation **per device** (`_one_per_conversation`: fullest including cache writes,
+  then live, then newest). Use `_leaf()` on paths so Windows copies deduplicate on a Mac too.
+- A failed full reparse leaves the previous ledger entry and signature intact; the
+  next refresh retries it. Parser failures propagate to `_refresh_locked`, which reports
+  the source, path and exception on stderr even for background refreshes.
+- Payload construction and cache actions share `_refresh_lock` with parsing. Aggregates
+  mutate in place, so copying only the outer file list is not a consistent snapshot.
 
 ## What the logs cannot show
 
@@ -162,6 +168,13 @@ so that file stops being a cache and becomes the sole record. Two consequences:
   2027-01-01 — move it into `PRICE_HISTORY` then. `_canonicalize` gives every source one
   spelling ("Gemini 3.1 Pro"); `price_of` also tries it, so a row cached under an older
   spelling still prices.
+- **Gemini 4 Argon uses announced introductory API-equivalent rates** of $2/$10 per
+  1M input/output tokens and $0.10 cached input, verified against Google's
+  [launch post](https://blog.google/innovation-and-ai/models-and-research/gemini-models/gemini-4-argon/)
+  on 2026-10-02. Access is limited to trusted testers; no public API model ID is listed.
+  `_canonicalize` recognizes Argon display/raw spellings without treating audio/image/Live
+  variants as the text model. The later $4/$20 price has no effective date — move the
+  intro tuple into `PRICE_HISTORY` only when it takes effect. Cache storage is not modeled.
 - **Claude's advisor iterations** (`usage.iterations[].type == "advisor_message"`) are not
   priced separately — none exist in any log seen, so their shape can't be verified. Every
   iteration here is a plain `message`, already covered by the response's own `usage`.
@@ -329,6 +342,9 @@ so that file stops being a cache and becomes the sole record. Two consequences:
   create a `-shm`, which fails on read-only media; `immutable=1` needs no `-shm` but ignores
   the `-wal` entirely. The helper tries the first, probes it with a query (connect is lazy),
   and falls back to the second.
+- **Live SQLite refreshes must track the WAL too.** Cursor and Hermes use a signature
+  of the database and its `-wal`, like opencode. A committed message can change only the
+  WAL until the writer checkpoints; checking just the main DB leaves the dashboard stale.
 
 ## Common tasks
 
@@ -337,7 +353,9 @@ so that file stops being a cache and becomes the sole record. Two consequences:
 (USD per 1M; OpenAI rows put the cache-write rate in cw5 — 1.25x input where the pricing
 page lists one, else 0, which bills at the input rate — 0 in cw1, and the cached rate last), and
 make the normalizer map the raw id to that name. Pricing applies at request time — no
-re-parse needed; a normalizer change needs `--rebuild` + a `CACHE_VERSION` bump.
+re-parse needed; a normalizer change needs a `CACHE_VERSION` bump and a normal restart
+to reparse live logs while preserving archived entries. Never use `--rebuild` for a
+routine migration: it discards the durable history.
 A new `claude-<tier>-<n>-<m>` id normalises by itself, so only the price row is missing and
 nothing warns: the model just costs $0 (Sonnet 5.5 did, for its first day). Diff the vendor's
 whole table against `PRICING`, and look for all-zero rows in the payload's `prices`.

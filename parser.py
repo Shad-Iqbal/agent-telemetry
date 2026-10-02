@@ -266,6 +266,13 @@ PRICING = {
     # prompts over 200K on Pro (2x input, 1.2-1.5x output), audio input (about 2x), and
     # the Live / TTS / image / embedding / Veo models, which bill audio, image and video
     # tokens at rates one tuple cannot express and no coding agent logs.
+    # Gemini 4 Argon — announced introductory API-equivalent rates, verified
+    # against blog.google/innovation-and-ai/models-and-research/gemini-models/
+    # gemini-4-argon/ (2026-10-02): $2 input / $10 output, cached input 95% off.
+    # Access is limited to trusted testers; no public API id is listed yet. The
+    # later $4/$20 rate has no effective date: only move this into PRICE_HISTORY
+    # when that change takes effect. Cache storage is not modeled.
+    "Gemini 4 Argon": (2.00, 10.00, 0, 0, 0.10),
     # 3.6 to 3.8 Flash are a promo "through December 31, 2026" and double on 2027-01-01:
     # then move these tuples into PRICE_HISTORY dated 2026-12-31 and put the doubled
     # ones here ($1.50 / $7.50, cache read $0.15).
@@ -422,13 +429,13 @@ def _canonicalize(name):
             ver = nums[0]
         return f"Claude {tier} {ver}".strip()
 
-    # Gemini — "gemini-3.1-pro-preview", "Google: Gemini 3.5 Flash-Lite", "gemini-2.5-pro"
-    # → "Gemini 3.1 Pro". Preview/date/effort suffixes drop; Live, TTS, image, embedding and
+    # Gemini — "gemini-3.1-pro-preview", "Google: Gemini 4 Argon", "gemini-4-argon"
+    # → one display name. Preview/date/effort suffixes drop; Live, TTS, image, embedding and
     # the like are different products with their own rates, so they keep their own spelling.
-    mgm = re.match(r"gemini-?\s*(\d+(?:\.\d+)?)-?\s*(pro|flash[\s\-]*lite|flash|computer-use)\b(.*)$", low)
+    mgm = re.match(r"(?:models/)?gemini-?\s*(\d+(?:\.\d+)?)-?\s*(argon|pro|flash[\s\-]*lite|flash|computer-use)\b(.*)$", low)
     if mgm and not re.search(r"live|tts|image|audio|embed|transcribe|translate|robot|omni",
                              mgm.group(3)):
-        kind = {"pro": "Pro", "flash": "Flash", "computer-use": "Computer Use"}.get(
+        kind = {"argon": "Argon", "pro": "Pro", "flash": "Flash", "computer-use": "Computer Use"}.get(
             mgm.group(2), "Flash-Lite")
         return f"Gemini {mgm.group(1)} {kind}"
 
@@ -1881,14 +1888,16 @@ def _open_ro_sqlite(db_path):
 
 
 def parse_cursor(agg, db_path):
+    from contextlib import closing
+    with closing(_open_ro_sqlite(db_path)) as con:
+        _parse_cursor_store(agg, con)
+
+
+def _parse_cursor_store(agg, con):
     import sqlite3
     agg["source"] = "cursor"
     agg["editor"] = "Cursor"
     agg["project"] = "Cursor"
-    try:
-        con = _open_ro_sqlite(db_path)
-    except Exception:
-        return
     cur = con.cursor()
 
     def _loads(v):
@@ -1914,14 +1923,18 @@ def parse_cursor(agg, db_path):
                          "removed": int(o.get("totalLinesRemoved") or 0),
                          "archived": bool(archived or o.get("isArchived")),
                          "subs": int(o.get("numSubComposers") or 0)}
-    except Exception:
-        pass                                    # table absent on older builds
+    except sqlite3.OperationalError as e:
+        if not str(e).startswith("no such table:"):
+            con.close()
+            raise
     try:
         rows = cur.execute("SELECT value FROM cursorDiskKV "
                            "WHERE key LIKE 'composerData:%'").fetchall()
-    except Exception:
+    except sqlite3.OperationalError as e:
         con.close()
-        return
+        if str(e).startswith("no such table:"):
+            return                              # no native chats on this install
+        raise
     for (v,) in rows:
         o = _loads(v)
         if not o:
@@ -2226,10 +2239,7 @@ def parse_opencode_db(agg, db_path):
     # opencode writes messages chronologically — the same assumption the "weak
     # title from first user prompt" logic below already depends on.
     active_last = {}
-    try:
-        con = _open_ro_sqlite(db_path)
-    except Exception:
-        return
+    con = _open_ro_sqlite(db_path)
     cur = con.cursor()
     try:
         # ---- session metadata ---------------------------------------------
@@ -2431,13 +2441,15 @@ def _normalize_hermes(model_id):
 
 
 def parse_hermes(agg, db_path):
+    from contextlib import closing
+    with closing(_open_ro_sqlite(db_path)) as con:
+        _parse_hermes_store(agg, con)
+
+
+def _parse_hermes_store(agg, con):
     import sqlite3
     agg["source"] = "hermes"
     agg["editor"] = "Hermes Agent"
-    try:
-        con = _open_ro_sqlite(db_path)
-    except Exception:
-        return
     cur = con.cursor()
 
     sess = {}
@@ -2447,7 +2459,7 @@ def parse_hermes(agg, db_path):
             "archived, source FROM sessions").fetchall()
     except Exception:
         con.close()
-        return
+        raise
     for sid, cwd, branch, title, model, started, ended, archived, chan in rows:
         sess[sid] = {
             "cwd": cwd, "branch": branch, "title": title, "model": model,
@@ -2462,7 +2474,10 @@ def parse_hermes(agg, db_path):
             "SELECT session_id, model, input_tokens, output_tokens, cache_read_tokens, "
             "cache_write_tokens, reasoning_tokens, api_call_count, first_seen, last_seen "
             "FROM session_model_usage").fetchall()
-    except Exception:
+    except sqlite3.OperationalError as e:
+        if not str(e).startswith("no such table:"):
+            con.close()
+            raise
         urows = []
     model_tokens = {}   # session_id -> {display_model: tokens}
     for sid, model, it, ot, cr, cw, reason, calls, first, last in urows:
@@ -2503,7 +2518,10 @@ def parse_hermes(agg, db_path):
     try:
         mrows = cur.execute(
             "SELECT session_id, role, timestamp, tool_calls FROM messages").fetchall()
-    except Exception:
+    except sqlite3.OperationalError as e:
+        if not str(e).startswith("no such table:"):
+            con.close()
+            raise
         mrows = []
     for sid, role, ts, tool_calls_json in mrows:
         s = sess.get(sid)
@@ -2972,11 +2990,9 @@ def update_file(agg, source, path, editor_hint, proj_map):
         ws_dir = os.path.dirname(os.path.dirname(path))  # .../<hash>
         fresh["project"] = proj_map.get(ws_dir, "(no folder)")
         fresh["editor"] = editor_hint
-        try:
-            obj = json.load(open(path))
-            parse_copilot(fresh, obj)
-        except Exception:
-            pass
+        with open(path) as f:
+            obj = json.load(f)
+        parse_copilot(fresh, obj)
         fresh["size"], fresh["mtime"] = size, mtime
         _finalize_session(fresh, source, path)
         return fresh
@@ -2996,31 +3012,34 @@ def update_file(agg, source, path, editor_hint, proj_map):
         fresh = _blank_agg(source, path)
         fresh["editor"] = editor_hint
         fresh["size"] = total
-        try:
-            parse_openclaw(fresh, path)
-        except Exception as e:
-            sys.stderr.write(f"[openclaw] {path}: {type(e).__name__}: {e}\n")
+        parse_openclaw(fresh, path)
         fresh["_sig"] = sig
         fresh["mtime"] = max((x[2] for x in sig), default=mtime)
         return fresh
 
     if source in ("gemini", "cursor", "hermes"):
-        # rewritten stores → full reparse when the file/DB changes
-        if agg and agg.get("size") == size and agg.get("mtime") == mtime:
+        # A live SQLite writer can append to the WAL without touching the main
+        # database. Include it, or Cursor/Hermes stay stale until a checkpoint.
+        wal = path + "-wal" if source in ("cursor", "hermes") else None
+        try:
+            wst = os.stat(wal) if wal else None
+        except FileNotFoundError:
+            wst = None
+        sig = [size, mtime, wst.st_size if wst else 0, wst.st_mtime_ns if wst else 0]
+        if agg and agg.get("_sig") == sig:
             return agg
         fresh = _blank_agg(source, path)
         fresh["editor"] = editor_hint
-        try:
-            if source == "gemini":
-                parse_gemini(fresh, path)
-                _finalize_session(fresh, source, path)
-            elif source == "cursor":
-                parse_cursor(fresh, path)   # sets its own per-composer sessions
-            else:
-                parse_hermes(fresh, path)   # sets its own per-session sessions
-        except Exception as e:
-            sys.stderr.write(f"[{source}] {path}: {type(e).__name__}: {e}\n")
-        fresh["size"], fresh["mtime"] = size, mtime
+        if source == "gemini":
+            parse_gemini(fresh, path)
+            _finalize_session(fresh, source, path)
+        elif source == "cursor":
+            parse_cursor(fresh, path)   # sets its own per-composer sessions
+        else:
+            parse_hermes(fresh, path)   # sets its own per-session sessions
+        fresh["_sig"] = sig
+        fresh["size"] = size + (wst.st_size if wst else 0)
+        fresh["mtime"] = max(mtime, wst.st_mtime if wst else 0)
         return fresh
 
     if source == "opencode":
@@ -3037,13 +3056,7 @@ def update_file(agg, source, path, editor_hint, proj_map):
             fresh = _blank_agg(source, path)
             fresh["editor"] = editor_hint
             fresh["size"] = size + wal_size
-            try:
-                parse_opencode_db(fresh, path)
-            except Exception as e:
-                # Keep a bad DB from taking the whole refresh down, but never
-                # fail silently: a swallowed error here looks identical to
-                # "you don't use opencode".
-                sys.stderr.write(f"[opencode] {path}: {type(e).__name__}: {e}\n")
+            parse_opencode_db(fresh, path)
             fresh["_sig"] = sig
             fresh["mtime"] = max(mtime, wal_mtime)
             return fresh
@@ -3063,11 +3076,8 @@ def update_file(agg, source, path, editor_hint, proj_map):
             fresh["size"] = sum(os.path.getsize(m) for m in msgs)
         except OSError:
             fresh["size"] = 0
-        try:
-            parse_opencode(fresh, path, msgs)
-            _finalize_session(fresh, source, path)
-        except Exception:
-            pass
+        parse_opencode(fresh, path, msgs)
+        _finalize_session(fresh, source, path)
         fresh["_sig"] = sig
         fresh["mtime"] = sig_mtime
         return fresh
