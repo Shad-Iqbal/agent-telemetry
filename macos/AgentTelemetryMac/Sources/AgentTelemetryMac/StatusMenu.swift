@@ -168,7 +168,12 @@ struct StatusMenu: View {
 
     private var settingsContent: some View {
         VStack(alignment: .leading, spacing: 10) {
-            menuBarDisplayControl
+            Picker("Menu bar display", selection: $settings.menuBarDisplay) {
+                ForEach(AppSettings.MenuBarDisplay.allCases) { mode in
+                    Text(mode.title).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
 
             Picker("Refresh interval", selection: $settings.refreshIntervalSeconds) {
                 Text("1 min").tag(60)
@@ -194,42 +199,6 @@ struct StatusMenu: View {
             .help("Copy an existing AgentTelemetry cache into this app without changing the original.")
         }
         .controlSize(.small)
-    }
-
-    private var menuBarDisplayControl: some View {
-        HStack(spacing: 8) {
-            Text("Menu bar display")
-                .lineLimit(1)
-            Spacer(minLength: 0)
-            HStack(spacing: 2) {
-                ForEach(AppSettings.MenuBarDisplay.allCases) { mode in
-                    let isSelected = settings.menuBarDisplay == mode
-                    Button {
-                        settings.menuBarDisplay = mode
-                    } label: {
-                        Text(mode.title)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 4)
-                            .background {
-                                if isSelected {
-                                    RoundedRectangle(cornerRadius: 6)
-                                        .fill(Color.primary.opacity(0.22))
-                                }
-                            }
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Menu bar display: \(mode.title)")
-                    .accessibilityAddTraits(isSelected ? .isSelected : [])
-                }
-            }
-            .padding(2)
-            .frame(width: 148)
-            .background(Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
-            .overlay {
-                RoundedRectangle(cornerRadius: 8)
-                    .stroke(Color.primary.opacity(0.12), lineWidth: 0.5)
-            }
-        }
     }
 
     private func chooseImportFolder() {

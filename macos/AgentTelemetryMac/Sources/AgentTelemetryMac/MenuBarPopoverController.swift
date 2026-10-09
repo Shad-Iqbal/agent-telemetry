@@ -55,7 +55,7 @@ final class MenuBarPopoverController: NSObject, ObservableObject, NSPopoverDeleg
             .sink { [weak self] _ in self?.updateStatusItem() }
             .store(in: &subscriptions)
         settings.$menuBarDisplay
-            .sink { [weak self] _ in self?.updateStatusItem() }
+            .sink { [weak self] display in self?.updateStatusItem(display: display) }
             .store(in: &subscriptions)
 
         updateStatusItem()
@@ -94,41 +94,39 @@ final class MenuBarPopoverController: NSObject, ObservableObject, NSPopoverDeleg
         popover.contentSize = NSSize(width: 310, height: fitted.height)
     }
 
-    private func updateStatusItem() {
+    private func updateStatusItem(display: AppSettings.MenuBarDisplay? = nil) {
         guard let button = statusItem?.button, let backend, let settings else { return }
+        let display = display ?? settings.menuBarDisplay
         button.title = ""
         button.toolTip = backend.summary.date.isEmpty
             ? "AgentTelemetry; today's summary is not available"
             : "AgentTelemetry; \(backend.summary.tokens) tokens today; estimated spend \(backend.summary.spend) dollars"
 
-        if settings.menuBarDisplay == .numbers {
+        if display == .numbers {
             button.image = menuBarNumbersImage(for: backend.summary)
             button.contentTintColor = nil
             return
         }
 
         let symbol: String
-        let tint: NSColor
         switch backend.status {
         case .starting, .stopping:
             symbol = "ellipsis.circle"
-            tint = .systemBlue
         case .needsAttention:
             symbol = "exclamationmark.triangle.fill"
-            tint = .systemOrange
         case .stopped:
             symbol = "chart.bar.fill"
-            tint = .secondaryLabelColor
         case .running, .connectedToExisting:
             symbol = "chart.bar.fill"
-            tint = .systemGreen
         }
         let configuration = NSImage.SymbolConfiguration(pointSize: 15, weight: .medium)
         button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: "AgentTelemetry")?
             .withSymbolConfiguration(configuration)
         button.image?.size = NSSize(width: 15, height: 15)
         button.image?.isTemplate = true
-        button.contentTintColor = tint
+        // Leave the template untinted so macOS chooses a contrasting
+        // foreground for the current menu bar appearance.
+        button.contentTintColor = nil
     }
 
     private func menuBarNumbersImage(for summary: DailySummary) -> NSImage {
