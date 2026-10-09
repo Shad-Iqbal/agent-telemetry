@@ -27,6 +27,7 @@ final class MenuBarPopoverController: NSObject, ObservableObject, NSPopoverDeleg
         item.button?.target = self
         item.button?.action = #selector(togglePopover(_:))
         item.button?.imagePosition = .imageOnly
+        item.button?.imageScaling = .scaleProportionallyDown
 
         popover.behavior = .transient
         popover.animates = true
@@ -122,7 +123,10 @@ final class MenuBarPopoverController: NSObject, ObservableObject, NSPopoverDeleg
             symbol = "chart.bar.fill"
             tint = .systemGreen
         }
-        button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: "AgentTelemetry")
+        let configuration = NSImage.SymbolConfiguration(pointSize: 15, weight: .medium)
+        button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: "AgentTelemetry")?
+            .withSymbolConfiguration(configuration)
+        button.image?.size = NSSize(width: 15, height: 15)
         button.image?.isTemplate = true
         button.contentTintColor = tint
     }
@@ -130,7 +134,6 @@ final class MenuBarPopoverController: NSObject, ObservableObject, NSPopoverDeleg
     private func menuBarNumbersImage(for summary: DailySummary) -> NSImage {
         let tokenText = summary.date.isEmpty ? "—" : compactTokens(summary.tokens)
         let spendText = summary.date.isEmpty ? "—" : String(format: "$%.2f", summary.spend)
-        let size = NSSize(width: 60, height: 22)
         let font = NSFont.monospacedDigitSystemFont(ofSize: 9, weight: .semibold)
         let paragraph = NSMutableParagraphStyle()
         paragraph.alignment = .right
@@ -143,13 +146,17 @@ final class MenuBarPopoverController: NSObject, ObservableObject, NSPopoverDeleg
             ])
         }
 
+        let tokenLine = line(tokenText, color: .labelColor)
+        let spendLine = line(spendText, color: .secondaryLabelColor)
+        // NSStatusItem sizes itself to the image. Keep only enough width for
+        // the longer line so right alignment does not create a visible gutter.
+        let width = ceil(max(tokenLine.size().width, spendLine.size().width)) + 1
+        let size = NSSize(width: width, height: 22)
         let image = NSImage(size: size, flipped: false) { rect in
             NSColor.clear.setFill()
             rect.fill()
-            line(tokenText, color: .labelColor)
-                .draw(in: NSRect(x: 0, y: 11, width: size.width, height: 11))
-            line(spendText, color: .secondaryLabelColor)
-                .draw(in: NSRect(x: 0, y: 0, width: size.width, height: 11))
+            tokenLine.draw(in: NSRect(x: 0, y: 11, width: size.width, height: 11))
+            spendLine.draw(in: NSRect(x: 0, y: 0, width: size.width, height: 11))
             return true
         }
         image.isTemplate = false
