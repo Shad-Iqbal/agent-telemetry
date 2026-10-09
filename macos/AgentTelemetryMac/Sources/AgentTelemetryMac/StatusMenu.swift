@@ -6,6 +6,7 @@ struct StatusMenu: View {
     @ObservedObject var settings: AppSettings
     let openDashboard: () -> Void
     let quit: () -> Void
+    let onDisclosureChange: (Bool) -> Void
 
     @State private var detailsExpanded = false
 
@@ -41,9 +42,8 @@ struct StatusMenu: View {
                     }
 
                     Button {
-                        withAnimation(.easeInOut(duration: 0.18)) {
-                            detailsExpanded.toggle()
-                        }
+                        detailsExpanded.toggle()
+                        onDisclosureChange(detailsExpanded)
                     } label: {
                         HStack(spacing: 7) {
                             Image(systemName: detailsExpanded ? "chevron.down" : "chevron.right")
@@ -69,7 +69,7 @@ struct StatusMenu: View {
                 .padding(.top, 12)
             }
             .frame(
-                height: detailsExpanded ? 280 : (backend.status.message == nil ? 44 : 112),
+                height: detailsExpanded ? 220 : (backend.status.message == nil ? 44 : 112),
                 alignment: .top
             )
             .scrollIndicators(.automatic)
