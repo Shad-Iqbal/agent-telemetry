@@ -76,7 +76,11 @@ struct StatusMenu: View {
                 .padding(.top, 12)
                 .padding(.bottom, 2)
             }
-            .frame(maxHeight: detailsExpanded ? 280 : nil, alignment: .top)
+            .frame(
+                minHeight: detailsExpanded ? nil : 112,
+                maxHeight: detailsExpanded ? 280 : 112,
+                alignment: .top
+            )
             .scrollIndicators(.automatic)
         }
         .padding(14)
