@@ -45,43 +45,44 @@ struct StatusMenu: View {
                             .padding(.top, 8)
                     }
                     .font(.caption)
-
-                    Button(action: openDashboard) {
-                        HStack(spacing: 7) {
-                            Spacer()
-                            Text("Open dashboard")
-                            Image(systemName: "arrow.up.right")
-                            Spacer()
-                        }
-                        .padding(.vertical, 2)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.regular)
-
-                    HStack {
-                        Button(action: { backend.refreshNow() }) {
-                            Label("Refresh now", systemImage: "arrow.clockwise")
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(!backend.isReady)
-                        Spacer()
-                        Button(role: .destructive, action: quit) {
-                            Label("Quit AgentTelemetry", systemImage: "power")
-                        }
-                        .buttonStyle(.plain)
-                    }
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
                 }
                 .padding(.top, 12)
-                .padding(.bottom, 2)
             }
             .frame(
-                minHeight: detailsExpanded ? nil : 112,
+                minHeight: detailsExpanded ? nil : 40,
                 maxHeight: detailsExpanded ? 280 : 112,
                 alignment: .top
             )
             .scrollIndicators(.automatic)
+
+            Button(action: openDashboard) {
+                HStack(spacing: 7) {
+                    Spacer()
+                    Text("Open dashboard")
+                    Image(systemName: "arrow.up.right")
+                    Spacer()
+                }
+                .padding(.vertical, 2)
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.regular)
+            .padding(.top, 8)
+
+            HStack {
+                Button(action: { backend.refreshNow() }) {
+                    Label("Refresh now", systemImage: "arrow.clockwise")
+                }
+                .buttonStyle(.plain)
+                .disabled(!backend.isReady)
+                Spacer()
+                Button(role: .destructive, action: quit) {
+                    Label("Quit AgentTelemetry", systemImage: "power")
+                }
+                .buttonStyle(.plain)
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .padding(.top, 8)
         }
         .padding(14)
         .frame(width: 310)
