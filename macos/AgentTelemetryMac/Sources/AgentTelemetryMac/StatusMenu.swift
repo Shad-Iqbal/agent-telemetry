@@ -40,17 +40,36 @@ struct StatusMenu: View {
                             .buttonStyle(.bordered)
                     }
 
-                    DisclosureGroup("Details & settings", isExpanded: $detailsExpanded) {
-                        settingsContent
-                            .padding(.top, 8)
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.18)) {
+                            detailsExpanded.toggle()
+                        }
+                    } label: {
+                        HStack(spacing: 7) {
+                            Image(systemName: detailsExpanded ? "chevron.down" : "chevron.right")
+                                .font(.system(size: 11, weight: .semibold))
+                                .frame(width: 14)
+                            Text("Details & settings")
+                                .font(.caption.weight(.semibold))
+                            Spacer(minLength: 0)
+                        }
+                        .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
+                        .contentShape(Rectangle())
                     }
-                    .font(.caption)
+                    .buttonStyle(.plain)
+                    .accessibilityValue(detailsExpanded ? "Expanded" : "Collapsed")
+                    .accessibilityHint(detailsExpanded ? "Hide details and settings" : "Show details and settings")
+
+                    if detailsExpanded {
+                        settingsContent
+                            .padding(.leading, 21)
+                            .transition(.opacity.combined(with: .move(edge: .top)))
+                    }
                 }
                 .padding(.top, 12)
             }
             .frame(
-                minHeight: detailsExpanded ? nil : 40,
-                maxHeight: detailsExpanded ? 280 : 112,
+                height: detailsExpanded ? 280 : (backend.status.message == nil ? 44 : 112),
                 alignment: .top
             )
             .scrollIndicators(.automatic)
