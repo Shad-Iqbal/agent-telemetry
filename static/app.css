@@ -135,8 +135,8 @@ a{color:inherit}
 .main{min-width:0;padding:0 0 72px}
 
 /* ---------- page header ---------- */
-.page-head{position:sticky;top:0;z-index:40;background:transparent;padding:18px 28px 14px;
-  margin:0 0 22px;border-bottom:1px solid transparent;transition:background-color .14s ease,border-color .14s ease}
+.page-head{position:sticky;top:0;z-index:40;background:transparent;padding:18px 28px;
+  margin:0;border-bottom:1px solid transparent;transition:background-color .14s ease,border-color .14s ease}
 .page-head h1{margin:0;font-size:23px;font-weight:680;letter-spacing:-.45px;line-height:1.15}
 #views{padding:0 28px}
 /* the query sentence — words, not a toolbar */
@@ -541,7 +541,7 @@ code.cmd{display:block;background:var(--surface-2);border:1px solid var(--border
   .side-foot{margin-top:0;flex-direction:row;align-items:center;gap:4px}
   .side-note,.status span:last-child{display:none}
   .main{padding:0 0 64px}
-  .page-head{position:static;padding:16px 16px 14px;margin-bottom:16px}
+  .page-head{position:static;padding:16px;margin:0}
   #views{padding:0 16px}
   .col-6,.col-5,.col-4{grid-column:span 12}
   #activityCalendarCard,#monthlyRhythmCard{grid-column:span 12}
