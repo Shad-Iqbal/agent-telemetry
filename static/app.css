@@ -138,12 +138,17 @@ a{color:inherit}
 .page-head{position:sticky;top:0;z-index:40;background:var(--bg);padding:18px 0 14px;margin-bottom:6px}
 .page-head h1{margin:0;font-size:23px;font-weight:680;letter-spacing:-.45px;line-height:1.15}
 /* the query sentence — words, not a toolbar */
-.q{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 7px;margin-top:6px;font-size:15px;line-height:1.6;color:var(--text-2)}
+.q{display:flex;align-items:center;justify-content:space-between;gap:12px 24px;margin-top:6px;font-size:15px;line-height:1.6;color:var(--text-2)}
+.q-date,.q-controls{display:flex;align-items:center;min-width:0}
+.q-date{gap:8px;flex:none}
+.q-controls{justify-content:flex-end;flex-wrap:wrap;gap:4px 7px}
 .q-dd{position:relative}
-.q-word{background:none;border:0;border-radius:0;padding:0 1px;font:inherit;font-weight:650;color:var(--text);cursor:pointer;
+.q-word{display:inline-flex;align-items:center;gap:3px;background:none;border:0;border-radius:0;padding:0 1px;font:inherit;font-weight:650;color:var(--text);cursor:pointer;
   border-bottom:1.5px dashed var(--border-2);transition:border-color .12s}
 .q-word:hover,.q-dd.open .q-word{border-bottom:1.5px solid var(--text)}
 .q-word:focus-visible{outline:2px solid var(--accent);outline-offset:3px;border-radius:3px}
+.q-chevron{width:14px;height:14px;color:var(--text-3);flex:none}
+.q-word:hover .q-chevron,.q-dd.open .q-chevron{color:var(--text)}
 .q-count{margin-left:6px;font-size:11.5px;font-weight:600;color:var(--text-2);background:var(--surface-2);
   border:1px solid var(--border);border-radius:10px;padding:0 7px;vertical-align:2px}
 .q-count:empty{display:none}
@@ -153,7 +158,7 @@ a{color:inherit}
 .q-arrow .ic{transform:rotate(90deg)} .q-arrow.fwd .ic{transform:rotate(-90deg)}
 .q-arrow:hover:not(:disabled){color:var(--text);background:var(--surface-2)}
 .q-arrow:disabled{opacity:.35;cursor:default}
-.q-dates{font-size:12.5px;color:var(--text-3);margin-left:2px}
+.q-dates{font-size:12.5px;color:var(--text-3)}
 .q-panel{min-width:300px}
 .q-opt{display:grid;grid-template-columns:1fr;gap:1px;width:100%;text-align:left;background:none;border:0;
   border-radius:var(--r-xs);padding:8px 10px;cursor:pointer;color:var(--text-2)}
@@ -493,7 +498,8 @@ code.cmd{display:block;background:var(--surface-2);border:1px solid var(--border
 }
 @media(max-width:900px){
   .side-toggle{display:none}
-  .q{position:relative}
+  .q{position:relative;align-items:flex-start}
+  .q-controls{justify-content:flex-start}
   .q-dd{position:static}                    /* menus anchor to the sentence, not the word */
   .q .dd-panel{left:0;right:auto;max-width:calc(100vw - 32px)}
   #rangePanel{min-width:0;width:min(380px,calc(100vw - 32px))}
@@ -520,6 +526,8 @@ code.cmd{display:block;background:var(--surface-2);border:1px solid var(--border
   .hero-value{font-size:40px}
   .card{padding:16px}
   .hero{padding:18px}
+  .q{align-items:flex-start}
+  .q-controls{width:100%}
   .ph-controls{width:100%}
   .search-in{width:130px}
   .bar-row{grid-template-columns:minmax(80px,42%) minmax(30px,1fr) auto;gap:8px}

@@ -83,17 +83,25 @@
   <div class="main">
     <header class="page-head" id="filters">
       <h1 id="pageTitle">Overview</h1>
-      <!-- The controls read as a sentence: what is measured, for which tools, over
-           which period. Each bold phrase opens its menu; ‹ › step the period. -->
+      <!-- The current window stays on the left; the filter sentence stays on the
+           right. Each bold phrase opens its menu; ‹ › step the period. -->
       <div class="q" id="query" role="group" aria-label="What this page shows">
-        <div class="dd q-dd" id="ddMetric">
-          <button class="q-word" data-dd="toggle" id="qMetric" aria-haspopup="true">Tokens</button>
-          <div class="dd-panel q-panel" id="metricPanel"></div>
+        <div class="q-date">
+          <span class="q-dates" id="rangeText">&nbsp;</span>
+          <span class="q-step">
+            <button class="q-arrow" id="stepBack" title="Previous period (,)" aria-label="Previous period"><svg class="ic sm"><use href="#i-chev"/></svg></button>
+            <button class="q-arrow fwd" id="stepFwd" title="Next period (.)" aria-label="Next period"><svg class="ic sm"><use href="#i-chev"/></svg></button>
+          </span>
         </div>
-        <span class="q-t">from</span>
-        <div class="dd q-dd" id="ddFilters">
-          <button class="q-word" data-dd="toggle" id="filtersBtn" aria-haspopup="true"><span id="qTools">all tools</span><span id="qDev"></span><span class="q-count" id="filterCount"></span></button>
-          <div class="dd-panel filters-panel" id="filtersPanel">
+        <div class="q-controls">
+          <div class="dd q-dd" id="ddMetric">
+            <button class="q-word" data-dd="toggle" id="qMetric" aria-haspopup="true"><span id="qMetricLabel">Tokens</span><svg class="ic q-chevron" aria-hidden="true"><use href="#i-chev"/></svg></button>
+            <div class="dd-panel q-panel" id="metricPanel"></div>
+          </div>
+          <span class="q-t">from</span>
+          <div class="dd q-dd" id="ddFilters">
+            <button class="q-word" data-dd="toggle" id="filtersBtn" aria-haspopup="true"><span id="qTools">all tools</span><span id="qDev"></span><span class="q-count" id="filterCount"></span><svg class="ic q-chevron" aria-hidden="true"><use href="#i-chev"/></svg></button>
+            <div class="dd-panel filters-panel" id="filtersPanel">
               <div class="fp-grid">
                 <section class="fp-sec"><div class="fp-h"><span>Tools</span><span><a href="#" data-fall="tools">all</a> · <a href="#" data-fnone="tools">none</a></span></div><div class="fp-list" id="toolsPanel"></div></section>
                 <section class="fp-sec" id="devSec" hidden><div class="fp-h"><span>Devices</span><a href="#" data-fclear="devs">clear</a></div><div class="fp-list" id="devPanel"></div></section>
@@ -106,18 +114,14 @@
                   <div class="fp-note">Hides tools whose token counts are estimates.</div></section>
               </div>
               <div class="fp-foot"><button class="btn" id="filtersReset">Reset all filters</button></div>
+            </div>
+          </div>
+          <span class="q-t" id="qOver">over</span>
+          <div class="dd q-dd" id="ddRange">
+            <button class="q-word" data-dd="toggle" id="rangeMore" aria-haspopup="true"><span id="rangeLabel">the last 30 days</span></button>
+            <div class="dd-panel q-panel" id="rangePanel"></div>
           </div>
         </div>
-        <span class="q-t" id="qOver">over</span>
-        <div class="dd q-dd" id="ddRange">
-          <button class="q-word" data-dd="toggle" id="rangeMore" aria-haspopup="true"><span id="rangeLabel">the last 30 days</span></button>
-          <div class="dd-panel q-panel" id="rangePanel"></div>
-        </div>
-        <span class="q-step">
-          <button class="q-arrow" id="stepBack" title="Previous period (,)" aria-label="Previous period"><svg class="ic sm"><use href="#i-chev"/></svg></button>
-          <button class="q-arrow fwd" id="stepFwd" title="Next period (.)" aria-label="Next period"><svg class="ic sm"><use href="#i-chev"/></svg></button>
-        </span>
-        <span class="q-dates" id="rangeText">&nbsp;</span>
       </div>
       <div class="pills" id="pills"></div>
     </header>

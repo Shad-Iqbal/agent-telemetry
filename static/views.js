@@ -97,7 +97,7 @@ function syncRangeUI(){
   if(!document.getElementById("ddRange").classList.contains("open")) buildRangePanel();
 }
 function syncMetricUI(){
-  document.getElementById("qMetric").textContent = metricTitle().replace("Est. spend","Cost");
+  document.getElementById("qMetricLabel").textContent = metricTitle().replace("Est. spend","Cost");
   buildMetricPanel();
 }
 /* Move the whole window back or forward by its own length: last 30 days → the 30
