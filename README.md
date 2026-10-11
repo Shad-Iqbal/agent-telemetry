@@ -13,6 +13,24 @@ telemetry, no dependencies — just Python's standard library and a vendored cop
 
 Covers **Claude Code · Claude Desktop · Codex · GitHub Copilot · Cursor · opencode · Hermes Agent · OpenClaw**.
 
+## Download the app
+
+| Platform | Download |
+| --- | --- |
+| macOS 13+ · Apple Silicon | **[Download DMG](https://github.com/uttamdeb/agent-telemetry/releases/download/v2.0.0/AgentTelemetry-2.0.0-macos-arm64.dmg)** |
+| macOS 13+ · Intel | **[Download DMG](https://github.com/uttamdeb/agent-telemetry/releases/download/v2.0.0/AgentTelemetry-2.0.0-macos-x86_64.dmg)** |
+| Windows 10/11 · x64 | **[Download EXE installer](https://github.com/uttamdeb/agent-telemetry/releases/download/v2.0.0/AgentTelemetry-2.0.0-windows-x64-setup.exe)** |
+
+**Python is bundled — no terminal setup needed.** macOS: open the DMG, drag the app to
+Applications and open it. Windows: run the installer and open AgentTelemetry from Start.
+Open at Login is optional. Quit the app and wait for saving before installing an update;
+upgrades and uninstall preserve telemetry history.
+
+These builds are unsigned/unnotarized. macOS may require **System Settings → Privacy &
+Security → Open Anyway**; Windows SmartScreen may require **More info → Run anyway**.
+[All releases](https://github.com/uttamdeb/agent-telemetry/releases) ·
+[SHA-256 checksums](https://github.com/uttamdeb/agent-telemetry/releases/download/v2.0.0/SHA256SUMS.txt)
+
 ---
 
 ## Preview
@@ -49,11 +67,12 @@ checkout behavior is unchanged. Or `./run.sh [flags]`.
 
 ## Install the menu bar / system tray app
 
-From your checkout, run **`python3 install.py` on macOS** or **`python install.py` on Windows**.
+Use the [app downloads](#download-the-app) above for a ready-to-run installation.
+To build/install from a checkout, run **`python3 install.py` on macOS** or **`python install.py` on Windows**.
 The installer detects the OS, installs its matching native client for the current user and
 opens it. Use `--no-launch` to install without opening. Linux keeps the browser dashboard.
 
-| Platform | Native client | Installation requirements |
+| Platform | Native client | Source installation requirements |
 | --- | --- | --- |
 | macOS 13+ | SwiftUI/AppKit menu item, token/spend popover and embedded dashboard | Python to run the installer; Swift 5.8+ and a macOS SDK to build the app. The app then uses its bundled Python. |
 | Windows 10/11 | Branded tray icon and native summary popover matching the macOS layout; dashboard in your browser | Standard Python 3.8+ including `pythonw.exe`. No pip packages or separate GUI toolkit. |
@@ -94,8 +113,8 @@ the sync API retain independent polling until upgraded and restarted.
 
 Read the [macOS guide](macos/AgentTelemetryMac/README.md) and
 [Windows guide](windows/README.md) for paths, controls and development checks. macOS
-source builds are ad-hoc signed local builds; a prebuilt Developer ID signed/notarized
-installer is not supplied. The backend remains stdlib-only and no runtime update checks
+downloads and source builds are ad-hoc signed; a Developer ID signed/notarized installer
+is not supplied. The backend remains stdlib-only and no runtime update checks
 are added. The macOS packaging step downloads a hash-pinned Python runtime explicitly.
 
 Local app integrations can use `GET /api/health` for a small readiness response that contains

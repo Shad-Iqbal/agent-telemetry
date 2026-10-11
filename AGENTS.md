@@ -82,6 +82,17 @@ Checks: `python3 -m unittest discover -s tests`, `node tests/test_frontend.js`,
 and on Windows `python windows/tray.py --self-test` plus `python install.py --no-launch`.
 CI runs backend/frontend checks on Linux, macOS and Windows and native checks on their OS.
 
+Release downloads use `.github/workflows/release-downloads.yml`, dispatched against an
+existing tag. It builds architecture-specific macOS DMGs and a Windows x64 EXE. The EXE
+uses Inno Setup only at build time and bundles hash-pinned CPython with the unchanged
+release-tag backend/UI allowlist. `windows/installer/register_install.py` registers app
+controls, preserves an existing owned login opt-in, and guards installation/uninstall
+against a live or closing client; it never deletes the ledger or preferences. Run
+`tests/run_windows_installer.py` on Windows to verify install, packaged Win32 UI, upgrade,
+running-client refusal and uninstall against mock archived data. CI uploads artifacts
+only; release publication remains explicit. Label these unsigned/unnotarized downloads
+accurately. Keep the existing public tag intact when adding packaging metadata/assets.
+
 ## Layout
 
 | File | Role |

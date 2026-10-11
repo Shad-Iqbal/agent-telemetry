@@ -1,12 +1,22 @@
 # AgentTelemetry for Windows
 
 The v2.0 native notification-area app uses Python's standard library (`ctypes`) and
-Windows APIs. It needs Windows 10/11 and a standard Python 3.8+ installation containing
-`pythonw.exe`; there are no pip packages, Electron runtime or additional GUI toolkit.
+Windows APIs. The [Windows x64 EXE installer](https://github.com/uttamdeb/agent-telemetry/releases/download/v2.0.0/AgentTelemetry-2.0.0-windows-x64-setup.exe)
+includes Python and supports Windows 10/11; no separate Python installation is needed.
+There are no pip packages, Electron runtime or additional GUI toolkit. The EXE is
+unsigned, so SmartScreen may show a first-run warning (**More info → Run anyway**).
 
 ## Install and open
 
-From the checkout, run `python install.py`. It detects Windows, copies an explicit
+Run the EXE installer, then use the **AgentTelemetry** Start-menu shortcut. Installation
+is for the current user and needs no administrator permission. Quit the app and wait
+for its ledger save before upgrading/uninstalling; the installer refuses a live client.
+Uninstall removes application files and its shortcut, while retaining usage history and
+preferences. The installer creates no login-startup entry unless preserving a previous
+AgentTelemetry opt-in; it never changes another application's entry.
+
+For source installation, use standard Python 3.8+ with `pythonw.exe`, then run
+`python install.py` from the checkout. It detects Windows, copies an explicit
 app/backend allowlist to `%LOCALAPPDATA%\Programs\AgentTelemetry`, creates a Start-menu
 shortcut and launches the tray app. `--no-launch` leaves it closed. Later, use the
 **AgentTelemetry** Start-menu shortcut or **web Settings → Menu bar / system tray →
@@ -71,3 +81,14 @@ quality. Run `python -m unittest discover -s
 tests -v` and `node tests/test_frontend.js` for the shared logic. CI also runs the installer
 with `--no-launch` on a Windows runner. Automated tests use mock/temporary data, never
 the user's live ledger.
+
+## Build a download package
+
+`windows/installer/build.py` uses Inno Setup (build-time only) and a checksum-pinned
+CPython embeddable ZIP from python.org. It takes a clean checkout at the requested tag,
+stages the existing installer allowlist, and produces a per-user, offline EXE. The
+bundled runtime is isolated from global/user Python imports. Native registration lives
+outside the ledger. `.github/workflows/release-downloads.yml` builds from an existing
+release tag and runs `tests/run_windows_installer.py`: real install, packaged Win32 UI,
+running-client refusal, upgrade and uninstall against invented archived data. It only
+uploads CI artifacts; publishing release assets is a separate explicit action.

@@ -36,6 +36,16 @@ Never kill a backend the client did not launch or overwrite imported usage histo
 but it is the fastest orientation for humans too — read it before changing anything
 structural.
 
+## Build release downloads
+
+Binary downloads are built by `.github/workflows/release-downloads.yml` from an existing
+release tag. Windows uses Inno Setup as a build tool and a checksum-pinned bundled
+Python; the application still has no third-party runtime dependencies. Tests exercise
+the actual EXE's install/upgrade/uninstall with invented archived data and check the
+packaged native UI. macOS builds/signature checks run on both matching architectures.
+CI does not publish assets. Do not move a published tag when adding packaging or docs,
+and do not present ad-hoc/unsigned builds as notarized or Authenticode signed.
+
 ## Set your git email first
 
 GitHub links a commit to an account by matching the **author email** to a verified
