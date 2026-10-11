@@ -263,6 +263,50 @@ function renderDeviceDistribution(d){
     options:{indexAxis:"y",scales:axes({x:{ticks:{callback:v=>tickOf()(v)}},y:{grid:{display:false}}}),
       plugins:{tooltip:{callbacks:{label:c=>" "+fmt(c.parsed.x)+" · "+fmtPct(total?c.parsed.x/total:0)}}}}});
 }
+
+function activityMonthWindows(count, through){
+  const end=through ? new Date(through) : new Date();
+  end.setHours(0,0,0,0);
+  const current=new Date(end.getFullYear(),end.getMonth(),1), out=[];
+  for(let i=count-1;i>=0;i--){
+    const start=new Date(current.getFullYear(),current.getMonth()-i,1);
+    const monthEnd=new Date(start.getFullYear(),start.getMonth()+1,0);
+    const finish=monthEnd>end ? end : monthEnd;
+    out.push({key:dkey(start).slice(0,7),from:dkey(start),to:dkey(finish),label:MONTHS[start.getMonth()],
+      title:`${MONTHS[start.getMonth()]} ${start.getFullYear()}`,current:i===0});
+  }
+  return out;
+}
+
+function monthlyRhythmRows(){
+  const rows=activityMonthWindows(12), values={};
+  for(const r of RAW.records){
+    if(r.date<rows[0].from||r.date>rows[rows.length-1].to) continue;
+    if(!passSrc(r.source)||!passModel(r.model)||!passProj(r.project)||!passIde(r.ide)||!passDev(r.device)) continue;
+    const key=r.date.slice(0,7); values[key]=(values[key]||0)+recTokens(r);
+  }
+  return rows.map(row=>Object.assign(row,{value:values[row.key]||0,
+    selected:S.preset==="custom"&&S.from===row.from&&S.to===row.to}));
+}
+
+function renderMonthlyRhythmCard(){
+  const rows=monthlyRhythmRows(), summary=document.getElementById("monthlyRhythmSummary");
+  if(!rows.some(row=>row.value)){
+    summary.innerHTML="";
+    renderMonthlyRhythm([],null);
+    return;
+  }
+  const current=rows[rows.length-1], previous=rows[rows.length-2];
+  const peak=rows.reduce((best,row)=>row.value>best.value?row:best,rows[0]);
+  const comparison=previous.value
+    ? `${deltaHTML(current.value,previous.value)} <span>vs ${esc(previous.label)}</span>`
+    : `<span class="delta flat">${current.value?"new":"—"}</span>`;
+  summary.innerHTML=`<div class="rhythm-primary"><span class="eyebrow">This month</span><div>
+      <strong class="rhythm-value">${fmtTok(current.value)}</strong><span class="rhythm-change">${comparison}</span></div></div>
+    <div class="rhythm-peak"><span class="eyebrow">Peak month</span><span><b>${fmtTok(peak.value)}</b>${esc(peak.label)}</span></div>`;
+  renderMonthlyRhythm(rows,row=>{ S.preset="custom"; S.from=row.from; S.to=row.to; renderAll(); });
+}
+
 function viewOverview(d){
   const pd = hasPrev() ? slice(prevRange()) : null;
   const days = dateList(d.r), val = metricOf(), fmt = fmtOf();
@@ -369,6 +413,7 @@ function viewOverview(d){
     byDay[r.date]=(byDay[r.date]||0)+recTokens(r); max=Math.max(max,byDay[r.date]);
   }
   renderCalendar(byDay, max, day=>{ S.preset="custom"; S.from=day; S.to=day; renderAll(); });
+  renderMonthlyRhythmCard();
 }
 
 function renderHighlights(d){

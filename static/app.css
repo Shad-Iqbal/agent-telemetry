@@ -385,6 +385,22 @@ td b{font-weight:640}
 .meter i{display:block;height:100%}
 .cal-wrap{overflow-x:auto;padding-bottom:4px}
 .cal-wrap svg,.hm-wrap svg{display:block}
+.cal-wrap svg{min-width:100%}
+.rhythm-summary{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:12px;align-items:end;margin:-2px 0 8px}
+.rhythm-primary,.rhythm-peak{min-width:0}
+.rhythm-summary .eyebrow{display:block;margin-bottom:1px}
+.rhythm-value{font-size:22px;font-weight:660;letter-spacing:-.5px;font-variant-numeric:tabular-nums}
+.rhythm-change{margin-left:6px;font-size:11.5px;color:var(--text-3);white-space:nowrap}
+.rhythm-peak{text-align:right;font-size:11.5px;color:var(--text-3);white-space:nowrap}
+.rhythm-peak b{color:var(--text);font-size:12.5px;font-weight:640;margin-right:5px;font-variant-numeric:tabular-nums}
+.monthly-rhythm svg{display:block;width:100%;height:112px}
+.monthly-rhythm .month-axis{stroke:var(--border)}
+.monthly-rhythm .month-label{fill:var(--text-3);font-size:9.5px}
+.monthly-rhythm .month-bar{fill:var(--seq-2);cursor:pointer;transition:fill .15s ease,opacity .15s ease}
+.monthly-rhythm .month-bar.current{fill:var(--seq-5)}
+.monthly-rhythm .month-bar.selected{fill:var(--seq-6)}
+.monthly-rhythm .month-bar:hover{fill:var(--seq-4)}
+.monthly-rhythm .month-bar:focus{fill:var(--seq-6);stroke:var(--text);stroke-width:1.25px}
 code.cmd{display:block;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--r-xs);padding:9px 11px;
   font-size:11.5px;margin-top:6px;font-family:var(--mono);overflow-x:auto;white-space:pre}
 .hint{font-size:12px;color:var(--text-3);line-height:1.55}
@@ -474,6 +490,11 @@ code.cmd{display:block;background:var(--surface-2);border:1px solid var(--border
 /* ---------- responsive ---------- */
 @media(max-width:1280px){
   .col-8,.col-7{grid-column:span 12}.col-6,.col-5,.col-4{grid-column:span 6}
+  #activityCalendarCard{grid-column:span 8}
+  #monthlyRhythmCard{grid-column:span 4}
+  .monthly-rhythm svg{height:92px}
+  .rhythm-summary{grid-template-columns:1fr;gap:3px;margin-bottom:6px}
+  .rhythm-peak{text-align:left}
   .tiles.stack{grid-template-columns:repeat(auto-fit,minmax(158px,1fr))}
 }
 @media(max-width:1060px){
@@ -523,6 +544,7 @@ code.cmd{display:block;background:var(--surface-2);border:1px solid var(--border
   .page-head{position:static;padding:16px 16px 14px;margin-bottom:16px}
   #views{padding:0 16px}
   .col-6,.col-5,.col-4{grid-column:span 12}
+  #activityCalendarCard,#monthlyRhythmCard{grid-column:span 12}
   .hero-facts{grid-template-columns:1fr 1fr}
   .fp-grid{grid-template-columns:1fr}
 }

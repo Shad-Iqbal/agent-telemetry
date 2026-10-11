@@ -181,12 +181,17 @@
             <div class="card-h"><div><h3>Token mix</h3><p class="card-sub">what each tool's tokens were spent on</p></div></div>
             <div id="tokenMix"></div>
           </div>
-          <div class="card col-12">
+          <div class="card col-8" id="activityCalendarCard">
             <div class="card-h">
               <div><h3>Activity</h3><p class="card-sub" id="calHint">last 12 months · click a day to zoom in</p></div>
               <div class="scale-legend">Less<span class="cell" style="background:var(--seq-0)"></span><span class="cell" style="background:var(--seq-2)"></span><span class="cell" style="background:var(--seq-4)"></span><span class="cell" style="background:var(--seq-6)"></span>More</div>
             </div>
             <div class="cal-wrap" id="calWrap"></div>
+          </div>
+          <div class="card col-4" id="monthlyRhythmCard">
+            <div class="card-h"><div><h3>Monthly rhythm</h3><p class="card-sub">tokens by month · click a month to zoom in</p></div></div>
+            <div class="rhythm-summary" id="monthlyRhythmSummary"></div>
+            <div class="monthly-rhythm" id="monthlyRhythm"></div>
           </div>
         </div>
       </section>

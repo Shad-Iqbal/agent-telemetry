@@ -185,9 +185,11 @@ function renderCalendar(byDay, maxV, onClick){
   start.setDate(start.getDate()-((start.getDay()+6)%7));      // back to Monday
   const weeks=[]; let cur=new Date(start);
   while(cur<=end){ const wk=[]; for(let i=0;i<7;i++){ wk.push(new Date(cur)); cur.setDate(cur.getDate()+1); } weeks.push(wk); }
-  // fill the card's width: cells grow with it, and it scrolls only when too narrow
-  const mT=18, mL=28, gap=3;
-  const step=Math.max(15, Math.min(21, Math.floor(((wrap.clientWidth||800)-mL-8)/weeks.length)));
+  // The calendar shares a row with Monthly rhythm on desktop. At compact desktop
+  // widths it keeps all 12 months visible instead of becoming a cropped scroller.
+  const mT=18, mL=28;
+  const step=Math.max(6, Math.min(21, Math.floor(((wrap.clientWidth||800)-mL-8)/weeks.length)));
+  const gap=step<12?2:3, compact=step<12;
   const cell=step-gap;
   const ramp = seqRamp();
   const bucket = v => { if(!v) return ramp[0];
@@ -198,7 +200,7 @@ function renderCalendar(byDay, maxV, onClick){
   let lastM=-1;
   weeks.forEach((wk,wi)=>{ const m=wk[0].getMonth();
     if(m!==lastM){ lastM=m;
-      s+=`<text x="${mL+wi*step}" y="10" fill="${cssv("--text-3")}" font-size="10.5">${MONTHS[m]}</text>`; }});
+      s+=`<text x="${mL+wi*step}" y="10" fill="${cssv("--text-3")}" font-size="10.5">${compact?MONTHS[m][0]:MONTHS[m]}</text>`; }});
   [["Mon",0],["Wed",2],["Fri",4]].forEach(([l,r])=>{
     s+=`<text x="0" y="${mT+r*step+10}" fill="${cssv("--text-3")}" font-size="10">${l}</text>`; });
   weeks.forEach((wk,wi)=>wk.forEach((d,di)=>{
@@ -218,6 +220,41 @@ function renderCalendar(byDay, maxV, onClick){
   });
   svg.addEventListener("mouseleave",hideTip);
   svg.addEventListener("click",e=>{ const r=e.target.closest("rect"); if(r&&onClick) onClick(r.dataset.day); });
+}
+
+/* ---------- compact month bars paired with the activity calendar ---------- */
+function renderMonthlyRhythm(points, onClick){
+  const wrap=document.getElementById("monthlyRhythm"); if(!wrap) return;
+  if(!points.length){ wrap.innerHTML=`<div class="empty">No activity in the last 12 months.</div>`; return; }
+  const W=360, H=116, mT=6, mL=2, mR=2, mB=20, base=H-mB;
+  const plotH=base-mT, max=Math.max(...points.map(p=>p.value||0),1);
+  const step=(W-mL-mR)/points.length, barW=Math.max(3,step-5);
+  let s=`<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="monthly token activity; click a month to filter the dashboard">`;
+  s+=`<line class="month-axis" x1="${mL}" y1="${base}" x2="${W-mR}" y2="${base}"/>`;
+  points.forEach((p,i)=>{
+    const h=p.value ? Math.max(3,p.value/max*plotH) : 2;
+    const x=mL+i*step+(step-barW)/2, y=base-h;
+    const state=`${p.current?" current":""}${p.selected?" selected":""}`;
+    s+=`<rect class="month-bar${state}" x="${x.toFixed(2)}" y="${y.toFixed(2)}" width="${barW.toFixed(2)}" height="${h.toFixed(2)}" rx="2"
+      data-index="${i}" role="button" tabindex="0" aria-label="${esc(p.title)}: ${fmtTok(p.value)} tokens. Filter to this month."/>
+      <text class="month-label" x="${(x+barW/2).toFixed(2)}" y="${H-5}" text-anchor="middle">${esc(p.label)}</text>`;
+  });
+  s+="</svg>";
+  wrap.innerHTML=s;
+  const svg=wrap.querySelector("svg");
+  const pointFor=target=>{ const bar=target.closest(".month-bar"); return bar&&points[+bar.dataset.index]; };
+  const activate=target=>{ const point=pointFor(target); if(point&&onClick) onClick(point); };
+  svg.addEventListener("mousemove",e=>{
+    const point=pointFor(e.target); if(!point) return hideTip();
+    showTip(`<div class="t">${esc(point.title)}</div><div class="r"><span class="k">tokens</span><span class="v">${fmtTok(point.value)}</span></div>`,e.clientX,e.clientY);
+  });
+  svg.addEventListener("mouseleave",hideTip);
+  svg.addEventListener("click",e=>activate(e.target));
+  svg.addEventListener("keydown",e=>{
+    if(e.key!=="Enter"&&e.key!==" ") return;
+    if(!pointFor(e.target)) return;
+    e.preventDefault(); activate(e.target);
+  });
 }
 
 /* ---------- hour x weekday heatmap (SVG, sequential blue) ---------- */

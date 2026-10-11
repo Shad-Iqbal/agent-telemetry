@@ -11,6 +11,12 @@ run(`RAW={device:{id:'Mac'},devices:[{id:'Mac',name:'Mac'},{id:'PC',name:'PC'}],
  records:[],sessions:[],hourly:[],tools:[],pricing:{'Claude Opus 5.5 (US)':[4.4,22,5.5,8.8,.22]},
  prices:{'Claude Opus 5.5 (fast)':[8,40,10,16,.4]}};
  S.tools=new Set(['copilot','codex','claude']);`);
+const monthWindows=JSON.parse(run(`JSON.stringify(activityMonthWindows(3,new Date(2026,9,11)).map(x=>({from:x.from,to:x.to,label:x.label,current:x.current})))`));
+assert.deepEqual(monthWindows,[
+  {from:'2026-08-01',to:'2026-08-31',label:'Aug',current:false},
+  {from:'2026-09-01',to:'2026-09-30',label:'Sep',current:false},
+  {from:'2026-10-01',to:'2026-10-11',label:'Oct',current:true},
+]);
 assert.equal(run(`priceOf('Claude Opus 5.5 (US)','2026-10-02')[0]`),4.4);
 assert.equal(run(`priceOf('Claude Opus 5.5 (fast)')[0]`),8);
 run(`RAW.pricing_history={'Claude Opus 5.5 (US)':[['2026-09-01',[5.5,27.5,6.875,11,.55]]]};`);
