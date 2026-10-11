@@ -64,7 +64,11 @@ def screenshot(window, destination, background=None):
     image = w.bitmap(dc, width, height)
     old = w.select_object(memory, image)
     try:
-        assert w.api(w.U, "PrintWindow", W.BOOL, W.HWND, W.HDC, W.UINT)(window, memory, 2)
+        # Mock work areas can extend beyond the hosted desktop. PrintWindow's
+        # compositor capture intermittently clips those off-screen regions to
+        # black. WM_PRINT renders the actual HWND and its native children into
+        # this DC synchronously, without depending on desktop visibility.
+        w.send(window, 0x317, memory, 0x1e)  # WM_PRINT: nonclient/client/background/children.
         w.select_object(memory, old)
         info = BITMAPINFO()
         info.size, info.width, info.height, info.planes, info.bits = 40, width, -height, 1, 32
