@@ -74,10 +74,6 @@ def screenshot(window, destination, background=None):
         data = raw.raw
         # A blank window/failed owner draw must not pass as a screenshot test.
         assert len({data[i:i+3] for i in range(0, len(data), 4)}) > 100
-        if background is not None:
-            i = ((height - 5) * width + width // 2) * 4
-            actual = data[i + 2] | data[i + 1] << 8 | data[i] << 16
-            assert actual == background, ("Footer area was not painted", actual, background)
         rows = bytearray()
         for y in range(height):
             rows.append(0)
@@ -88,6 +84,10 @@ def screenshot(window, destination, background=None):
             return struct.pack(">I", len(contents)) + kind + contents + struct.pack(">I", zlib.crc32(kind + contents) & 0xffffffff)
         destination.write_bytes(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
             + chunk(b"IDAT", zlib.compress(bytes(rows))) + chunk(b"IEND", b""))
+        if background is not None:
+            i = ((height - 5) * width + width // 2) * 4
+            actual = data[i + 2] | data[i + 1] << 8 | data[i] << 16
+            assert actual == background, ("Footer area was not painted", actual, background, str(destination), width, height)
     finally:
         w.select_object(memory, old)
         w.delete_object(image)
