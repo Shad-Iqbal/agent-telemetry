@@ -9,6 +9,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 import zipfile
+import install
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -25,6 +26,24 @@ REGISTER = module("windows_release_register", ROOT / "windows" / "installer" / "
 
 
 class PackagingTests(unittest.TestCase):
+    def test_source_installer_cannot_remove_a_bundled_runtime_or_uninstaller(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            python = root / "source-python" / "python.exe"
+            python.parent.mkdir()
+            python.with_name("pythonw.exe").write_bytes(b"fixture")
+            app = root / "Programs" / "AgentTelemetry"
+            (app / "runtime").mkdir(parents=True)
+            (app / "runtime" / "pythonw.exe").write_bytes(b"keep runtime")
+            (app / "BUILD-INFO.json").write_text("{}")
+            (app / "unins000.exe").write_bytes(b"keep uninstaller")
+            with patch.object(sys, "_base_executable", str(python), create=True), patch.dict("os.environ", {"LOCALAPPDATA": str(root)}):
+                with self.assertRaisesRegex(ValueError, "EXE"):
+                    install.install_windows()
+            self.assertEqual((app / "runtime" / "pythonw.exe").read_bytes(), b"keep runtime")
+            self.assertEqual((app / "unins000.exe").read_bytes(), b"keep uninstaller")
+            self.assertFalse(app.with_name("AgentTelemetry.previous").exists())
+
     def test_stage_uses_allowlist_and_bundled_isolated_runtime(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
