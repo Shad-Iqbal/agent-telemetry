@@ -221,6 +221,11 @@ function renderCalendar(byDay, maxV, onClick){
 }
 
 /* ---------- hour x weekday heatmap (SVG, sequential blue) ---------- */
+function fmtHour12(hour){
+  const value = Number(hour) % 24;
+  return `${value % 12 || 12} ${value < 12 ? "AM" : "PM"}`;
+}
+
 function renderHeatmap(cells, maxV){
   const gap=2, rowH=22, mL=34, mT=16;
   const ramp=seqRamp();
@@ -229,7 +234,7 @@ function renderHeatmap(cells, maxV){
   const W=760, H=mT+7*rowH+14, cellW=(W-mL)/24;
   let s=`<svg viewBox="0 0 ${W} ${H}" width="100%" preserveAspectRatio="xMinYMin meet" role="img" aria-label="activity by hour and weekday">`;
   for(let h=0;h<24;h+=3)
-    s+=`<text x="${mL+h*cellW}" y="10" fill="${cssv("--text-3")}" font-size="10">${pad2(h)}</text>`;
+    s+=`<text x="${mL+h*cellW}" y="10" fill="${cssv("--text-3")}" font-size="10">${fmtHour12(h)}</text>`;
   for(let d=0;d<7;d++){
     s+=`<text x="0" y="${mT+d*rowH+15}" fill="${cssv("--text-3")}" font-size="10">${DOW[d]}</text>`;
     for(let h=0;h<24;h++){
@@ -243,7 +248,7 @@ function renderHeatmap(cells, maxV){
   const svg=wrap.querySelector("svg");
   svg.addEventListener("mousemove",e=>{
     const r=e.target.closest("rect"); if(!r) return hideTip();
-    showTip(`<div class="t">${DOW[+r.dataset.d]} ${pad2(+r.dataset.h)}:00</div>
+    showTip(`<div class="t">${DOW[+r.dataset.d]} ${fmtHour12(+r.dataset.h)}</div>
       <div class="r"><span class="k">tokens</span><span class="v">${fmtTok(+r.dataset.v)}</span></div>`,
       e.clientX,e.clientY);
   });
