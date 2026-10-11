@@ -135,7 +135,7 @@ a{color:inherit}
 .main{min-width:0;padding:0 0 72px}
 
 /* ---------- page header ---------- */
-.page-head{position:sticky;top:0;z-index:40;background:var(--surface);padding:18px 28px 14px;
+.page-head{position:sticky;top:0;z-index:40;background:var(--side);padding:18px 28px 14px;
   margin:0 0 22px;border-bottom:1px solid var(--border)}
 .page-head h1{margin:0;font-size:23px;font-weight:680;letter-spacing:-.45px;line-height:1.15}
 #views{padding:0 28px}
