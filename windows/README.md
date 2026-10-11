@@ -15,6 +15,10 @@ Uninstall removes application files and its shortcut, while retaining usage hist
 preferences. The installer creates no login-startup entry unless preserving a previous
 AgentTelemetry opt-in; it never changes another application's entry.
 
+To import archived history from a source checkout, uncheck **Open AgentTelemetry** on
+the installer's final page, open from Start and use **Import existing data** before
+Start monitoring. This keeps the import destination empty.
+
 For source installation, use standard Python 3.8+ with `pythonw.exe`, then run
 `python install.py` from the checkout. It detects Windows, copies an explicit
 app/backend allowlist to `%LOCALAPPDATA%\Programs\AgentTelemetry`, creates a Start-menu

@@ -26,6 +26,10 @@ Applications and open it. Windows: run the installer and open AgentTelemetry fro
 Open at Login is optional. Quit the app and wait for saving before installing an update;
 upgrades and uninstall preserve telemetry history.
 
+If you have archived history in a source checkout, leave **Open AgentTelemetry**
+unchecked in Windows setup, open the app manually and **Import existing data** before
+starting monitoring. On macOS, opening the app manually also lets you import first.
+
 These builds are unsigned/unnotarized. macOS may require **System Settings → Privacy &
 Security → Open Anyway**; Windows SmartScreen may require **More info → Run anyway**.
 [All releases](https://github.com/uttamdeb/agent-telemetry/releases) ·

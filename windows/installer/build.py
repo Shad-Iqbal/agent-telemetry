@@ -40,8 +40,9 @@ def stage(source, destination, archive, version):
     (runtime / "python313._pth").write_text("python313.zip\n.\n..\n", encoding="utf-8")
     shutil.copy2(HERE / "register_install.py", destination / "windows" / "register_install.py")
     commit = subprocess.check_output(["git", "-C", str(source), "rev-parse", "HEAD"], text=True).strip()
+    packaging_commit = subprocess.check_output(["git", "-C", str(HERE.parents[1]), "rev-parse", "HEAD"], text=True).strip()
     (destination / "BUILD-INFO.json").write_text(json.dumps({"version": version,
-        "commit": commit, "python": "3.13.16", "python_url": PYTHON_URL,
+        "commit": commit, "packaging_commit": packaging_commit, "python": "3.13.16", "python_url": PYTHON_URL,
         "python_sha256": PYTHON_SHA256}, indent=2) + "\n", encoding="utf-8")
     assert (runtime / "pythonw.exe").is_file()
     forbidden = {".usage_cache.json", ".peers.json", ".peers", "server.log"}

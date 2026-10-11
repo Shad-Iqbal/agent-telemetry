@@ -21,7 +21,7 @@ def main():
     parser.add_argument("installer", type=Path)
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="AgentTelemetry offline install ") as directory:
-        root = Path(directory)
+        root = Path(directory).resolve()
         app = root / "Application with spaces"
         local = root / "Local AppData"
         support = local / "AgentTelemetryNative"
@@ -43,7 +43,9 @@ def main():
         pythonw = app / "runtime" / "pythonw.exe"
         entry = app / "windows" / "tray.py"
         manifest = json.loads((support / "native-install.json").read_text())
-        assert manifest["command"] == [str(pythonw), str(entry)]
+        assert len(manifest["command"]) == 2
+        assert Path(manifest["command"][0]).samefile(pythonw)
+        assert Path(manifest["command"][1]).samefile(entry)
         assert manifest["version"] == "2.0.0"
         info = json.loads((app / "BUILD-INFO.json").read_text())
         assert info["commit"] == "83bc824a286ec3fe7ab0ee8155566a758489b57e"
