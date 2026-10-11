@@ -390,15 +390,27 @@ function cycleTheme(){
 }
 
 /* ---------- dropdown plumbing ---------- */
+/* Dropdowns normally open from their trigger's left edge. When that would run past
+   the viewport, flip them against the trigger's right edge instead. This keeps the
+   query sentence natural while letting its right-most controls remain usable. */
+function placeDD(dd){
+  const panel=dd.querySelector(".dd-panel");
+  if(!panel) return;
+  dd.classList.remove("flip-x");
+  if(panel.getBoundingClientRect().right > innerWidth-16) dd.classList.add("flip-x");
+}
 function closeDD(except){
-  document.querySelectorAll(".dd.open").forEach(d=>{ if(d!==except) d.classList.remove("open"); });
+  document.querySelectorAll(".dd.open").forEach(d=>{
+    if(d!==except){ d.classList.remove("open"); d.classList.remove("flip-x"); }
+  });
 }
 document.addEventListener("click", e=>{
   const tog = e.target.closest("[data-dd=toggle]");
   if(tog){ const dd=tog.closest(".dd"); const open=dd.classList.contains("open");
-    closeDD(); if(!open) dd.classList.add("open"); e.stopPropagation(); return; }
+    closeDD(); if(!open){ dd.classList.add("open"); placeDD(dd); } e.stopPropagation(); return; }
   if(!e.target.closest(".dd-panel")) closeDD();
 });
+if(typeof window!=="undefined") window.addEventListener("resize",()=>document.querySelectorAll(".dd.open").forEach(placeDD));
 document.addEventListener("keydown", e=>{
   // an open dialog owns the keyboard: Esc closes it alone, not the drawer behind it
   if(document.querySelector("dialog.modal[open]")) return;
