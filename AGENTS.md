@@ -206,6 +206,11 @@ so that file stops being a cache and becomes the sole record. Two consequences:
   discarding them on a version change would silently destroy history the UI promised
   to keep. Newer fields are read with `.get()` defaults, so an old-shape archived
   entry degrades rather than breaks.
+- Version 53 → **54** only adds optional Claude compaction metadata. This migration
+  retains every existing entry; `update_file()` fully reparses available Claude logs
+  missing `compactions`, replacing them only after success. Other sources continue
+  incrementally and archived entries stay unchanged. A failed backfill retries even
+  when the source size/mtime is unchanged. Peers with versions 52/53 remain readable.
 - **`--rebuild` destroys archived sessions too**, not just the Settings buttons — it
   skips the cache entirely and re-parses from disk, and an archived session has no
   disk to parse. Back up `.usage_cache.json` before running it on a machine whose
@@ -265,6 +270,23 @@ so that file stops being a cache and becomes the sole record. Two consequences:
   iteration here is a plain `message`, already covered by the response's own `usage`.
 
 ## Field conventions that differ by source (do not "fix" these)
+
+- **Claude compactions are durable session events, not inferred model usage.**
+  `agg.compactions` maps boundary UUID → timestamp, local date, manual/auto/unknown
+  trigger, before/after context sizes and duration in milliseconds. An id-less older
+  boundary uses its UTC completion timestamp as a stable fallback. Record only
+  completed `system/compact_boundary` events; the summary and `/compact` command
+  add no event, prompt, reply or token. Inline sidechains are not the parent's events;
+  child transcripts keep their own. Never store summary text or price context sizes.
+  Missing numeric fields are `None`, including malformed/negative/bool values; zero
+  remains zero and context increases remain visible. An absent map on an old archive
+  means unknown, while an empty map on a parsed log means zero observed events.
+  Session summaries/export carry the events. Date/tool/project/device filtering applies;
+  model/provider filters cannot attribute an event with no recorded model. Such events
+  only make a compaction-only day visible when no model/provider filter is selected.
+  The drawer states the events' date-only scope when billed model filters are active.
+  Completion can extend session start/end but never advances billed active time or
+  creates a record/hourly usage row. Keep cumulative cost-state reconciliation separate.
 
 - **One Claude response is several records, and a resume can replay them all.** Claude
   Code writes one `type:"assistant"` record per content block (thinking, text, each

@@ -222,6 +222,12 @@ where clicking a row opens that project's sessions.
 
 **Sessions** — real session titles, tool, project, model, tokens, cost, prompts, replies,
 tool calls, active time, cache % — search, sort, and click any row for a detail panel.
+Claude sessions also show completed compactions in the selected date range, with
+manual/auto counts, context before → after, and duration in the detail panel.
+Compaction-only days remain visible. Events survive log deletion once recorded;
+older ledger entries without event metadata say “Not recorded.” Context sizes are
+separate from billed tokens: compaction request usage/cost is not inferred. Events
+belong to the session and are not attributed to a model filter.
 
 **Optimize** — suggestions derived from your own logs, ranked by what they'd save: sessions
 re-reading a very large context, thinking share, tool-heavy sessions that never delegated,

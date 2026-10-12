@@ -491,7 +491,7 @@ def _buckets(dt):
 # Per-file aggregate container
 # ---------------------------------------------------------------------------
 def _blank_agg(source, path):
-    return {
+    agg = {
         "source": source,
         "path": path,
         "size": 0,
@@ -531,6 +531,11 @@ def _blank_agg(source, path):
         "state": {"cur_model": None},
         "sessions": [],
     }
+    if source in ("claude", "claude-desktop"):
+        # Present and empty means observed zero; absent on an older archive means
+        # unknown. Keep event metadata separate from all billed usage counters.
+        agg["compactions"] = {}
+    return agg
 
 
 def _rec(agg, date, model):
@@ -1042,6 +1047,25 @@ _NOT_TYPED = ("<local-command-caveat>", "<command-name>", "<command-message>",
 _SLASH_CMD = re.compile(r"/[a-z][\w:.-]*(?:\s|$)")
 
 
+def _claude_compaction(agg, obj, dt):
+    """Record a completed boundary, never its summary text or inferred usage."""
+    meta = obj.get("compactMetadata")
+    meta = meta if isinstance(meta, dict) else {}
+    def count(key):
+        value = meta.get(key)
+        return value if type(value) is int and value >= 0 else None
+    # Claude supplies UUIDs. Older/id-less markers have a stable timestamp key;
+    # coalescing identical completion stamps is safer than counting a replay.
+    uid = obj.get("uuid")
+    key = uid if isinstance(uid, str) and uid else "at:" + dt.astimezone(timezone.utc).isoformat()
+    events = agg.setdefault("compactions", {})
+    if key not in events:
+        events[key] = {"id": key, "timestamp": dt.isoformat(), "date": _buckets(dt)[0],
+                       "trigger": meta.get("trigger") if meta.get("trigger") in ("manual", "auto") else "unknown",
+                       "before": count("preTokens"), "after": count("postTokens"),
+                       "duration_ms": count("durationMs")}
+
+
 def parse_claude(agg, lines):
     project = agg["project"]
     st = agg["state"]
@@ -1094,6 +1118,11 @@ def parse_claude(agg, lines):
         side = bool(o.get("isSidechain"))
         msg = o.get("message") if isinstance(o.get("message"), dict) else None
         dt = _from_iso(o.get("timestamp", "")) if o.get("timestamp") else None
+        if (t == "system" and o.get("subtype") == "compact_boundary" and dt
+                and (not side or agg.get("subagent"))):
+            # Inline sidechains aren't the parent's own compactions. A child's
+            # standalone transcript records its events under its own session.
+            _claude_compaction(agg, o, dt)
 
         # model "<synthetic>" is Claude Code talking, not the model: "Prompt is too
         # long", usage-limit notices, API errors. Zero usage, so it was only ever
@@ -3143,8 +3172,9 @@ def update_file(agg, source, path, editor_hint, proj_map):
         return fresh
 
     # jsonl (claude / codex) — incremental append
-    if not agg or agg.get("size", 0) > size:
-        agg = _blank_agg(source, path)  # new or truncated → reparse fully
+    if (not agg or agg.get("size", 0) > size
+            or (source in ("claude", "claude-desktop") and "compactions" not in agg)):
+        agg = _blank_agg(source, path)  # new/truncated log or missing metadata → reparse
     offset = agg["offset"]
     if size == offset and agg.get("mtime") == mtime:
         return agg  # unchanged
@@ -3380,3 +3410,12 @@ def _finalize_session(agg, source, path):
         "active": round(active_total, 1),
         "bytes": agg.get("size", 0), "archived": bool(agg.get("archived")),
     }]
+    if "compactions" in agg:
+        events = sorted(agg["compactions"].values(), key=lambda e: (e["timestamp"], e["id"]))
+        session = agg["sessions"][0]
+        session["compactions"] = events
+        # Completion is session activity, but must not create a usage/hourly row
+        # or advance the active-time clock between actual prompts and responses.
+        if events:
+            session["start"] = min(t for t in (session["start"], events[0]["timestamp"]) if t)
+            session["end"] = max(t for t in (session["end"], events[-1]["timestamp"]) if t)

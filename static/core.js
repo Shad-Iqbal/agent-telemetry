@@ -271,14 +271,24 @@ function sessionDays(s){
 }
 function activeInRange(s, r){
   const D = sessionDays(s);
-  if(D){ for(const d in D) if(d>=r.from && d<=r.to) return true; return false; }
+  if(D){ for(const d in D) if(d>=r.from && d<=r.to) return true; }
+  // Boundaries have no billed model attribution. They can make an otherwise
+  // empty day visible when no model/provider filter asks for model-specific work.
+  if(!S.models.size && !S.provs.size && (compactionsInRange(s,r)||[]).length) return true;
+  if(D) return false;
   const e = (s.end||s.start||"").slice(0,10);
   return e>=r.from && e<=r.to;
 }
+function compactionsInRange(s, r){
+  if(!Array.isArray(s.compactions)) return null; // older archive/peer: unknown
+  return s.compactions.filter(e=>e.date>=r.from && e.date<=r.to);
+}
 /* Keep the first ten legacy slots; newer maps add calls and write tiers. */
 function clipSession(s, r){
+  const compactions=compactionsInRange(s,r);
+  const events={compactions,compaction_count:compactions===null?null:compactions.length};
   const D = sessionDays(s);
-  if(!D) return Object.assign({}, s, {span:1, clipped:false, detail_limited:true});
+  if(!D) return Object.assign({}, s, {span:1, clipped:false, detail_limited:true}, events);
   const total=Array(15).fill(0); let inN=0,allN=0,callsKnown=true;
   for(const d in D){
     allN++;
@@ -287,11 +297,14 @@ function clipSession(s, r){
     if(v.length<11) callsKnown=false;
     v.forEach((n,i)=>{total[i]+=n||0;});
   }
+  const dates=new Set(Object.keys(D));
+  for(const e of s.compactions||[]) if(e.date) dates.add(e.date);
+  const inRange=[...dates].filter(d=>d>=r.from && d<=r.to).length;
   const [cost,i,o,cr,cc,asst,user,tools,prem,active,req,cc5,cc1,reason,ws]=total;
   return Object.assign({}, s, {cost, in:i, out:o, cr, cc, asst, user, tools, prem, active,
     cc5, cc1, reason, ws, req:callsKnown?req:(inN<allN?asst:s.req),
-    span:allN, range_clipped:inN<allN,
-    clipped:inN<allN || !!(S.models.size || S.provs.size)});
+    span:dates.size, range_clipped:inRange<dates.size,
+    clipped:inRange<dates.size || !!(S.models.size || S.provs.size)}, events);
 }
 
 /* Tool-call rows carry a date + source but no project/model dimension, so the

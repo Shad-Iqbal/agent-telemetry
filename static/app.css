@@ -359,7 +359,7 @@ td b{font-weight:640}
 .badge{display:inline-flex;align-items:center;gap:5px;padding:1px 7px 1px 6px;border-radius:6px;font-size:11px;font-weight:600;
   color:var(--text-2);background:var(--surface-2);border:1px solid var(--border)}
 .badge .dot{width:7px;height:7px}
-.sub-badge{display:inline-block;font-size:9.5px;font-weight:680;letter-spacing:.03em;text-transform:uppercase;color:var(--text-3);
+.sub-badge,.compaction-badge{display:inline-block;font-size:9.5px;font-weight:680;letter-spacing:.03em;text-transform:uppercase;color:var(--text-3);
   border:1px solid var(--border-2);border-radius:4px;padding:1px 4px;margin-right:6px;vertical-align:1px}
 .warn-ic{color:var(--warn);margin-left:4px}
 
@@ -398,6 +398,13 @@ code.cmd{display:block;background:var(--surface-2);border:1px solid var(--border
 .kv .k{color:var(--text-3)} .kv .v{text-align:right;font-variant-numeric:tabular-nums}
 .eyebrow{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--text-3);font-weight:660}
 .drawer h2{margin:5px 0 4px;font-size:18px;font-weight:660;letter-spacing:-.2px}
+.compaction-details{margin-top:20px}
+.compaction-details h3{font-size:13px;margin:0 0 6px}
+.compaction-details .hint{margin:6px 0}
+.compaction-table{overflow-x:auto;margin:10px 0}
+.compaction-table table{font-size:11.5px}
+.compaction-table td,.compaction-table th{padding:8px 6px;white-space:nowrap}
+.compaction-table td:first-child{white-space:normal}
 
 /* ---------- tooltip ---------- */
 #tip{position:fixed;z-index:99;pointer-events:none;background:var(--surface);border:1px solid var(--border-2);

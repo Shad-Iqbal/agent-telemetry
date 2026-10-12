@@ -860,11 +860,17 @@ function viewProjects(d){
 }
 
 /* ---------------- SESSIONS ---------------- */
+function sessionWhen(s){
+  if(!["in","out","cr","cc","user","asst","req","tools","active"].some(k=>s[k])
+      && Array.isArray(s.compactions) && s.compactions.length)
+    return s.compactions[s.compactions.length-1].timestamp||"";
+  return s.end||s.start||"";
+}
 function sessionRows(d){
   const q=S.search.toLowerCase();
   return d.sessions.map(s=>({...s,
     tok:(s.in||0)+(s.out||0)+(s.cr||0)+(s.cc||0),
-    when:s.end||s.start||"",
+    when:sessionWhen(s),
     cache:((s.in||0)+(s.cr||0)+(s.cc||0))?(s.cr||0)/((s.in||0)+(s.cr||0)+(s.cc||0)):0,
     name:s.title||s.project||s.id,
   })).filter(s=>!q || (s.name+" "+(s.project||"")+" "+(s.model||"")+" "+(s.branch||"")).toLowerCase().includes(q));
@@ -884,7 +890,8 @@ function viewSessions(d){
       <td>${srcBadge(s.source)}</td>
       <td class="name" title="${esc(s.title||"")}">${
         s.clipped?`<span class="dim" style="margin-right:5px" title="Figures reflect the selected range and model filters.">◔</span>`:""}${
-        s.subagent?`<span class="sub-badge" title="A subagent transcript — work its parent delegated.">sub</span>`:""}${esc(s.name)}</td>
+        s.subagent?`<span class="sub-badge" title="A subagent transcript — work its parent delegated.">sub</span>`:""}${esc(s.name)}${
+        s.compaction_count?` <span class="compaction-badge" title="Completed compactions in the selected date range; model filters do not apply.">${fmtNum(s.compaction_count)} compaction${s.compaction_count===1?"":"s"}</span>`:""}</td>
       <td class="dim">${esc(s.project||"—")}</td>
       <td>${esc(s.model)}${s.nmodels>1?` <span class="dim" title="${esc((s.models||[]).join(" · "))}">+${s.nmodels-1}</span>`:""}</td>
       <td class="r">${fmtTok(s.tok)}</td><td class="r"><b>${fmtUSD(s.cost)}</b></td>
@@ -939,8 +946,29 @@ function openSession(i){
     ${row("Subagents",s.subagents?fmtNum(s.subagents):null)}
     ${row("Subagent tokens",s.side?fmtNum(s.side):null)}
     ${row("Log size",s.bytes?fmtBytes(s.bytes):null)}
+    ${compactionDetails(s)}
     ${s.archived?'<div class="warnbar">This log has been pruned from disk; its numbers are kept from an earlier scan.</div>':""}
   `);
+}
+
+function compactionDetails(s){
+  if(s.source!=="claude" && s.source!=="claude-desktop") return "";
+  if(!Array.isArray(s.compactions)) return '<div class="kv"><span class="k">Compactions</span><span class="v">Not recorded in this ledger entry</span></div>';
+  const events=s.compactions;
+  const counts={manual:0,auto:0,unknown:0};
+  for(const e of events) counts[e.trigger==="manual"||e.trigger==="auto"?e.trigger:"unknown"]++;
+  const types=[counts.manual?`${counts.manual} manual`:"",counts.auto?`${counts.auto} auto`:"",
+    counts.unknown?`${counts.unknown} unknown`:""].filter(Boolean).join(" · ");
+  const value=n=>Number.isFinite(n)?fmtTok(n):"—";
+  const duration=n=>Number.isFinite(n)?`${Math.round(n/1000)}s`:"—";
+  return `<section class="compaction-details"><h3>Compactions · ${fmtNum(events.length)}</h3>
+    <p class="hint">${types?esc(types)+" · ":""}Selected date range. Events belong to this session; model filters do not apply.</p>
+    ${events.length?`<div class="compaction-table"><table aria-label="Completed compactions in selected date range"><thead><tr><th class="nosort">When</th><th class="nosort">Type</th><th class="nosort">Context</th><th class="nosort">Duration</th></tr></thead><tbody>${events.map(e=>`<tr>
+      <td title="${esc(e.timestamp||"")}">${esc((e.timestamp||"").slice(0,16).replace("T"," "))}</td>
+      <td>${e.trigger==="manual"?"Manual":e.trigger==="auto"?"Auto":"Unknown"}</td>
+      <td title="Before: ${Number.isFinite(e.before)?fmtNum(e.before):"unknown"}; after: ${Number.isFinite(e.after)?fmtNum(e.after):"unknown"}">${value(e.before)} → ${value(e.after)}</td>
+      <td>${duration(e.duration_ms)}</td></tr>`).join("")}</tbody></table></div>
+    <p class="hint">Context before → after. Compaction request tokens and cost are not recorded; context reduction is not billed usage.</p>`:""}</section>`;
 }
 
 /* ---------------- VERSION + UPDATE ----------------

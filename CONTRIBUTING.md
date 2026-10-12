@@ -95,6 +95,11 @@ These are not style preferences. A PR that breaks one will be asked to change.
 - **Every dimension carries a date.** Aggregates are keyed `records["date\tmodel"]`,
   `tools["date\tname"]`, `hourly["date\thour"]` so the UI can filter by range. A new
   aggregate that isn't date-keyed can't be filtered.
+- **Compaction events are separate from usage.** Keep Claude boundary UUIDs and
+  dates, deduplicate replays, and never price context before/after counts. Test
+  full/incremental parsing, failed metadata backfills, archived entries and peers;
+  normal tokens, messages, tools and other aggregates must remain identical.
+  Older entries without metadata are unknown, not zero. Preserve them on migration.
 - **A line chart needs two points to draw a segment.** Build line/area datasets with
   `pointRadius: soloPoint(data)` or a single-day range renders as empty axes.
 - **Check the function signature you're calling.** Python won't catch a wrong keyword

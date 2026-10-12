@@ -208,7 +208,7 @@ class RegressionTests(unittest.TestCase):
     def test_cache_migration_retains_archived_ledger(self):
         archived = self.aggregate()
         archived["archived"] = True
-        Path(D.CACHE_PATH).write_text(json.dumps({"version": D.CACHE_VERSION - 1,
+        Path(D.CACHE_PATH).write_text(json.dumps({"version": 52,
             "files": {"gone.json": archived, "live.json": self.aggregate("codex")}}), encoding="utf-8")
         with contextlib.redirect_stderr(io.StringIO()):
             D.load_cache()

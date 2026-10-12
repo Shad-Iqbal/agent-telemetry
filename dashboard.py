@@ -24,7 +24,7 @@ import native as N
 HERE = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = HERE
 CACHE_PATH = os.path.join(DATA_DIR, ".usage_cache.json")
-CACHE_VERSION = 53
+CACHE_VERSION = 54
 
 
 def _configure_data_dir(path):
@@ -40,7 +40,7 @@ def _configure_data_dir(path):
 def _peer_cache_ok(version):
     # v1.7.0 mirrors lack optional attribution/precision fields, but the reader
     # still supports their rows just as it supports archived local entries.
-    return type(version) is int and version in (52, CACHE_VERSION)
+    return type(version) is int and version in (52, 53, CACHE_VERSION)
 
 # ---------------------------------------------------------------------------
 # In-memory store of per-file aggregates, refreshed on a background interval.
@@ -254,6 +254,14 @@ def load_cache():
     if data.get("version") == CACHE_VERSION:
         _state["files"] = files
         return
+    if data.get("version") == 53:
+        # Only optional Claude event metadata changed. Keep every existing entry
+        # until its replacement parses successfully; update_file backfills Claude
+        # logs lacking compactions, while other sources stay incremental.
+        _state["files"] = files
+        _dirty["v"] = True
+        sys.stderr.write("[cache] backfilling Claude compaction metadata; existing ledger retained\n")
+        return
     # Version changed, so the shape may have. Live logs are simply re-parsed from
     # disk — but ARCHIVED entries CANNOT be: their source files are gone. Dropping
     # them would silently destroy history the Storage tab explicitly promises is
@@ -456,9 +464,9 @@ def _opencode_remainder(original, messages):
 
 
 def _did_something(s):
-    """A session that produced any turn — the Sessions list and the per-project
+    """A session with a turn or completed compaction — the list and per-project
     session count must agree on what counts as one."""
-    return bool(s.get("asst") or s.get("req") or s.get("in") or s.get("user"))
+    return bool(s.get("asst") or s.get("req") or s.get("in") or s.get("user") or s.get("compactions"))
 
 
 def build_payload():
@@ -1536,7 +1544,7 @@ def _devices_meta():
 _EXPORT_KEYS = ("source", "path", "mtime", "archived", "project", "title", "branch", "editor",
                 "entry", "cliver", "subagent", "first_ts", "last_ts", "records", "tools",
                 "skills", "ctx", "hourly", "reads", "totals", "sessions", "open_ctx",
-                "opencode_ids", "opencode_messages")
+                "opencode_ids", "opencode_messages", "compactions")
 
 
 def _export_agg(agg):
