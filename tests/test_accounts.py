@@ -195,6 +195,28 @@ class AccountTests(unittest.TestCase):
         self.assertNotIn("account_metadata", exported)
         self.assertNotIn("creator-A", json.dumps(exported)); self.assertNotIn("used_percent", json.dumps(exported))
 
+    def test_slow_account_read_cannot_hold_the_telemetry_parser_lock(self):
+        started, release = threading.Event(), threading.Event()
+        aggregate = self.aggregate()
+        observed = []
+        def read(aggregates, device):
+            started.set(); release.wait(timeout=2)
+            observed.append(aggregates[0]["account_metadata"]["creator_account_id"])
+            return {"entries": []}
+        with patch.dict(D._state, {"files": {aggregate["path"]: aggregate}}), patch.object(D, "_local_id", return_value="local"), patch.object(A, "build_accounts", side_effect=read):
+            worker = threading.Thread(target=D.build_account_payload)
+            worker.start()
+            try:
+                self.assertTrue(started.wait(timeout=1))
+                acquired = D._refresh_lock.acquire(timeout=.2)
+                self.assertTrue(acquired, "Slow account read blocked usage parsing")
+                if acquired:
+                    aggregate["account_metadata"]["creator_account_id"] = "changed-later"
+                    D._refresh_lock.release()
+            finally:
+                release.set(); worker.join(timeout=2)
+        self.assertEqual(observed, ["creator-A"])
+
     def test_v56_migration_keeps_archives_and_failed_live_backfill(self):
         agg = self.aggregate(); old = copy.deepcopy(agg)
         old.pop("account_metadata_version"); old.pop("account_metadata")

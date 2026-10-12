@@ -14,7 +14,7 @@ an interactive dashboard.
 Stdlib only. First run parses everything (one large Codex log makes that take a
 moment); results are cached, and subsequent refreshes are incremental & instant.
 """
-import os, re, sys, json, time, glob, threading, argparse, shutil, mimetypes, platform, subprocess
+import os, re, sys, json, time, glob, threading, argparse, shutil, mimetypes, platform, subprocess, copy
 import gzip, hmac, io, ipaddress, secrets, socket, uuid, signal, urllib.parse, urllib.request, urllib.error
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -489,6 +489,17 @@ def _did_something(s):
     """A session with a turn or completed compaction — the list and per-project
     session count must agree on what counts as one."""
     return bool(s.get("asst") or s.get("req") or s.get("in") or s.get("user") or s.get("compactions"))
+
+
+def build_account_payload():
+    # Copy only private metadata under the parser lock, then release it before
+    # waiting on a possibly slow opt-in CLI lookup. Usage refresh stays available.
+    with _refresh_lock:
+        aggregates = [{"source": a.get("source"), "path": a.get("path", ""),
+                       "account_metadata": copy.deepcopy(a.get("account_metadata") or {})}
+                      for a in _state["files"].values()]
+        device = _local_id()
+    return A.build_accounts(aggregates, device)
 
 
 def build_payload():
@@ -2157,9 +2168,7 @@ class Handler(BaseHTTPRequestHandler):
         elif route == "/api/sync":
             self._send(200, json.dumps(refresh_sync()))
         elif route == "/api/accounts":
-            with _refresh_lock:
-                result = A.build_accounts(list(_state["files"].values()), _local_id())
-            self._send(200, json.dumps(result))
+            self._send(200, json.dumps(build_account_payload()))
         elif route == "/api/summary":
             try:
                 self._send(200, client_snapshot()[1])
@@ -2258,8 +2267,7 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 if route == "/api/accounts":
                     A.refresh_account(body.get("source"), body.get("confirmed"))
-                    with _refresh_lock:
-                        result = A.build_accounts(list(_state["files"].values()), _local_id())
+                    result = build_account_payload()
                 elif route == "/api/session-name":
                     result = set_session_name(body)
                 elif route == "/api/native":
