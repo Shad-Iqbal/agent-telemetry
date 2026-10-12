@@ -13,7 +13,7 @@ contact the provider only after you choose **Read once**; account metadata is ne
 with paired devices. No account, no API key, no
 telemetry, no dependencies — just Python's standard library and a vendored copy of Chart.js.
 
-Covers **Claude Code · Claude Desktop · Codex · GitHub Copilot · Cursor · opencode · Hermes Agent · OpenClaw**.
+Covers **Claude Code · Claude Desktop · Codex · GitHub Copilot · Cursor · OpenCode · Hermes Agent · OpenClaw**.
 
 ## Download the app
 
@@ -180,12 +180,12 @@ instead of cloning, delete `.usage_cache.json` first — that file is your perso
 | **Codex** | `~/.codex/sessions/**`, `~/.codex/archived_sessions/**` | exact (in/cached/out/reasoning); subagents are identified and labelled |
 | **GitHub Copilot** | VS Code / Insiders / Cursor `workspaceStorage/*/chatSessions/*.{json,jsonl}` | exact where Copilot recorded them (`promptTokens`/`completionTokens` on finished requests in current builds); estimated from message text for older chats · premium-request multiplier read separately |
 | **Cursor** (native AI) | `Cursor/User/globalStorage/state.vscdb` under App Support / `%APPDATA%` / `~/.config` | partial — model, mode, timestamps, tool calls and AI-line stats are exact; tokens are on only ~2% of messages |
-| **opencode** | `~/.local/share/opencode/opencode.db`, `%LOCALAPPDATA%\opencode\opencode.db`, `~/.opencode/opencode.db` (or `$OPENCODE_DATA_DIR`) | V1/V2 SQLite; exact (in/out/reasoning/cache), prompts and tools; cost is read from opencode's own per-message value |
+| **OpenCode** | `~/.local/share/opencode/opencode.db`, `%LOCALAPPDATA%\opencode\opencode.db`, `~/.opencode/opencode.db` (or `$OPENCODE_DATA_DIR`) | V1/V2 SQLite; exact (in/out/reasoning/cache), prompts and tools; cost is read from OpenCode's own per-message value |
 | **Hermes Agent** | `~/.hermes/state.db` (or `$HERMES_HOME`, `%LOCALAPPDATA%\hermes`) | exact (in/out/cache/reasoning, per model) |
 | **OpenClaw** | `~/.openclaw/agents/<agent>/agent/openclaw-agent.sqlite` (or `$OPENCLAW_STATE_DIR`; also the older `~/.clawdbot`, `~/.moltbot`) and the older per-session `sessions/*.jsonl` | exact (in/out/cache read/cache write/reasoning, per response); its own logged cost is used only for a model with no verified price. Large events are stored zstd-compressed: read with the `zstd` command or Python 3.14+ |
 
 A tool you don't use simply contributes nothing. **Attribution is by tool, not by model** —
-a Claude or GPT model used *inside* Copilot/Cursor/opencode/Hermes/OpenClaw counts under that tool, and the
+a Claude or GPT model used *inside* Copilot/Cursor/OpenCode/Hermes/OpenClaw counts under that tool, and the
 Models table lists each `model × tool` row separately.
 
 ---
@@ -254,7 +254,7 @@ that tool if needed. Token, cost, prompt, tool-call and compaction records stay 
 Previous title metadata is backed up privately in
 `AgentTelemetryNative/session-title-backups/`, separately from the usage ledger.
 This supports local Claude Code transcripts, Codex through its installed CLI’s
-[official name API](https://learn.chatgpt.com/docs/app-server), and opencode’s SQLite
+[official name API](https://learn.chatgpt.com/docs/app-server), and OpenCode’s SQLite
 session stores. Other formats, remote sessions and deleted logs cannot be edited.
 Tool/provider icons are bundled locally, including the OpenAI mark for Codex; no remote
 logo requests occur. Their sources and licenses are in `static/tool-icons/README.md`.

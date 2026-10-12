@@ -102,7 +102,7 @@ These are not style preferences. A PR that breaks one will be asked to change.
   full/incremental parsing, failed metadata backfills, archived entries and peers;
   normal tokens, messages, tools and other aggregates must remain identical.
   Older entries without metadata are unknown, not zero. Preserve them on migration.
-- **opencode has two SQLite schemas.** V1 uses `session/message/part`; V2 uses
+- **OpenCode has two SQLite schemas.** V1 uses `session/message/part`; V2 uses
   `session_v2/session_message`, with role in a column and model/tools inside JSON.
   Read V2 and V1-only history without adding migrated copies twice. Preserve V1
   history for empty V2 migration stubs. Check fork inheritance, unchanged-cache
