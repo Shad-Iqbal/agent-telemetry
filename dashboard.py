@@ -77,6 +77,22 @@ def notify_refresh():
         _sync_manual += 1
 
 
+def _windows_os_label():
+    release = platform.release()
+    label = f"Windows {release}".strip()
+    if release != "10":
+        return label
+    # Older Python releases call Windows 11 "10". Its first client build is
+    # 22000; Server shares the 10.0 version/build family, so exclude it explicitly.
+    try:
+        if sys.getwindowsversion().product_type != 1:
+            return label
+        major, minor, build = map(int, platform.win32_ver()[1].split(".")[:3])
+    except (AttributeError, OSError, TypeError, ValueError):
+        return label
+    return "Windows 11" if (major, minor) == (10, 0) and build >= 22000 else label
+
+
 def _device():
     """The name this machine goes by in its own OS (System Settings > Sharing on a Mac),
     falling back to the bare hostname, plus a short OS label."""
@@ -91,7 +107,7 @@ def _device():
         osl = f"macOS {ver}" if ver else "macOS"
     elif os.name == "nt":
         name = os.environ.get("COMPUTERNAME", "")
-        osl = f"Windows {platform.release()}".strip()
+        osl = _windows_os_label()
     else:
         for path, key in (("/etc/machine-info", "PRETTY_HOSTNAME="), ("/etc/os-release", "PRETTY_NAME=")):
             try:
