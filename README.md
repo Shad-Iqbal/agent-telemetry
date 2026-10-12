@@ -73,7 +73,8 @@ checkout behavior is unchanged. Or `./run.sh [flags]`.
 
 ## Subscription limits and account details
 
-Overview shows Codex's locally recorded remaining-limit snapshots and their reset
+The bottom of Cost shows subscription limits for Codex and Claude Code when they
+have a session today on this device. Codex's locally recorded snapshots show reset
 times. Choose **Refresh account & limits** to read the installed Codex CLI's account,
 auth type, plan and current limits once. Claude's **Refresh account** reads its auth,
 provider and optional plan; percentage meters require the optional local status-line

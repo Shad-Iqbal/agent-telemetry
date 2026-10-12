@@ -266,7 +266,11 @@ so that file stops being a cache and becomes the sole record. Two consequences:
 
 ## Account snapshots
 
-Overview's subscription-limit meters use `GET /api/accounts`, separate from usage
+Cost's bottom subscription-limit card appears only for Codex/Claude sessions active
+today on the local device. Tool/device selection applies; usage date/model/project
+filters do not change account-wide quotas. Combine same-profile entries without
+summing percentages, hide empty buckets and keep freshness/unverified-account labels.
+Its meters use `GET /api/accounts`, separate from usage
 data/summary and health. GET is offline. `POST /api/accounts` requires `_csrf_ok()`
 and explicit `confirmed:true` consent for a one-time CLI lookup that may contact the
 provider. Never start/resume a thread or model turn, login/logout, or redeem credits.

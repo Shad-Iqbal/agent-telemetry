@@ -1,7 +1,9 @@
 # Account information and subscription limits
 
 Research and implementation notes, verified 2026-10-12. The feature appears in the
-web Overview, including the macOS embedded dashboard. Native tray/menu summaries
+bottom of web Cost, including the macOS embedded dashboard. Only Codex/Claude tools
+with local session activity today appear; the card is hidden when neither is used.
+Native tray/menu summaries
 continue to show today's usage; this change does not add quota meters to those panels.
 
 ## Sources and evidence
@@ -45,8 +47,12 @@ observed reliably, so this feature cannot promise their effective billing identi
 Snapshots are never summed across sessions, buckets, profiles or devices, and never
 inferred from token counts, context-window utilization or estimated API cost. Local
 log observations and Claude captures are explicitly unbound to current sign-in.
-Quota cards are independent of usage date/model/project filters; selecting only a
-remote device shows a source-device notice. Private session metadata is absent for
+Quota cards are independent of usage date/model/project filters, respect tool/device
+selection, and are hidden when only remote devices are selected. Entries for the same
+profile are combined without summing percentages; empty buckets are omitted. Available
+account details, reset times and freshness remain visible. Local captures retain a
+short account-unverified label. Distinct profiles stay separate, with their paths in
+collapsed details only when disambiguation is needed. Private session metadata is absent for
 peer sessions and excluded by the device export allowlist.
 
 Five minutes is AgentTelemetry's freshness policy, not a provider guarantee. Every

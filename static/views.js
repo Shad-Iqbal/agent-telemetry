@@ -341,28 +341,74 @@ function quotaWindowHTML(w,s,now=Date.now()/1000){
     <div class="quota-line hint"><span>${esc(state)}</span><span>${esc(reset)}</span></div></div>`;
 }
 function accountEntryHTML(e){
-  const id=e.identity, observed=e.observed_at?new Date(e.observed_at*1000).toLocaleString():null;
+  const id=e.identity;
   const stale=e.identity_stale||accountFetchError||(e.observed_at&&Date.now()/1000-e.observed_at>300);
-  const auth=id?`${id.auth||"Auth unavailable"} · ${id.plan||"Plan unavailable"}`:"Account / auth / plan unavailable";
-  return `<section class="quota-account"><div class="quota-line"><h4>${toolLabel(e.source)}</h4>
-    ${e.snapshots.some(s=>s.origin==="Local Codex log")?'':`<button class="btn" data-account-refresh="${esc(e.source)}" ${accountBusy?'disabled':''}>Refresh account${e.source==="codex"?' & limits':''}</button>`}</div>
-    <p class="hint">${esc(auth)}${id&&id.email?` · ${esc(id.email)}`:""}${id&&id.provider?` · ${esc(id.provider)}`:""}${id&&id.organization_id?` · Org ${esc(id.organization_id)}`:""}${id&&id.credential_source?` · ${esc(id.credential_source)}`:""}${id&&stale?' · Stale account details':''}</p>
-    <p class="hint quota-profile">CLI profile: ${esc(e.profile)}${observed?` · Account checked ${esc(observed)}`:""}</p>
+  const authNames={chatgpt:"ChatGPT subscription",apiKey:"API key","claude.ai":"Claude subscription"};
+  const details=id?[authNames[id.auth]||id.auth,id.plan&&id.plan[0].toUpperCase()+id.plan.slice(1),id.email,
+    id.provider&&id.provider!=="firstParty"?id.provider:null,id.organization_id?`Org ${id.organization_id}`:null].filter(Boolean):[];
+  const snapshots=(e.snapshots||[]).map(s=>({...s,windows:(s.windows||[]).filter(w=>Number.isFinite(w.remaining_percent))})).filter(s=>s.windows.length);
+  const unbound=snapshots.some(s=>s.origin!=="Codex account API");
+  const empty=e.source==="codex"?(id&&id.auth!=="chatgpt"?"Subscription limits unavailable for this sign-in.":"Refresh to check your remaining limits.")
+    :"Connect Claude's status line to show remaining limits.";
+  return `<section class="quota-account"><div class="quota-line"><h4>${toolLabel(e.source)}${e.profile_label?` · ${esc(e.profile_label)}`:""}</h4>
+    ${e.can_refresh===false?'':`<button class="btn" data-account-refresh="${esc(e.source)}" ${accountBusy?'disabled':''}>Refresh account${e.source==="codex"?' & limits':''}</button>`}</div>
+    ${details.length?`<p class="hint">${esc(details.join(" · "))}${stale?' · Account details stale':''}</p>`:""}
     ${e.error?`<p class="warnbar">${esc(e.error)}</p>`:""}
-    ${e.snapshots.map(s=>`<div class="quota-snapshot"><p class="hint">${esc(s.origin)}${s.limit_name||s.limit_id?` · ${esc(s.limit_name||s.limit_id)}`:""}${s.plan?` · Reported plan: ${esc(s.plan)}`:""} · Observed ${esc(new Date(s.observed_at*1000).toLocaleString())}</p>
-      ${s.windows.length?s.windows.map(w=>quotaWindowHTML(w,s)).join(""):'<p class="hint">Quota percentages unavailable.</p>'}
-      <p class="hint">${esc(s.attribution)}</p></div>`).join("")}
-    ${!e.snapshots.length?`<p class="hint">${esc(e.unavailable)}</p>`:""}</section>`;
+    ${snapshots.map(s=>`<div class="quota-snapshot" title="${esc('Updated '+new Date(s.observed_at*1000).toLocaleString())}">
+      ${snapshots.length>1?`<p class="hint">${esc(s.limit_name||s.limit_id||"Subscription")}</p>`:""}
+      ${s.windows.map(w=>quotaWindowHTML(w,s)).join("")}</div>`).join("")}
+    ${unbound?'<p class="hint">Account unverified · locally recorded limits</p>':""}
+    ${!snapshots.length?`<p class="hint">${esc(empty)}</p>`:""}
+    ${e.source==="claude"&&!snapshots.length?'<details class="quota-help"><summary>How to show Claude limits</summary><p class="hint">Set up the optional local status-line capture described in README → Subscription limits and account details. Your existing status line can be preserved.</p></details>':""}
+    ${e.profile_label?`<details class="quota-help"><summary>Profile</summary><p class="hint quota-profile">${esc(e.profile)}</p></details>`:""}</section>`;
+}
+function activeQuotaSources(now=new Date()){
+  if(!RAW||!RAW.device||S.devs.size&&!S.devs.has(RAW.device.id)) return [];
+  const today=dkey(now), active=new Set();
+  for(const s of RAW.sessions||[]){
+    if(s.device&&s.device!==RAW.device.id) continue;
+    if(s.days&&Object.hasOwn(s.days,today)||(s.compactions||[]).some(c=>c.date===today)
+      ||[s.start,s.end].some(t=>t&&dkey(new Date(t))===today)) active.add(s.source);
+  }
+  return ["codex","claude"].filter(source=>active.has(source)&&(!S.tools||S.tools.has(source)));
+}
+function quotaEntries(source){
+  const groups=new Map(), normalize=profile=>{
+    const path=(profile||"").replaceAll("\\","/").replace(/\/$/,"");
+    return /^[a-z]:\//i.test(path)?path.toLowerCase():path;
+  };
+  for(const e of ACCOUNTS&&ACCOUNTS.entries||[]){
+    if(e.source!==source||e.device&&e.device!==RAW.device.id) continue;
+    const local=(e.snapshots||[]).some(s=>s.origin==="Local Codex log"), key=normalize(e.profile);
+    const group=groups.get(key)||{source,profile:e.profile,snapshots:[],can_refresh:false};
+    const snapshots=group.snapshots;
+    if(!local) Object.assign(group,e,{can_refresh:true});
+    group.snapshots=[...snapshots,...(e.snapshots||[])];groups.set(key,group);
+  }
+  const entries=[];
+  for(const group of groups.values()){
+    const buckets=new Map();
+    for(const s of group.snapshots){
+      if(!(s.windows||[]).some(w=>Number.isFinite(w.remaining_percent))) continue;
+      // A current account lookup supersedes unbound history, including API-key sign-ins.
+      if(source==="codex"&&group.identity&&s.origin==="Local Codex log") continue;
+      const key=s.limit_id||s.limit_name||"subscription", previous=buckets.get(key);
+      if(!previous||s.observed_at>previous.observed_at) buckets.set(key,s);
+    }
+    group.snapshots=[...buckets.values()];
+    if(group.can_refresh||group.snapshots.length) entries.push(group);
+  }
+  if(!entries.length) entries.push({source,snapshots:[],can_refresh:true});
+  if(entries.length>1) entries.forEach((e,i)=>{e.profile_label=`Profile ${i+1}`;});
+  return entries;
 }
 function renderAccountLimits(){
   const target=document.getElementById("accountLimits"); if(!target) return;
-  if(RAW&&S.devs.size&&!S.devs.has(RAW.device.id)){
-    target.innerHTML='<p class="hint">Account metadata stays on its source device. Open this dashboard on that device to view its limits.</p>';return;
-  }
+  const sources=activeQuotaSources(), card=document.getElementById("accountLimitsCard");
+  if(card) card.hidden=!sources.length;
+  if(!sources.length){target.innerHTML="";return;}
   target.innerHTML=(accountFetchError?`<p class="warnbar">${esc(accountFetchError)} Previous figures are stale.</p>`:"")
-    +(ACCOUNTS?ACCOUNTS.entries.map(accountEntryHTML).join(""):`<p class="hint">Account details unavailable. Waiting for local observations.</p>
-      <button class="btn" data-account-refresh="codex" ${accountBusy?'disabled':''}>Refresh Codex account & limits</button>
-      <button class="btn" data-account-refresh="claude" ${accountBusy?'disabled':''}>Refresh Claude account</button>`);
+    +sources.flatMap(quotaEntries).map(accountEntryHTML).join("");
 }
 async function loadAccounts(){
   if(accountBusy) return;
@@ -400,7 +446,6 @@ async function refreshAccount(source){
 }
 
 function viewOverview(d){
-  renderAccountLimits();
   const pd = hasPrev() ? slice(prevRange()) : null;
   const days = dateList(d.r), val = metricOf(), fmt = fmtOf();
   const t = totals(d.recs), pt = pd ? totals(pd.recs) : null;
@@ -556,6 +601,7 @@ function renderTokenMix(d){
 
 /* ---------------- COST ---------------- */
 function viewCost(d){
+  renderAccountLimits();
   const pd = hasPrev() ? slice(prevRange()) : null;
   const t = totals(d.recs), pt = pd ? totals(pd.recs) : null;
   const days = dateList(d.r), active = Math.max(1, t.days.size);
@@ -2366,7 +2412,7 @@ function renderAll(){
   try{ nFound = runFinders(d).length; }catch(e){}
   document.getElementById("optCount").textContent = nFound || "";
   const empty = !d.recs.length && !d.sessions.length;
-  if(empty && S.view!=="storage"){
+  if(empty && S.view!=="storage" && !(S.view==="cost"&&activeQuotaSources().length)){
     host.innerHTML = `<div class="grid"><div class="card col-12"><div class="empty">
       No activity for this period and filter combination.</div></div></div>`;
     host.dataset.emptied = "1";

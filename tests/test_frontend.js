@@ -22,6 +22,62 @@ assert.match(run(`sessionAccountDetails({source:'codex',account_metadata:{creato
 assert.match(run(`sessionAccountDetails({source:'claude'})`),/Not recorded/);
 assert.doesNotMatch(run(`sessionAccountDetails({source:'claude',account_metadata:{recorded_account_ids:['<img src=x onerror=alert(1)>']}})`),/<img src=x/);
 assert.doesNotMatch(run(`accountEntryHTML({source:'codex',profile:'<img src=x onerror=alert(1)>',identity:{auth:'apiKey',email:'<img src=x>',plan:null},snapshots:[]})`),/<img src=x/);
+const shell=fs.readFileSync(path.join(root,'index.html'),'utf8');
+const overviewShell=shell.slice(shell.indexOf('id="v-overview"'),shell.indexOf('id="v-cost"'));
+const costShell=shell.slice(shell.indexOf('id="v-cost"'),shell.indexOf('id="v-models"'));
+assert.doesNotMatch(overviewShell,/accountLimitsCard/);
+assert.ok(costShell.indexOf('accountLimitsCard')>costShell.indexOf('tv-dailyCost'),'Limits must follow every other Cost card');
+{
+  const host={innerHTML:costShell,dataset:{}}, node={}, today=run('dkey(new Date())');
+  let costRenders=0;
+  const emptyCost=vm.createContext({Date,Set,console,Object,dkey:date=>run(`dkey(new Date(${date.getTime()}))`),
+    RAW:{records:[],device:{id:'local'},sessions:[{source:'codex',days:{[today]:[1]}}]},
+    S:{view:'cost',devs:new Set(),tools:new Set(['codex'])},VIEW_TITLES:{cost:'Cost',overview:'Overview'},
+    document:{querySelectorAll:()=>[],getElementById:id=>id==='v-cost'?host:node},
+    syncRangeUI(){},syncMetricUI(){},buildFilterPanels(){},renderPills(){},renderSidebarDevices(){},filtersToURL(){},
+    runFinders:()=>[],slice:()=>({recs:[],sessions:[]}),viewCost(){costRenders++;}});
+  vm.runInContext(views.slice(views.indexOf('function activeQuotaSources('),views.indexOf('function quotaEntries(')),emptyCost);
+  vm.runInContext(views.slice(views.indexOf('const VIEW_HTML={};'),views.indexOf('function syncSearchBoxes(')),emptyCost);
+  vm.runInContext('renderAll()',emptyCost);
+  assert.equal(costRenders,1,'An empty historical date range must not suppress current quotas');
+  assert.match(host.innerHTML,/accountLimitsCard/);
+  vm.runInContext('RAW.sessions=[];renderAll()',emptyCost);
+  assert.match(host.innerHTML,/No activity/,'No current sessions should keep the regular empty view');
+}
+run(`var previousQuotaRaw=RAW;var quotaDay='2026-10-13';var quotaNow=new Date('2026-10-13T12:00:00');
+ RAW={device:{id:'local'},sessions:[{source:'codex',device:'local',days:{[quotaDay]:[0,0,0,0,0,0,1]}},
+   {source:'claude',device:'local',days:{'2026-10-12':[1]}},{source:'claude',device:'remote',days:{[quotaDay]:[1]}}]};`);
+assert.equal(run(`activeQuotaSources(quotaNow).join(',')`),'codex','Yesterday and remote sessions must not show tools');
+run(`RAW.sessions.push({source:'claude',device:'local',days:{},compactions:[{date:quotaDay}]});`);
+assert.equal(run(`activeQuotaSources(quotaNow).join(',')`),'codex,claude','Compaction-only activity counts as a session today');
+run(`S.tools.delete('claude');`);
+assert.equal(run(`activeQuotaSources(quotaNow).join(',')`),'codex');
+run(`S.tools.add('claude');S.devs.add('remote');`);
+assert.equal(run(`activeQuotaSources(quotaNow).length`),0,'Private account cards must not appear for remote-only devices');
+run(`S.devs.clear();RAW.sessions=[{source:'codex',start:'2026-10-13T09:00:00',days:{}}];`);
+assert.equal(run(`activeQuotaSources(quotaNow).join(',')`),'codex','A newly started session can have no usage yet');
+assert.equal(run(`activeQuotaSources(new Date('2026-10-14T12:00:00')).length`),0,'Visibility must update at midnight');
+run(`var quotaSnapshot={origin:'Local Codex log',limit_id:'codex',observed_at:1000,windows:[{label:'5-hour limit',remaining_percent:89,resets_at:2000}]};
+ ACCOUNTS={entries:[{source:'codex',device:'local',profile:'C:\\\\Users\\\\fixture\\\\.codex',identity:null,snapshots:[]},
+  {source:'codex',device:'local',profile:'C:/Users/fixture/.codex',identity:null,snapshots:[quotaSnapshot]},
+  {source:'codex',device:'local',profile:'C:/Users/fixture/.codex',identity:null,snapshots:[{...quotaSnapshot,limit_id:'premium',windows:[]}]},
+  {source:'codex',device:'remote',profile:'remote',identity:null,snapshots:[quotaSnapshot]}]};`);
+assert.equal(run(`quotaEntries('codex').length`),1,'Path separators must not duplicate the same profile');
+assert.equal(run(`quotaEntries('codex')[0].snapshots.length`),1,'Empty and remote buckets must be hidden');
+const tidyQuota=run(`accountEntryHTML(quotaEntries('codex')[0])`);
+assert.match(tidyQuota,/89% left/);
+assert.match(tidyQuota,/Account unverified/);
+assert.match(tidyQuota,/data-account-refresh="codex"/);
+assert.doesNotMatch(tidyQuota,/CLI profile:|Account \/ auth \/ plan unavailable|Quota percentages unavailable|Reported plan:|billing account is not recorded|premium/);
+run(`ACCOUNTS.entries[0].identity={auth:'apiKey',email:'fixture@example.invalid'};`);
+const apiQuota=run(`accountEntryHTML(quotaEntries('codex')[0])`);
+assert.match(apiQuota,/API key · fixture@example.invalid/);
+assert.doesNotMatch(apiQuota,/<progress|89% left/,'An API-key sign-in must not show an old subscription quota');
+run(`ACCOUNTS.entries[0].identity=null;ACCOUNTS.entries.push({source:'codex',profile:'/other-profile',snapshots:[quotaSnapshot]});`);
+assert.equal(run(`quotaEntries('codex').length`),2,'Distinct profiles must remain separate');
+assert.match(run(`accountEntryHTML(quotaEntries('codex')[1])`),/Profile 2/);
+assert.match(run(`accountEntryHTML({source:'claude',snapshots:[]})`),/How to show Claude limits/);
+run(`RAW=previousQuotaRaw;ACCOUNTS=null;`);
 assert.equal(run(`SRC.claude.icon`),run(`SRC['claude-desktop'].icon`));
 for(const source of run(`ORDER`)){
   const name=run(`SRC[${JSON.stringify(source)}].icon`);
@@ -205,10 +261,13 @@ assert.equal(run(`slice({from:'2026-10-10',to:'2026-10-10'}).sessions.length`),0
 run(`S.projs.clear();S.tools=new Set(['claude']);`);
 console.log('Frontend regression checks passed: pricing, precision, scope, model contributions, Optimize, device distribution, shared refresh and compaction metadata.');
 (async()=>{
-  const accountNode={innerHTML:''}; let accountCalls=[], resolveAccountOld;
-  const accountFixture=vm.createContext({Date,Number,Set,console,RAW:{device:{id:'local'}},S:{devs:new Set()},
+  const accountNode={innerHTML:''}, accountCard={hidden:true}; let accountCalls=[], resolveAccountOld;
+  const fixtureDay=run('dkey(new Date())');
+  const accountFixture=vm.createContext({Date,Number,Set,console,
+    dkey:date=>`${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`,
+    RAW:{device:{id:'local'},sessions:[{source:'codex',days:{[fixtureDay]:[1]}}]},S:{devs:new Set()},
     esc:value=>String(value??'').replaceAll('<','&lt;'),toolLabel:value=>value,
-    document:{getElementById:()=>accountNode},askConfirm:async()=>false,
+    document:{getElementById:id=>id==='accountLimitsCard'?accountCard:accountNode},askConfirm:async()=>false,
     fetch:async(url,options)=>{accountCalls.push({url,options});return {ok:true,json:async()=>({entries:[]})}}});
   vm.runInContext(views.slice(views.indexOf('let ACCOUNTS='),views.indexOf('function viewOverview(')),accountFixture);
   await vm.runInContext('loadAccounts()',accountFixture);
@@ -247,17 +306,23 @@ console.log('Frontend regression checks passed: pricing, precision, scope, model
   assert.match(accountNode.innerHTML,/Account changed during lookup/);
   accountFixture.fetch=async(url,options)=>options
     ?{ok:false,json:async()=>({error:'Provider unavailable'})}
-    :{ok:true,json:async()=>({entries:[{source:'codex',profile:'same-account',identity:{auth:'chatgpt'},snapshots:[]}]})};
+    :{ok:true,json:async()=>({entries:[{source:'codex',profile:'same-account',identity:{auth:'chatgpt',email:'verified@example.invalid'},snapshots:[]}]})};
   await vm.runInContext('refreshAccount("codex")',accountFixture);
-  assert.match(accountNode.innerHTML,/same-account/,'Verified same-account failure discarded local state');
+  assert.match(accountNode.innerHTML,/verified@example.invalid/,'Verified same-account failure discarded local state');
   assert.match(accountNode.innerHTML,/stale/i);
   accountFixture.fetch=async()=>{throw new Error('Dashboard unreachable')};
   await vm.runInContext('refreshAccount("codex")',accountFixture);
-  assert.doesNotMatch(accountNode.innerHTML,/same-account/,'Unverified identity remained visible after failed reconciliation');
+  assert.doesNotMatch(accountNode.innerHTML,/verified@example.invalid/,'Unverified identity remained visible after failed reconciliation');
   assert.equal(vm.runInContext('accountBusy',accountFixture),false,'Failure left refresh disabled');
   assert.match(accountNode.innerHTML,/data-account-refresh="codex"/,'Failed reconciliation removed the retry control');
   vm.runInContext('S.devs.add("remote");renderAccountLimits()',accountFixture);
-  assert.match(accountNode.innerHTML,/source device/);assert.doesNotMatch(accountNode.innerHTML,/new-account/);
+  assert.equal(accountCard.hidden,true);assert.equal(accountNode.innerHTML,'');
+  vm.runInContext('S.devs.clear();RAW.sessions=[];renderAccountLimits()',accountFixture);
+  assert.equal(accountCard.hidden,true,'No sessions today must hide the entire card');
+  vm.runInContext(`RAW.sessions=[{source:'claude',days:{[dkey(new Date())]:[1]}}];renderAccountLimits()`,accountFixture);
+  assert.equal(accountCard.hidden,false);
+  assert.match(accountNode.innerHTML,/data-account-refresh="claude"/);
+  assert.doesNotMatch(accountNode.innerHTML,/data-account-refresh="codex"/,'Unused tools must not have refresh controls');
   console.log('Account quota consent, privacy, stale values and superseded requests passed.');
   // A completed check must leave a way to check again without reloading.
   const versionNode={innerHTML:''}, updateRequests=[];

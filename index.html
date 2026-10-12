@@ -144,16 +144,6 @@
             </div>
           </div>
           <div class="tiles col-12" id="kpis"></div>
-          <div class="card col-12" id="accountLimitsCard">
-            <div class="card-h"><div><h3>Subscription limits remaining</h3>
-              <p class="card-sub">Account-wide snapshots on this device · independent of usage filters</p></div></div>
-            <p class="hint">Snapshots are not token allowances. Other apps and devices may use the same quota. Values older than 5 minutes are marked stale.</p>
-            <div id="accountLimits" aria-live="polite"><p class="hint">Loading local observations…</p></div>
-            <details class="quota-help"><summary>Claude capture setup and limitations</summary>
-              <p class="hint">Claude transcripts do not reliably record remaining percentages. To capture the documented five_hour / seven_day fields, pipe the JSON received by your existing Claude status-line script into AgentTelemetry's accounts.py --capture-claude using your Python executable. See README for setup. Keep your existing status-line output. No settings are changed here.</p>
-              <p class="hint">Status-line captures have no account identity; their percentages cannot be assigned to a sign-in. API keys, unsupported plans, model-specific weekly limits and credit balances may be unavailable. Creator IDs in session details do not identify the account billing every request.</p>
-            </details>
-          </div>
           <div class="card col-12" id="deviceDistributionCard" hidden>
             <div class="card-h">
               <div><h3>By device</h3><p class="card-sub" id="deviceDistributionSub"></p></div>
@@ -254,6 +244,11 @@
             <div class="legend" id="dailyCostLegend"></div>
             <div class="chartbox" style="height:230px"><canvas id="dailyCost"></canvas></div>
             <div class="tv-table" id="tv-dailyCost" hidden></div>
+          </div>
+          <div class="card col-12" id="accountLimitsCard" hidden>
+            <div class="card-h"><div><h3>Subscription limits remaining</h3>
+              <p class="card-sub">Account-wide limits · tools used today on this device</p></div></div>
+            <div id="accountLimits" aria-live="polite"></div>
           </div>
         </div>
       </section>
