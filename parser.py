@@ -3431,12 +3431,16 @@ def update_file(agg, source, path, editor_hint, proj_map):
         return fresh
 
     # jsonl (claude / codex) — incremental append
+    if (source == "codex" and agg
+            and agg.get("state", {}).get("compaction_timing", {}).get("version") != _CODEX_COMPACTION_TIMING_VERSION):
+        # Stage a full timing backfill locally; the caller retains its old ledger
+        # entry/signature if parsing fails. No global cache reset is involved.
+        agg = None
     haiku_backfill = (agg and source in ("claude", "claude-desktop")
                      and "haiku_pricing" not in agg
                      and any("\tClaude Haiku 5.5" in k for k in agg.get("records", {})))
     if (not agg or agg.get("size", 0) > size
             or haiku_backfill
-            or (source == "codex" and agg.get("state", {}).get("compaction_timing", {}).get("version") != _CODEX_COMPACTION_TIMING_VERSION)
             or (source in ("claude", "claude-desktop", "codex") and "compactions" not in agg)):
         agg = _blank_agg(source, path)  # new/truncated log or missing metadata → reparse
     offset = agg["offset"]
