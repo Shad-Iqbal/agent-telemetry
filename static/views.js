@@ -1074,7 +1074,7 @@ function compactionDetails(s){
   const value=n=>Number.isFinite(n)?fmtTok(n):"—";
   const duration=n=>Number.isFinite(n)?`${Math.round(n/1000)}s`:"—";
   const note=s.source==="codex"
-    ? "Codex does not record type, context sizes or duration. Request usage, when logged, is already included in session totals; these events add no tokens or cost."
+    ? "Codex does not record type or context sizes. Duration is available only when a uniquely matched completion records both timing fields. Request usage, when logged, is already included in session totals; these events add no tokens or cost."
     : "Context before → after. Compaction request tokens and cost are not recorded; context reduction is not billed usage.";
   return `<section class="compaction-details"><h3>Compactions · ${fmtNum(events.length)}</h3>
     <p class="hint">${types?esc(types)+" · ":""}Selected date range. Events belong to this session; model filters do not apply.</p>

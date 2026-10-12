@@ -207,6 +207,142 @@ class CodexCompactionTests(unittest.TestCase):
         with contextlib.redirect_stderr(io.StringIO()): D.load_cache()
         self.assertEqual(D._state["files"]["gone"], agg)
 
+    def timing_lines(self, start=1791806400000, end=1791806402000, **completion):
+        at = "2026-10-12T12:00:01Z"
+        return [self.line("session_meta", {"id": "fixture-thread"}, at),
+                self.line("turn_context", {"model": "gpt-6.1-sol"}, at),
+                self.line("token_usage_record", {"response_id": "timed-response", "thread_id": "fixture-thread",
+                    "turn_id": "fixture-turn", "usage": {"input_tokens": 100, "output_tokens": 10}}, at),
+                self.line("compacted", {"compaction_response_id": "timed-response",
+                    "replacement_history": [{"type": "function_call_output", "output": "PRIVATE HISTORY"}]}, at),
+                self.line("event_msg", {"type": "item_completed", "thread_id": "fixture-thread", "turn_id": "fixture-turn",
+                    "item": {"type": "ContextCompaction", "id": "fixture-item"},
+                    "started_at_ms": start, "completed_at_ms": end, **completion}, "2026-10-12T12:00:02Z")]
+
+    def test_explicit_completion_duration_enriches_checkpoint_without_usage_or_extra_event(self):
+        lines = self.timing_lines()
+        agg = self.parse(lines)
+        with patch.object(P, "_codex_timing_completion"):
+            untimed = self.parse(lines)
+        event = next(iter(agg["compactions"].values()))
+        self.assertEqual(event["duration_ms"], 2000)
+        self.assertEqual(event["trigger"], "unknown")
+        self.assertIsNone(event["before"]); self.assertIsNone(event["after"])
+        for key in ("records", "totals", "hourly", "tools", "activity", "_active_last", "first_ts", "last_ts"):
+            self.assertEqual(agg.get(key), untimed.get(key), key)
+        self.assertEqual(len(agg["compactions"]), 1)
+        self.assertNotIn("PRIVATE", json.dumps(agg))
+        D._state["files"] = {"fixture": agg}
+        self.assertEqual(D.build_payload()["sessions"][0]["compactions"][0]["duration_ms"], 2000)
+        self.assertEqual(D._export_agg(agg)["compactions"], agg["compactions"])
+        self.assertNotIn("compaction_timing", D._export_agg(agg)["state"])
+
+    def test_missing_invalid_timing_or_mismatched_identity_is_not_inferred(self):
+        for start, end in ((None, 1791806402000), (True, 1791806402000), (-1, 1791806402000),
+                           ("1791806400000", 1791806402000), (1791806400000., 1791806402000),
+                           (1791806402000, 1791806400000), (1791806400000, 10**1000)):
+            with self.subTest(start=start, end=end):
+                self.assertIsNone(next(iter(self.parse(self.timing_lines(start, end))["compactions"].values()))["duration_ms"])
+        for change in ({"thread_id": "other-thread"}, {"turn_id": "other-turn"},
+                       {"type": "item_started"}, {"item": {"type": "CommandExecution", "id": "fixture-item"}},
+                       {"item": {"type": "ContextCompaction"}}):
+            with self.subTest(change=change):
+                self.assertIsNone(next(iter(self.parse(self.timing_lines(**change))["compactions"].values()))["duration_ms"])
+        lines = self.timing_lines()
+        for selected in (lines[:2] + lines[3:], lines[:3] + lines[4:]):
+            agg = self.parse(selected)
+            self.assertTrue(all(e["duration_ms"] is None for e in agg["compactions"].values()))
+        # A copied resume snapshot is not the explicit top-level identity chain.
+        checkpoint = self.line("compacted", {"compaction_response_id": "timed-response",
+            "latest_token_usage_record": {"response_id": "timed-response", "thread_id": "fixture-thread", "turn_id": "fixture-turn"}}, "2026-10-12T12:00:01Z")
+        self.assertIsNone(next(iter(self.parse(lines[:2] + [checkpoint, lines[-1]])["compactions"].values()))["duration_ms"])
+
+    def test_zero_duration_and_out_of_order_metadata_are_supported(self):
+        lines = self.timing_lines(start=1791806401000, end=1791806401000)
+        self.assertEqual(next(iter(self.parse(lines)["compactions"].values()))["duration_ms"], 0)
+        reordered = lines[:3] + [lines[4], lines[3]]
+        self.assertEqual(next(iter(self.parse(reordered)["compactions"].values()))["duration_ms"], 0)
+
+    def test_overlapping_candidates_are_ambiguous_and_clear_prior_duration(self):
+        lines = self.timing_lines()
+        agg = self.parse(lines)
+        self.assertEqual(next(iter(agg["compactions"].values()))["duration_ms"], 2000)
+        second = json.loads(lines[-1]); second["payload"]["item"]["id"] = "another-item"
+        P.parse_codex(agg, [json.dumps(second)])
+        self.assertIsNone(next(iter(agg["compactions"].values()))["duration_ms"])
+        request = json.loads(lines[2]); request["payload"]["response_id"] = "another-response"
+        checkpoint = json.loads(lines[3]); checkpoint["payload"]["compaction_response_id"] = "another-response"
+        agg = self.parse(lines[:4] + [json.dumps(request), json.dumps(checkpoint), lines[-1]])
+        self.assertEqual(len(agg["compactions"]), 2)
+        self.assertTrue(all(e["duration_ms"] is None for e in agg["compactions"].values()))
+        agg = self.parse(lines)
+        # Even a checkpoint without a response/turn identity makes the interval
+        # ambiguous; never ignore it when assigning a nearby completion.
+        P.parse_codex(agg, [self.line("compacted", {"window_id": "unlinked"}, "2026-10-12T12:00:01.500Z")])
+        self.assertTrue(all(e["duration_ms"] is None for e in agg["compactions"].values()))
+
+    def test_replayed_checkpoint_completion_and_conflicting_item_identity(self):
+        lines = self.timing_lines()
+        agg = self.parse(lines)
+        replay = json.loads(lines[3]); replay["timestamp"] = "2026-10-13T12:00:01Z"
+        P.parse_codex(agg, [json.dumps(replay), lines[-1]])
+        self.assertEqual(len(agg["compactions"]), 1)
+        self.assertEqual(next(iter(agg["compactions"].values()))["duration_ms"], 2000)
+        conflict = json.loads(lines[-1]); conflict["payload"]["started_at_ms"] += 500
+        P.parse_codex(agg, [json.dumps(conflict)])
+        self.assertIsNone(next(iter(agg["compactions"].values()))["duration_ms"])
+
+    def test_timing_state_roundtrips_incrementally_and_failed_append_rolls_back(self):
+        lines = self.timing_lines(); path = self.root / "timed.jsonl"
+        path.write_text("".join(lines[:-1]))
+        original = P.update_file(None, "codex", str(path), None, {})
+        before = copy.deepcopy(original)
+        with path.open("a") as f:
+            f.write(lines[-1]); f.write(self.line("token_usage_record", {"usage": {"input_tokens": "bad"}}))
+        with self.assertRaises(ValueError): P.update_file(original, "codex", str(path), None, {})
+        self.assertEqual(original, before)
+        path.write_text("".join(lines))
+        resumed = P.update_file(json.loads(json.dumps(original)), "codex", str(path), None, {})
+        self.assertEqual(resumed, P.update_file(None, "codex", str(path), None, {}))
+        self.assertEqual(next(iter(resumed["compactions"].values()))["duration_ms"], 2000)
+
+    def test_unchanged_live_log_backfills_timing_once_and_archive_stays_unchanged(self):
+        lines = self.timing_lines(); path = self.root / "backfill.jsonl"
+        path.write_text("".join(lines)); original = P.update_file(None, "codex", str(path), None, {})
+        original["state"].pop("compaction_timing")
+        for e in original["compactions"].values(): e["duration_ms"] = None
+        before = copy.deepcopy(original)
+        with patch.object(P, "parse_codex", side_effect=ValueError("backfill failure")):
+            with self.assertRaises(ValueError): P.update_file(original, "codex", str(path), None, {})
+        self.assertEqual(original, before)
+        updated = P.update_file(original, "codex", str(path), None, {})
+        self.assertEqual(updated["totals"], original["totals"])
+        self.assertEqual(next(iter(updated["compactions"].values()))["duration_ms"], 2000)
+        with patch.object(P, "parse_codex") as parse:
+            self.assertIs(P.update_file(updated, "codex", str(path), None, {}), updated)
+            parse.assert_not_called()
+        original["archived"] = True
+        self.assertIs(P.update_file(original, "codex", str(self.root / "gone"), None, {}), original)
+        self.assertIsNone(next(iter(original["compactions"].values()))["duration_ms"])
+
+    def test_forked_and_cross_thread_timing_never_enrich_child_history(self):
+        lines = self.timing_lines()
+        meta = self.line("session_meta", {"id": "child", "forked_from_id": "parent"}, "2026-10-12T12:00:01Z")
+        agg = self.parse([meta] + lines[1:])
+        self.assertEqual(agg["compactions"], {})
+        foreign = self.parse([self.line("session_meta", {"id": "different-thread"})] + lines[1:])
+        self.assertTrue(all(e["duration_ms"] is None for e in foreign["compactions"].values()))
+
+    def test_empty_logs_do_not_repeat_backfill_and_correlation_state_is_bounded(self):
+        path = self.root / "empty.jsonl"; path.write_text("")
+        agg = P.update_file(None, "codex", str(path), None, {})
+        self.assertIs(P.update_file(agg, "codex", str(path), None, {}), agg)
+        agg = self.parse(self.timing_lines())
+        for i in range(40):
+            P.parse_codex(agg, [self.line("token_usage_record", {"response_id": f"response-{i}", "thread_id": "fixture-thread", "turn_id": "fixture-turn", "usage": {}})])
+        self.assertEqual(len(agg["state"]["compaction_timing"]["requests"]), 32)
+        self.assertEqual(next(iter(agg["compactions"].values()))["duration_ms"], 2000)
+
 
 if __name__ == "__main__":
     unittest.main()

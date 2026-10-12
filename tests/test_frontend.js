@@ -157,6 +157,11 @@ assert.match(compactHTML,/93s/);
 assert.match(compactHTML,/tokens and cost are not recorded/);
 assert.match(run(`compactionDetails({source:'claude',compactions:[{timestamp:'<script>',trigger:'unexpected',before:null,after:null,duration_ms:null}]})`),/&lt;script&gt;/);
 assert.match(run(`compactionDetails({source:'codex'})`),/Not recorded in this ledger entry/);
+const timedCodexHTML=run(`compactionDetails({source:'codex',compactions:[{timestamp:'2026-10-12T11:42:38+06:00',trigger:'unknown',before:null,after:null,duration_ms:163391}]})`);
+assert.match(timedCodexHTML,/163s/);
+assert.match(timedCodexHTML,/does not record type or context sizes/);
+assert.match(timedCodexHTML,/uniquely matched completion/);
+assert.doesNotMatch(timedCodexHTML,/does not record type, context sizes or duration/);
 assert.equal(run(`compactionDetails({source:'copilot'})`),'');
 run(`S.tools=new Set(['codex']);var codexCompactSession={...compactSession,source:'codex',compactions:[
   {id:'response:fixture',date:'2026-10-10',timestamp:'2026-10-10T13:09:08+06:00',trigger:'unknown',before:null,after:null,duration_ms:null}]};

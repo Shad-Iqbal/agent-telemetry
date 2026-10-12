@@ -224,8 +224,10 @@ where clicking a row opens that project's sessions.
 tool calls, active time, cache % — search, sort, and click any row for a detail panel.
 Claude and Codex sessions also show completed compactions in the selected date range.
 Claude records manual/auto counts, context before → after, and duration in the detail
-panel. Codex checkpoints provide completion times; type, context sizes and duration
-remain unknown because its logs do not record them. Codex compaction request usage,
+panel. Codex checkpoints provide completion times; type and context sizes remain
+unknown because its logs do not record them. Newer Codex completion records can supply
+duration when their request/turn/thread identities and timing match exactly one checkpoint.
+Missing or ambiguous timing stays unknown. Codex compaction request usage,
 when logged, is already included in token/cost totals and is never counted again.
 Compaction-only days remain visible. Events survive log deletion once recorded;
 older ledger entries without event metadata say “Not recorded.” Context sizes are

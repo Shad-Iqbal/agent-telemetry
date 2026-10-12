@@ -542,6 +542,8 @@ def _blank_agg(source, path):
         # Present and empty means observed zero; absent on an older archive means
         # unknown. Keep event metadata separate from all billed usage counters.
         agg["compactions"] = {}
+    if source == "codex":
+        _codex_timing_state(agg)  # empty logs need no repeated timing backfill
     return agg
 
 
@@ -1539,6 +1541,107 @@ def _codex_turn_tool(agg, nm, pl):
             cmd = c if isinstance(c, str) else None
     _turn_tool(agg, nm, cmd=cmd)
 
+_CODEX_COMPACTION_TIMING_VERSION = 1
+
+
+def _codex_timing_state(agg):
+    return agg["state"].setdefault("compaction_timing", {
+        "version": _CODEX_COMPACTION_TIMING_VERSION,
+        "requests": {}, "checkpoints": {}, "completions": {}})
+
+
+def _codex_timing_id(value):
+    return value if isinstance(value, str) and 0 < len(value) <= 200 else None
+
+
+def _codex_timing_put(bucket, key, value):
+    previous = bucket.get(key)
+    # Conflicting identities/timestamps are ambiguous, never last-write-wins.
+    if previous is not None and previous != value:
+        bucket[key] = {"ambiguous": True}
+    else:
+        bucket[key] = value
+    while len(bucket) > 32:
+        del bucket[next(iter(bucket))]
+
+
+def _codex_timing_request(agg, payload):
+    rid, tid, thread = (_codex_timing_id(payload.get(k)) for k in ("response_id", "turn_id", "thread_id"))
+    if not all((rid, tid, thread)) or (agg.get("_session_id") and thread != agg["_session_id"]):
+        return
+    state = _codex_timing_state(agg)
+    _codex_timing_put(state["requests"], rid, {"turn_id": tid, "thread_id": thread})
+    if state["requests"][rid].get("ambiguous"):
+        for meta in state["checkpoints"].values():
+            if meta.get("response_id") == rid: meta["ambiguous"] = True
+        _codex_apply_timings(agg)
+
+
+def _codex_timing_checkpoint(agg, payload, key):
+    rid = _codex_timing_id(payload.get("compaction_response_id"))
+    state = _codex_timing_state(agg)
+    request = state["requests"].get(rid)
+    if not request or request.get("ambiguous"):
+        _codex_apply_timings(agg)
+        return  # No explicit top-level request -> turn -> thread identity chain.
+    _codex_timing_put(state["checkpoints"], key, {
+        **request, "response_id": rid,
+        "timestamp_ms": round(_from_iso(agg["compactions"][key]["timestamp"]).timestamp() * 1000)})
+    _codex_apply_timings(agg)
+
+
+def _codex_timing_completion(agg, payload):
+    item = payload.get("item")
+    if (payload.get("type") != "item_completed" or not isinstance(item, dict)
+            or item.get("type") not in ("ContextCompaction", "contextCompaction")):
+        return
+    iid, tid, thread = (_codex_timing_id(v) for v in (item.get("id"), payload.get("turn_id"), payload.get("thread_id")))
+    start, end = payload.get("started_at_ms"), payload.get("completed_at_ms")
+    if (not all((iid, tid, thread)) or (agg.get("_session_id") and thread != agg["_session_id"])
+            or type(start) is not int or type(end) is not int
+            or not 0 <= start <= end <= 253402300799999):
+        return
+    state = _codex_timing_state(agg)
+    _codex_timing_put(state["completions"], iid, {
+        "turn_id": tid, "thread_id": thread, "start": start, "end": end})
+    _codex_apply_timings(agg)
+
+
+def _codex_apply_timings(agg):
+    """Enrich existing checkpoints only through an unambiguous identity/time match.
+
+    Duration is the explicit lifecycle end-start, never the distance between log
+    lines. One completion must cover exactly one checkpoint in the same turn and
+    thread, and that checkpoint must have exactly one covering completion.
+    """
+    state = _codex_timing_state(agg)
+    checkpoints, completions = state["checkpoints"], state["completions"]
+    # Include unlinked/older checkpoints when checking uniqueness. Evicting
+    # bounded correlation state must never turn an ambiguous interval into one
+    # apparently unique candidate.
+    times = [round(_from_iso(e["timestamp"]).timestamp() * 1000)
+             for e in agg.get("compactions", {}).values()]
+    unique = {iid for iid, c in completions.items() if not c.get("ambiguous")
+              and sum(c["start"] <= at <= c["end"] for at in times) == 1}
+    matches = {}
+    for key, checkpoint in checkpoints.items():
+        matches[key] = [iid for iid, completion in completions.items()
+            if iid in unique and not checkpoint.get("ambiguous") and not completion.get("ambiguous")
+            and checkpoint["thread_id"] == completion["thread_id"]
+            and checkpoint["turn_id"] == completion["turn_id"]
+            and completion["start"] <= checkpoint["timestamp_ms"] <= completion["end"]]
+    for key, candidates in matches.items():
+        event = agg.get("compactions", {}).get(key)
+        if event is None: continue
+        # Re-evaluate late/interleaved records; ambiguity clears earlier enrichment.
+        event["duration_ms"] = None
+        if len(candidates) != 1: continue
+        iid = candidates[0]
+        if sum(iid in values for values in matches.values()) != 1: continue
+        completion = completions[iid]
+        event["duration_ms"] = completion["end"] - completion["start"]
+
+
 def _codex_compaction(agg, payload, dt):
     """Persist a checkpoint without importing its copied history or usage snapshot."""
     key = None
@@ -1548,12 +1651,13 @@ def _codex_compaction(agg, payload, dt):
             key = prefix + value
             break
     key = key or "at:" + dt.astimezone(timezone.utc).isoformat()
-    # These fields aren't recorded by Codex's CompactedItem. Don't derive them
-    # from surrounding prompts, token_count resets or replacement_history.
+    # Trigger/context aren't recorded by CompactedItem. Explicit lifecycle timing
+    # can enrich duration, but copied history and usage snapshots cannot.
     agg.setdefault("compactions", {}).setdefault(key, {
         "id": key, "timestamp": dt.isoformat(), "date": _buckets(dt)[0],
         "trigger": "unknown", "before": None, "after": None, "duration_ms": None,
     })
+    _codex_timing_checkpoint(agg, payload, key)
 
 
 def parse_codex(agg, lines):
@@ -1646,6 +1750,7 @@ def parse_codex(agg, lines):
             # This sits AFTER the fork replay guard so inherited events stay out.
             _codex_compaction(agg, pl, dt)
         elif t == "token_usage_record":
+            _codex_timing_request(agg, pl)
             # Newer Codex builds (seen from 2026-09) log one of these per model
             # response. They are the better usage source: token_count below logs
             # zeros for a compaction request and nothing for a response cut off
@@ -1655,6 +1760,7 @@ def parse_codex(agg, lines):
             agg["state"]["usage_records"] = True
             _codex_usage(agg, dt, pl.get("usage") or {}, cur_model)
         elif t == "event_msg":
+            _codex_timing_completion(agg, pl)
             if pt == "patch_apply_end":
                 _codex_edit_event(agg, pl.get("changes"))
             if pt == "token_count":
@@ -1751,6 +1857,7 @@ def parse_codex(agg, lines):
                 _rec(agg, date, cur_model or "Unknown")["tools"] += 1
                 _codex_turn_tool(agg, nm, pl)
 
+    _codex_timing_state(agg)
     agg["state"]["cur_model"] = cur_model
     agg["project"] = project
     agg["editor"] = "Codex (CLI)"
@@ -3329,6 +3436,7 @@ def update_file(agg, source, path, editor_hint, proj_map):
                      and any("\tClaude Haiku 5.5" in k for k in agg.get("records", {})))
     if (not agg or agg.get("size", 0) > size
             or haiku_backfill
+            or (source == "codex" and agg.get("state", {}).get("compaction_timing", {}).get("version") != _CODEX_COMPACTION_TIMING_VERSION)
             or (source in ("claude", "claude-desktop", "codex") and "compactions" not in agg)):
         agg = _blank_agg(source, path)  # new/truncated log or missing metadata → reparse
     offset = agg["offset"]

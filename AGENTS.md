@@ -333,7 +333,15 @@ so that file stops being a cache and becomes the sole record. Two consequences:
   bypass that shortcut for event metadata only. Formerly skipped checkpoints must
   not advance/reset the old usage parser's replay clock. Never import copied messages,
   tools or `latest_token_usage_record` (a resume snapshot, not a new model request).
-  Type, context sizes and duration are not recorded by Codex and remain unknown.
+  Type and context sizes are not recorded by Codex and remain unknown. Some
+  ContextCompaction completion records carry started_at_ms/completed_at_ms.
+  Duration uses their difference only with an explicit top-level response_id ->
+  turn_id/thread_id chain and a one-to-one match within that recorded interval.
+  Missing/invalid timing, mismatched scopes and overlapping candidates stay unknown.
+  Lifecycle records enrich existing checkpoints only; never count them again.
+  The bounded private parser state compaction_timing.version backfills available
+  Codex logs once, transactionally, without changing event/aggregate shape or cache
+  version. Archived metadata stays unchanged. Never rebuild to recover durations.
   Real compaction `token_usage_record` usage stays in the existing token/cost totals;
   events add no usage. Old archived/mirrored entries missing metadata stay unknown.
 
