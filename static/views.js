@@ -1104,7 +1104,7 @@ function renderVersion(){
   else if(UPD && UPD.busy) action = `<span class="dim">${esc(UPD.busy)}</span>`;
   else if(UPD && UPD.error) action = `<span class="ver-err" title="${esc(UPD.error)}">${esc(UPD.error)}</span> <button class="link" data-upd="check">Retry</button>`;
   else if(UPD && UPD.behind) action = `<button class="btn sm primary" data-upd="apply" title="${esc(UPD.changes.join("\n"))}">Update · ${UPD.behind} new</button>`;
-  else if(UPD) action = `<span class="dim">Up to date</span>`;
+  else if(UPD) action = `<span class="dim">Up to date · </span><button class="link" data-upd="check">Check for updates</button>`;
   else action = `<button class="link" data-upd="check">Check for updates</button>`;
   el.innerHTML = `<span class="ver" title="${esc(title)}">${esc(versionLabel(v))}</span>${action?`<span class="ver-a">${action}</span>`:""}`;
 }

@@ -181,6 +181,34 @@ assert.equal(run(`slice({from:'2026-10-10',to:'2026-10-10'}).sessions.length`),0
 run(`S.projs.clear();S.tools=new Set(['claude']);`);
 console.log('Frontend regression checks passed: pricing, precision, scope, model contributions, Optimize, device distribution, shared refresh and compaction metadata.');
 (async()=>{
+  // A completed check must leave a way to check again without reloading.
+  const versionNode={innerHTML:''}, updateRequests=[];
+  let updateResult={behind:0,changes:[]};
+  const updating=vm.createContext({RAW:{version:{git:true,commit:'fixture'}},esc:value=>String(value),
+    document:{getElementById:()=>versionNode,addEventListener(){}},
+    fetch:async(url,options)=>{updateRequests.push({url,options});return {ok:true,json:async()=>updateResult}}});
+  vm.runInContext(views.slice(views.indexOf('let UPD ='),views.indexOf('/* ---------------- STORAGE')),updating);
+  await vm.runInContext("updateAction('check')",updating);
+  assert.match(versionNode.innerHTML,/Up to date/);
+  assert.match(versionNode.innerHTML,/data-upd="check">Check for updates/);
+  await vm.runInContext("updateAction('check')",updating);
+  assert.equal(updateRequests.length,2,'Second update check did not issue a new request');
+  for(const request of updateRequests){
+    assert.equal(request.url,'/api/update');
+    assert.equal(request.options.headers['Content-Type'],'application/json');
+    assert.equal(JSON.parse(request.options.body).action,'check');
+  }
+  updateResult={behind:1,changes:['fixture update']};
+  await vm.runInContext("updateAction('check')",updating);
+  assert.match(versionNode.innerHTML,/data-upd="apply"/);
+  assert.doesNotMatch(versionNode.innerHTML,/Up to date/);
+  vm.runInContext("UPD={busy:'Checking…'};renderVersion()",updating);
+  assert.doesNotMatch(versionNode.innerHTML,/data-upd=/,'Busy check allows duplicate clicks');
+  vm.runInContext("UPD={error:'Offline'};renderVersion()",updating);
+  assert.match(versionNode.innerHTML,/data-upd="check">Retry/);
+  vm.runInContext("RAW.version.git=false;renderVersion()",updating);
+  assert.doesNotMatch(versionNode.innerHTML,/data-upd=/,'Packaged build offers unsupported git update');
+  console.log('Update checks remain repeatable after an up-to-date result.');
   let tick={seconds:15,revision:'first'}, loads=0, requested;
   const clock=vm.createContext({URLSearchParams,location:{search:''},document,console,S:{live:true},
     load:async()=>{loads++;return true},fetch:async(url,options)=>{requested=options; if(options){tick={seconds:JSON.parse(options.body).seconds,revision:'native-setting'};}return {ok:true,json:async()=>tick}}});
