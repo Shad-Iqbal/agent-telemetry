@@ -1,0 +1,71 @@
+name: Build release downloads
+on:
+  push:
+    branches: [release/v2-downloads]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag (application code is built from this tag)
+        required: true
+        default: v2.0.0
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: packaging
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || 'v2.0.0' }}
+          path: application
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Build offline EXE
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ inputs.tag || 'v2.0.0' }}
+        run: |
+          $compiler = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          python packaging/windows/installer/build.py --source application --output artifacts --tag $env:RELEASE_TAG --compiler $compiler
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $installer = (Get-ChildItem artifacts/*.exe).FullName
+          python packaging/tests/run_windows_installer.py $installer
+          exit $LASTEXITCODE
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64-installer
+          path: artifacts/*.exe
+          if-no-files-found: error
+  macos:
+    strategy:
+      matrix:
+        os: [macos-latest, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || 'v2.0.0' }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Build and verify DMG
+        env:
+          AGENT_TELEMETRY_OUTPUT_DIR: ${{ github.workspace }}/artifacts
+        run: |
+          swift build --package-path macos/AgentTelemetryMac
+          python tests/run_mac_native.py
+          macos/AgentTelemetryMac/Scripts/package-app.sh
+          hdiutil verify artifacts/*.dmg
+          codesign --verify --deep --strict artifacts/AgentTelemetry.app
+          artifacts/AgentTelemetry.app/Contents/Resources/AgentTelemetryRuntime/bin/python3 -c 'import ctypes, sqlite3, ssl'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-${{ matrix.os }}-dmg
+          path: artifacts/*.dmg
+          if-no-files-found: error

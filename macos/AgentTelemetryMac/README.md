@@ -1,6 +1,13 @@
 # AgentTelemetry for macOS
 
-Part of AgentTelemetry v2.0.0. From the repository root, `python3 install.py` detects
+Download the v2.0.0 DMG for [Apple Silicon](https://github.com/uttamdeb/agent-telemetry/releases/download/v2.0.0/AgentTelemetry-2.0.0-macos-arm64.dmg)
+or [Intel](https://github.com/uttamdeb/agent-telemetry/releases/download/v2.0.0/AgentTelemetry-2.0.0-macos-x86_64.dmg),
+open it and drag AgentTelemetry to Applications. Python is bundled; Swift and a terminal
+are not needed to run the download. It requires macOS 13+. These builds are ad-hoc signed
+and unnotarized; use System Settings → Privacy & Security → Open Anyway if macOS blocks
+the first open. Developer ID signing/notarization is separate from these download builds.
+
+For source installation, from the repository root, `python3 install.py` detects
 macOS, builds and installs `~/Applications/AgentTelemetry.app`, then opens it.
 `--no-launch` installs without opening; `--bundle PATH` installs a built app instead
 of rebuilding. Existing ledgers are never removed or overwritten by installation.
@@ -23,7 +30,7 @@ From the repository root, run:
 macos/AgentTelemetryMac/Scripts/package-app.sh
 ```
 
-The script compiles for the current Mac architecture, downloads a pinned standalone CPython runtime, verifies its SHA-256, bundles only the dashboard source/assets it needs, and creates `macos/AgentTelemetryMac/build/AgentTelemetry-macos-<architecture>.dmg`. To use a previously downloaded matching Python archive, set `AGENT_TELEMETRY_PYTHON_ARCHIVE` to its path. `AGENT_TELEMETRY_SDK_PATH` can select another installed SDK. The disk image contains an `Applications` shortcut for drag-to-install. Local builds use ad-hoc signing and are intended for development. This source release does not supply a notarized public installer.
+The script compiles for the current Mac architecture, downloads a pinned standalone CPython runtime, verifies its SHA-256, bundles only the dashboard source/assets it needs, and creates `macos/AgentTelemetryMac/build/AgentTelemetry-macos-<architecture>.dmg`. To use a previously downloaded matching Python archive, set `AGENT_TELEMETRY_PYTHON_ARCHIVE` to its path. `AGENT_TELEMETRY_SDK_PATH` can select another installed SDK. The disk image contains an `Applications` shortcut for drag-to-install. The published DMGs use this script on matching architectures and remain unnotarized.
 
 The bundled interpreter comes from Astral's `python-build-standalone` release `20261003` (CPython 3.13.16). The package script pins separate Apple Silicon and Intel archive hashes in source. The archive is an install-only, stripped runtime; the app removes its unused `pip`, `idle`, and `pydoc` launchers and includes CPython's license file and a `BUILD-INFO.txt` with the source and checksum. The Python backend uses no third-party packages.
 

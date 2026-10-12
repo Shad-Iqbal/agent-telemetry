@@ -64,7 +64,11 @@ def screenshot(window, destination, background=None):
     image = w.bitmap(dc, width, height)
     old = w.select_object(memory, image)
     try:
-        assert w.api(w.U, "PrintWindow", W.BOOL, W.HWND, W.HDC, W.UINT)(window, memory, 2)
+        # Mock work areas can extend beyond the hosted desktop. PrintWindow's
+        # compositor capture intermittently clips those off-screen regions to
+        # black. WM_PRINT renders the actual HWND and its native children into
+        # this DC synchronously, without depending on desktop visibility.
+        w.send(window, 0x317, memory, 0x1e)  # WM_PRINT: nonclient/client/background/children.
         w.select_object(memory, old)
         info = BITMAPINFO()
         info.size, info.width, info.height, info.planes, info.bits = 40, width, -height, 1, 32
@@ -74,10 +78,6 @@ def screenshot(window, destination, background=None):
         data = raw.raw
         # A blank window/failed owner draw must not pass as a screenshot test.
         assert len({data[i:i+3] for i in range(0, len(data), 4)}) > 100
-        if background is not None:
-            i = ((height - 5) * width + width // 2) * 4
-            actual = data[i + 2] | data[i + 1] << 8 | data[i] << 16
-            assert actual == background, ("Footer area was not painted", actual, background)
         rows = bytearray()
         for y in range(height):
             rows.append(0)
@@ -88,6 +88,10 @@ def screenshot(window, destination, background=None):
             return struct.pack(">I", len(contents)) + kind + contents + struct.pack(">I", zlib.crc32(kind + contents) & 0xffffffff)
         destination.write_bytes(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
             + chunk(b"IDAT", zlib.compress(bytes(rows))) + chunk(b"IEND", b""))
+        if background is not None:
+            i = ((height - 5) * width + width // 2) * 4
+            actual = data[i + 2] | data[i + 1] << 8 | data[i] << 16
+            assert actual == background, ("Footer area was not painted", actual, background, str(destination), width, height)
     finally:
         w.select_object(memory, old)
         w.delete_object(image)

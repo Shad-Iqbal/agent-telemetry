@@ -74,7 +74,63 @@ for(const search of ['', '?nativeApp=1&nativePollSeconds=300']){
     assert.equal(vm.runInContext('pollMs()',fixture),0);
   }
 }
-console.log('Frontend regression checks passed: pricing, precision, scope, model contributions, Optimize, device distribution and shared refresh validation.');
+run(`S.tools=new Set(['claude']);S.devs.clear();S.projs.clear();S.ides.clear();S.models.clear();S.provs.clear();S.exactOnly=false;
+ var compactSession={source:'claude',model:'M',title:'Fixture',device:'Mac',
+   days:{'2026-10-09':[1,100,10,0,0,1,1,0,0,0,1]},model_days:{M:{'2026-10-09':[1,100,10,0,0,1,1,0,0,0,1]}},
+   compactions:[{id:'one',date:'2026-10-10',timestamp:'2026-10-10T13:09:08+06:00',trigger:'manual',before:558980,after:16124,duration_ms:93029},
+   {id:'two',date:'2026-10-11',timestamp:'2026-10-11T13:09:08+06:00',trigger:'auto',before:100,after:200,duration_ms:null}]};
+ RAW.sessions=[compactSession];RAW.records=[];RAW.hourly=[];`);
+assert.equal(run(`slice({from:'2026-10-10',to:'2026-10-10'}).sessions.length`),1);
+assert.equal(run(`slice({from:'2026-10-10',to:'2026-10-10'}).sessions[0].compaction_count`),1);
+assert.equal(run(`slice({from:'2026-10-10',to:'2026-10-10'}).sessions[0].in`),0);
+assert.equal(run(`slice({from:'2026-10-10',to:'2026-10-10'}).sessions[0].user`),0);
+assert.equal(run(`slice({from:'2026-10-10',to:'2026-10-10'}).sessions[0].cost`),0);
+assert.equal(run(`slice({from:'2026-10-10',to:'2026-10-10'}).sessions[0].span`),3);
+assert.equal(run(`sessionWhen(slice({from:'2026-10-10',to:'2026-10-10'}).sessions[0])`),'2026-10-10T13:09:08+06:00');
+assert.equal(run(`sessionWhen({in:100,end:'2026-10-09',compactions:compactSession.compactions})`),'2026-10-09');
+assert.equal(run(`slice({from:'2026-10-12',to:'2026-10-12'}).sessions.length`),0);
+run(`S.models=new Set(['M']);`);
+assert.equal(run(`slice({from:'2026-10-10',to:'2026-10-10'}).sessions.length`),0,'Unknown event model must not satisfy a billed model filter');
+assert.equal(run(`slice({from:'2026-10-09',to:'2026-10-09'}).sessions[0].in`),100);
+run(`S.models.clear();S.devs=new Set(['PC']);`);
+assert.equal(run(`slice({from:'2026-10-10',to:'2026-10-10'}).sessions.length`),0);
+run(`S.devs.clear();S.tools=new Set(['codex']);`);
+assert.equal(run(`slice({from:'2026-10-10',to:'2026-10-10'}).sessions.length`),0);
+run(`S.tools=new Set(['claude']);`);
+assert.equal(run(`clipSession({source:'claude',days:{}},{from:'2026-10-10',to:'2026-10-10'}).compaction_count`),null);
+assert.match(run(`compactionDetails({source:'claude'})`),/Not recorded in this ledger entry/);
+assert.match(run(`compactionDetails({source:'claude',compactions:[]})`),/Compactions · 0/);
+const compactHTML=run(`compactionDetails(clipSession(compactSession,{from:'2026-10-10',to:'2026-10-11'}))`);
+assert.match(compactHTML,/1 manual · 1 auto/);
+assert.match(compactHTML,/100 → 200/,'A context increase must remain visible');
+assert.match(compactHTML,/Before: 558,980; after: 16,124/);
+assert.match(compactHTML,/93s/);
+assert.match(compactHTML,/tokens and cost are not recorded/);
+assert.match(run(`compactionDetails({source:'claude',compactions:[{timestamp:'<script>',trigger:'unexpected',before:null,after:null,duration_ms:null}]})`),/&lt;script&gt;/);
+assert.match(run(`compactionDetails({source:'codex'})`),/Not recorded in this ledger entry/);
+assert.equal(run(`compactionDetails({source:'copilot'})`),'');
+run(`S.tools=new Set(['codex']);var codexCompactSession={...compactSession,source:'codex',compactions:[
+  {id:'response:fixture',date:'2026-10-10',timestamp:'2026-10-10T13:09:08+06:00',trigger:'unknown',before:null,after:null,duration_ms:null}]};
+ RAW.sessions=[codexCompactSession];`);
+assert.equal(run(`slice({from:'2026-10-10',to:'2026-10-10'}).sessions[0].compaction_count`),1);
+assert.equal(run(`slice({from:'2026-10-10',to:'2026-10-10'}).sessions[0].cost`),0);
+const codexHTML=run(`compactionDetails(slice({from:'2026-10-10',to:'2026-10-10'}).sessions[0])`);
+assert.match(codexHTML,/1 unknown/);
+assert.match(codexHTML,/Unknown/);
+assert.match(codexHTML,/already included in session totals/);
+assert.doesNotMatch(codexHTML,/tokens and cost are not recorded/);
+assert.match(codexHTML,/— → —/);
+run(`S.models=new Set(['M']);`);
+assert.equal(run(`slice({from:'2026-10-10',to:'2026-10-10'}).sessions.length`),0);
+assert.equal(run(`slice({from:'2026-10-09',to:'2026-10-09'}).sessions[0].in`),100);
+run(`S.models.clear();S.tools=new Set(['claude']);`);
+assert.equal(run(`slice({from:'2026-10-10',to:'2026-10-10'}).sessions.length`),0);
+run(`S.tools=new Set(['codex']);S.devs=new Set(['PC']);`);
+assert.equal(run(`slice({from:'2026-10-10',to:'2026-10-10'}).sessions.length`),0);
+run(`S.devs.clear();S.projs=new Set(['Missing']);`);
+assert.equal(run(`slice({from:'2026-10-10',to:'2026-10-10'}).sessions.length`),0);
+run(`S.projs.clear();S.tools=new Set(['claude']);`);
+console.log('Frontend regression checks passed: pricing, precision, scope, model contributions, Optimize, device distribution, shared refresh and compaction metadata.');
 (async()=>{
   let tick={seconds:15,revision:'first'}, loads=0, requested;
   const clock=vm.createContext({URLSearchParams,location:{search:''},document,console,S:{live:true},

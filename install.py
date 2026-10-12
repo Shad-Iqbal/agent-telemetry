@@ -42,6 +42,8 @@ def install_windows():
         raise ValueError("Use a standard Python 3.8+ Windows installation that includes pythonw.exe.")
     base = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local")
     target = base / "Programs" / "AgentTelemetry"
+    if (target / "BUILD-INFO.json").is_file() and (target / "runtime" / "pythonw.exe").is_file():
+        raise ValueError("This app was installed from an EXE. Update it with the EXE installer so its runtime and uninstaller stay intact.")
     target.parent.mkdir(parents=True, exist_ok=True)
     stage = Path(tempfile.mkdtemp(prefix=".AgentTelemetry-install-", dir=str(target.parent)))
     backup = target.with_name("AgentTelemetry.previous")

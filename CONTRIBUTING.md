@@ -36,6 +36,16 @@ Never kill a backend the client did not launch or overwrite imported usage histo
 but it is the fastest orientation for humans too — read it before changing anything
 structural.
 
+## Build release downloads
+
+Binary downloads are built by `.github/workflows/release-downloads.yml` from an existing
+release tag. Windows uses Inno Setup as a build tool and a checksum-pinned bundled
+Python; the application still has no third-party runtime dependencies. Tests exercise
+the actual EXE's install/upgrade/uninstall with invented archived data and check the
+packaged native UI. macOS builds/signature checks run on both matching architectures.
+CI does not publish assets. Do not move a published tag when adding packaging or docs,
+and do not present ad-hoc/unsigned builds as notarized or Authenticode signed.
+
 ## Set your git email first
 
 GitHub links a commit to an account by matching the **author email** to a verified
@@ -85,6 +95,18 @@ These are not style preferences. A PR that breaks one will be asked to change.
 - **Every dimension carries a date.** Aggregates are keyed `records["date\tmodel"]`,
   `tools["date\tname"]`, `hourly["date\thour"]` so the UI can filter by range. A new
   aggregate that isn't date-keyed can't be filtered.
+- **Compaction events are separate from usage.** Keep Claude boundary UUIDs and
+  Codex checkpoint response/window IDs (UTC completion timestamp for older logs),
+  dates, and replay deduplication. Ignore copied Codex history, fork replay checkpoints
+  and lifecycle twins; never price context sizes or a checkpoint's usage snapshot. Test
+  full/incremental parsing, failed metadata backfills, archived entries and peers;
+  normal tokens, messages, tools and other aggregates must remain identical.
+  Older entries without metadata are unknown, not zero. Preserve them on migration.
+- **opencode has two SQLite schemas.** V1 uses `session/message/part`; V2 uses
+  `session_v2/session_message`, with role in a column and model/tools inside JSON.
+  Read V2 and V1-only history without adding migrated copies twice. Preserve V1
+  history for empty V2 migration stubs. Check fork inheritance, unchanged-cache
+  backfill, failed reparse preservation, live WAL updates and dated usage exports.
 - **A line chart needs two points to draw a segment.** Build line/area datasets with
   `pointRadius: soloPoint(data)` or a single-day range renders as empty axes.
 - **Check the function signature you're calling.** Python won't catch a wrong keyword
