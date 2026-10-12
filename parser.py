@@ -13,6 +13,7 @@ Mac/Linux install of the same tools.
 No third-party dependencies — stdlib only.
 """
 import os, sys, json, glob, re, time, shutil, subprocess, copy
+import accounts as A
 from datetime import datetime, timezone
 
 HOME = os.path.expanduser("~")
@@ -1148,6 +1149,7 @@ def _haiku_price_usage(agg, rk, model, date, full, delta, first, skill):
 
 
 def parse_claude(agg, lines):
+    agg["account_metadata_version"] = A.METADATA_VERSION
     project = agg["project"]
     st = agg["state"]
     # Every record already counted in this file, as the first 12 hex chars of its
@@ -1177,6 +1179,7 @@ def parse_claude(agg, lines):
             seen.add(uk)
             fresh_uuids.append(uk)
         t = o.get("type")
+        A.observe_claude(agg, o)
         cwd = o.get("cwd")
         if cwd:
             project = _leaf(cwd) or cwd
@@ -1557,6 +1560,7 @@ def _codex_compaction(agg, payload, dt):
 
 
 def parse_codex(agg, lines):
+    agg["account_metadata_version"] = A.METADATA_VERSION
     cur_model = agg["state"].get("cur_model")
     project = agg["project"]
     for line in lines:
@@ -1605,6 +1609,7 @@ def parse_codex(agg, lines):
                 if not skip:
                     st["replay_last"] = None
 
+        A.observe_codex(agg, t, pl, o.get("timestamp"))
         if t == "session_meta":
             if pl.get("forked_from_id") and "replay_last" not in st and o.get("timestamp"):
                 st["replay_last"] = o["timestamp"]
@@ -3329,6 +3334,7 @@ def update_file(agg, source, path, editor_hint, proj_map):
                      and any("\tClaude Haiku 5.5" in k for k in agg.get("records", {})))
     if (not agg or agg.get("size", 0) > size
             or haiku_backfill
+            or (source in ("claude", "codex") and agg.get("account_metadata_version") != A.METADATA_VERSION)
             or (source in ("claude", "claude-desktop", "codex") and "compactions" not in agg)):
         agg = _blank_agg(source, path)  # new/truncated log or missing metadata → reparse
     offset = agg["offset"]

@@ -7,8 +7,10 @@ vs Google** provider comparison, an activity calendar, and breakdowns by **model
 day, hour, weekday, tool, IDE, project and session** — plus how much **disk** all these logs
 eat, and suggestions for spending less, drawn from your own numbers.
 
-**Your data never leaves your machine** — unless you turn on [Your devices](#your-devices-optional)
-to combine two of your own computers over your local network. No account, no API key, no
+**Your data stays on your machine** — unless you turn on [Your devices](#your-devices-optional)
+to combine two of your own computers over your local network. Optional account lookups
+contact the provider only after you choose **Read once**; account metadata is never shared
+with paired devices. No account, no API key, no
 telemetry, no dependencies — just Python's standard library and a vendored copy of Chart.js.
 
 Covers **Claude Code · Claude Desktop · Codex · GitHub Copilot · Cursor · opencode · Hermes Agent · OpenClaw**.
@@ -68,6 +70,19 @@ Options: `python3 dashboard.py --port 9000` · `--rebuild` (ignore cache, full r
 `--interval 20` (background refresh seconds) · `--data-dir /path/to/state` (store the
 cache and optional device-sharing files outside the checkout). Without `--data-dir`, current
 checkout behavior is unchanged. Or `./run.sh [flags]`.
+
+## Subscription limits and account details
+
+Overview shows Codex's locally recorded remaining-limit snapshots and their reset
+times. Choose **Refresh account & limits** to read the installed Codex CLI's account,
+auth type, plan and current limits once. Claude's **Refresh account** reads its auth,
+provider and optional plan; percentage meters require the optional local status-line
+capture. Both actions ask before a lookup that may contact the provider.
+
+Missing data stays unavailable. Older snapshots are stale; percentages are never
+estimated from tokens or combined across devices. Session details show recorded
+creator/account IDs with their attribution limits. Account metadata is private to the
+source device. See [setup, research and limitations](docs/account-limits.md).
 
 ## Install the menu bar / system tray app
 

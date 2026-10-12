@@ -3,7 +3,7 @@
 **AgentTelemetry** — a local, **stdlib-only** dashboard that reads the logs your AI coding tools already write
 to this machine and shows tokens, estimated cost, and breakdowns by model / day / tool /
 project / hour. Nothing leaves the machine unless the user turns on sharing (see "Your
-devices"). Nothing to install.
+devices") or explicitly requests a one-time account lookup (see "Account snapshots"). Nothing to install.
 
 ```bash
 python3 dashboard.py            # http://127.0.0.1:7878
@@ -115,6 +115,7 @@ accurately. Keep the existing public tag intact when adding packaging metadata/a
 | `static/core.js` | `SRC`/`ORDER`, state `S`, formatting, date ranges, filtering. |
 | `static/tool-icons/` | Bundled tool/provider SVG marks, pinned sources and licenses. |
 | `session_names.py` | Warning previews, private title backups and verified original-tool renames. |
+| `accounts.py` | Private account observations, optional read-only CLI account queries and Claude status-line capture. |
 | `static/charts.js` | Chart.js theming, `mk()`/`hbar()`/`areaDS()`, calendar + heatmap SVG. |
 | `static/views.js` | The eight views, controls, events, boot. |
 | `index.html` | Shell only: sidebar (device name, tabs, live/refresh/theme/settings), page header (period, range, metric, filters), card markup, an SVG icon sprite. |
@@ -260,6 +261,38 @@ so that file stops being a cache and becomes the sole record. Two consequences:
   restarted, or explicitly deleted through the existing warned cache action.
 - Payload construction and cache actions share `_refresh_lock` with parsing. Aggregates
   mutate in place, so copying only the outer file list is not a consistent snapshot.
+
+## Account snapshots
+
+Overview's subscription-limit meters use `GET /api/accounts`, separate from usage
+data/summary and health. GET is offline. `POST /api/accounts` requires `_csrf_ok()`
+and explicit `confirmed:true` consent for a one-time CLI lookup that may contact the
+provider. Never start/resume a thread or model turn, login/logout, or redeem credits.
+Codex uses only initialize, account/read (refreshToken:false), and account/rateLimits/read;
+Claude uses auth status. Read accounts before/after Codex quota lookup and discard
+changed accounts. Credential contents are never decoded; only file signatures and
+non-reversible environment fingerprints detect changes. Other processes' credentials
+remain unknown. A pipe reader owns closing stdout; closing it on another thread can
+hang on an inherited pipe's read lock with recent Codex CLI builds.
+
+`account_metadata` is private optional aggregate metadata in cache version 57.
+Codex creator ids mean thread creator, never per-request payer. Claude accountUuid
+values are incomplete observed record identities, never inferred auth/plan. Quota
+snapshots are account-wide, timestamped and never summed across sessions/devices or
+derived from tokens. Log quotas and Claude captures cannot be matched to current
+sign-in. They stay explicitly unbound. Missing fields are unavailable; observations
+older than five minutes, future-dated observations, passed/missing resets and failed
+lookups are stale. Never refill a percentage just because the reset time passed.
+Account metadata is excluded from peer exports and remote session displays.
+
+Versions 53–56 keep all entries during migration. Only available Claude/Codex logs
+missing the private metadata marker reparse transactionally; archives stay unchanged
+and a failed backfill retries. Peers 52–56 remain readable. Do not rebuild. Live
+account results are memory-only. Optional `accounts.py --capture-claude` stores only
+Claude's documented five_hour/seven_day status-line fields in AgentTelemetryNative,
+outside the ledger; missing fields replace older captures. Never edit a user's status
+line automatically. See docs/account-limits.md for verified sources and limitations.
+Use tests/preview_accounts.py for web checks with mock data only.
 
 ## What the logs cannot show
 
@@ -745,7 +778,7 @@ local network. Both switches are off until the user turns them on, and each asks
   copy to `.peers/<device id>.json` (0600). While the other machine sleeps, the copy still
   shows, along with the error explaining why it couldn't be reached. An export or saved
   copy with an incompatible `CACHE_VERSION` is refused with "update both". The
-  version-56 reader explicitly accepts versions 52–55, whose missing optional
+  version-57 reader explicitly accepts versions 52–56, whose missing optional
   precision/attribution/compaction/pricing fields retain the older detail limits; other
   versions are refused.
 - `build_payload` adds the copies to its file loop as `peer:<id>:<path>` with
@@ -780,9 +813,9 @@ local network. Both switches are off until the user turns them on, and each asks
 ## Version and self-update
 
 The sidebar footer shows the running version from this checkout's git metadata
-(`VERSION` in `dashboard.py`: `git describe --tags`, commit, branch). **Apart from the
-opt-in device sharing above, checking for an update is the only thing that touches the
-network, and only on a click** — never on a timer, which would break "nothing leaves
+(`VERSION` in `dashboard.py`: `git describe --tags`, commit, branch). **Apart from
+opt-in device sharing and explicit one-time account lookups, checking for an update
+is the only thing that touches the network, and only on a click** — never on a timer, which would break "nothing leaves
 this machine". `POST /api/update` (through
 `_csrf_ok()`): `check` fetches the upstream and reports how far behind; `apply`
 fast-forwards only — it refuses local edits to tracked files and commits the upstream

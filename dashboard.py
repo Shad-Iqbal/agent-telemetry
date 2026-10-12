@@ -21,11 +21,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import parser as P
 import native as N
 import session_names as SN
+import accounts as A
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = HERE
 CACHE_PATH = os.path.join(DATA_DIR, ".usage_cache.json")
-CACHE_VERSION = 56
+CACHE_VERSION = 57
 
 
 def _configure_data_dir(path):
@@ -41,7 +42,7 @@ def _configure_data_dir(path):
 def _peer_cache_ok(version):
     # v1.7.0 mirrors lack optional attribution/precision fields, but the reader
     # still supports their rows just as it supports archived local entries.
-    return type(version) is int and version in (52, 53, 54, 55, CACHE_VERSION)
+    return type(version) is int and version in (52, 53, 54, 55, 56, CACHE_VERSION)
 
 # ---------------------------------------------------------------------------
 # In-memory store of per-file aggregates, refreshed on a background interval.
@@ -271,10 +272,10 @@ def load_cache():
     if data.get("version") == CACHE_VERSION:
         _state["files"] = files
         return
-    if data.get("version") in (53, 54, 55):
-        # Only optional compaction/pricing metadata changed. Keep every entry
+    if data.get("version") in (53, 54, 55, 56):
+        # Only optional compaction/pricing/private account metadata changed. Keep every entry
         # until its replacement parses successfully; update_file backfills Claude
-        # and Codex logs lacking compactions, and Claude Haiku 5.5 pricing detail.
+        # and Codex logs lacking metadata, and Claude Haiku 5.5 pricing detail.
         _state["files"] = files
         _dirty["v"] = True
         sys.stderr.write("[cache] backfilling optional metadata; existing ledger retained\n")
@@ -830,6 +831,8 @@ def _build_payload_locked():
             s2["archived"] = bool(agg.get("archived"))
             s2["subagent"] = bool(session.get("subagent"))
             s2["device"] = device
+            if not remote and source in ("codex", "claude"):
+                s2["account_metadata"] = A.session_metadata(agg)
             available, reason = SN.availability(source, agg.get("path", ""), remote)
             s2["rename_id"] = SN.identity(agg, session)
             if not s2["rename_id"]:
@@ -2153,6 +2156,10 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, json.dumps(N.status()))
         elif route == "/api/sync":
             self._send(200, json.dumps(refresh_sync()))
+        elif route == "/api/accounts":
+            with _refresh_lock:
+                result = A.build_accounts(list(_state["files"].values()), _local_id())
+            self._send(200, json.dumps(result))
         elif route == "/api/summary":
             try:
                 self._send(200, client_snapshot()[1])
@@ -2235,7 +2242,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         route = self.path.split("?")[0]
-        if route in ("/api/settings", "/api/cache", "/api/update", "/api/devices", "/api/refresh", "/api/native", "/api/shutdown", "/api/sync", "/api/session-name"):
+        if route in ("/api/settings", "/api/cache", "/api/update", "/api/devices", "/api/refresh", "/api/native", "/api/shutdown", "/api/sync", "/api/session-name", "/api/accounts"):
             if not self._csrf_ok():
                 self._send(403, json.dumps({"error": "cross-site request refused"}))
                 return
@@ -2249,7 +2256,11 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(400, json.dumps({"error": "invalid JSON body"}))
                 return
             try:
-                if route == "/api/session-name":
+                if route == "/api/accounts":
+                    A.refresh_account(body.get("source"), body.get("confirmed"))
+                    with _refresh_lock:
+                        result = A.build_accounts(list(_state["files"].values()), _local_id())
+                elif route == "/api/session-name":
                     result = set_session_name(body)
                 elif route == "/api/native":
                     result = N.action(body.get("enabled"))
