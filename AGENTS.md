@@ -377,6 +377,11 @@ Use tests/preview_accounts.py for web checks with mock data only.
   Duration uses their difference only with an explicit top-level response_id ->
   turn_id/thread_id chain and a one-to-one match within that recorded interval.
   Missing/invalid timing, mismatched scopes and overlapping candidates stay unknown.
+  The drawer labels missing trigger/context fields "Not recorded" and unmatched
+  duration "Unavailable"; never present a known completed event as unknown or infer
+  manual/auto from adjacent prompts. Timing conflicts remain sticky while retained;
+  replayed checkpoints whose correlation state was evicted cannot be rebound.
+  An ambiguous interval clears prior durations even for evicted checkpoints.
   Lifecycle records enrich existing checkpoints only; never count them again.
   The bounded private parser state compaction_timing.version backfills available
   Codex logs once, transactionally, without changing event/aggregate shape or cache

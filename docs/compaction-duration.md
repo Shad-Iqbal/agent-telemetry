@@ -22,6 +22,11 @@ Completion records only enrich the original event; they create no event, model c
 tokens, cost, active time, hourly record or session-boundary changes. A bounded private
 parser-state map supports incremental parsing and restarts. The uniqueness check
 includes all durable checkpoints, including ones without correlation metadata.
+Conflicting matches stay ambiguous while checkpoint metadata is retained, even
+after completion/request records leave the bounded maps. Replays of checkpoints
+whose correlation state has been evicted cannot rebind them from a partial history.
+Overlapping intervals clear prior durations on all affected durable checkpoints.
+The private timing marker is version 2 for this conservative matching behavior.
 
 The existing event schema already permits numeric `duration_ms` (used by Claude).
 No aggregate or payload shape changes, so no cache-version bump is necessary. A
@@ -34,11 +39,14 @@ rollouts recovered 12/18, 2/3 and 24/24 durations. All usage dimensions and even
 were identical. One event had a recorded 163391 ms duration and now renders as 163s.
 No transcripts, account metadata or real usage records are committed as fixtures.
 
-Manual/auto trigger and before/after context sizes remain unknown for these Codex
-records: they do not contain those fields. The example with manual/auto labels and
-context sizes matches this dashboard's Claude-specific renderer, which reads
-`compactMetadata.trigger`, `preTokens`, `postTokens` and `durationMs`. The Mac transcript
-itself was not available for inspection; OS alone does not determine these fields.
+Read-only review on macOS also recovered durations for all five compactions shown
+in the reported screenshot, with unchanged usage dimensions and event counts.
+Manual/auto trigger and before/after context sizes are absent in those records.
+The drawer now labels these missing fields **Not recorded**, calls the column
+**Trigger**, and shows **Unavailable** for missing or ambiguously matched duration.
+It continues to display observed Claude manual/auto triggers and context sizes from
+`compactMetadata.trigger`, `preTokens`, `postTokens` and `durationMs`. It never guesses
+the trigger from a nearby command or prompt; OS alone does not determine these fields.
 
 The [official Codex app-server documentation](https://learn.chatgpt.com/docs/app-server)
 describes `contextCompaction` items and their completion lifecycle. The extra epoch

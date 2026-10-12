@@ -1153,19 +1153,19 @@ function compactionDetails(s){
   const counts={manual:0,auto:0,unknown:0};
   for(const e of events) counts[e.trigger==="manual"||e.trigger==="auto"?e.trigger:"unknown"]++;
   const types=[counts.manual?`${counts.manual} manual`:"",counts.auto?`${counts.auto} auto`:"",
-    counts.unknown?`${counts.unknown} unknown`:""].filter(Boolean).join(" · ");
-  const value=n=>Number.isFinite(n)?fmtTok(n):"—";
-  const duration=n=>Number.isFinite(n)?`${Math.round(n/1000)}s`:"—";
+    counts.unknown?`${counts.unknown} without a recorded trigger`:""].filter(Boolean).join(" · ");
+  const value=n=>Number.isFinite(n)?fmtTok(n):"Not recorded";
+  const duration=n=>Number.isFinite(n)?`${Math.round(n/1000)}s`:"Unavailable";
   const note=s.source==="codex"
-    ? "Codex does not record type or context sizes. Duration is available only when a uniquely matched completion records both timing fields. Request usage, when logged, is already included in session totals; these events add no tokens or cost."
+    ? "These Codex records do not report a manual/auto trigger or context sizes. Duration is available only when a uniquely matched completion records both timing fields. Request usage, when logged, is already included in session totals; these events add no tokens or cost."
     : "Context before → after. Compaction request tokens and cost are not recorded; context reduction is not billed usage.";
   return `<section class="compaction-details"><h3>Compactions · ${fmtNum(events.length)}</h3>
     <p class="hint">${types?esc(types)+" · ":""}Selected date range. Events belong to this session; model filters do not apply.</p>
-    ${events.length?`<div class="compaction-table"><table aria-label="Completed compactions in selected date range"><thead><tr><th class="nosort">When</th><th class="nosort">Type</th><th class="nosort">Context</th><th class="nosort">Duration</th></tr></thead><tbody>${events.map(e=>`<tr>
+    ${events.length?`<div class="compaction-table"><table aria-label="Completed compactions in selected date range"><thead><tr><th class="nosort">When</th><th class="nosort">Trigger</th><th class="nosort">Context</th><th class="nosort">Duration</th></tr></thead><tbody>${events.map(e=>`<tr>
       <td title="${esc(e.timestamp||"")}">${esc((e.timestamp||"").slice(0,16).replace("T"," "))}</td>
-      <td>${e.trigger==="manual"?"Manual":e.trigger==="auto"?"Auto":"Unknown"}</td>
-      <td title="Before: ${Number.isFinite(e.before)?fmtNum(e.before):"unknown"}; after: ${Number.isFinite(e.after)?fmtNum(e.after):"unknown"}">${value(e.before)} → ${value(e.after)}</td>
-      <td>${duration(e.duration_ms)}</td></tr>`).join("")}</tbody></table></div>
+      <td>${e.trigger==="manual"?"Manual":e.trigger==="auto"?"Auto":"Not recorded"}</td>
+      <td title="Before: ${Number.isFinite(e.before)?fmtNum(e.before):"Not recorded"}; after: ${Number.isFinite(e.after)?fmtNum(e.after):"Not recorded"}">${Number.isFinite(e.before)||Number.isFinite(e.after)?`${value(e.before)} → ${value(e.after)}`:"Not recorded"}</td>
+      <td${Number.isFinite(e.duration_ms)?"":' title="Recorded timing is missing or cannot be matched uniquely."'}>${duration(e.duration_ms)}</td></tr>`).join("")}</tbody></table></div>
     <p class="hint">${note}</p>`:""}</section>`;
 }
 

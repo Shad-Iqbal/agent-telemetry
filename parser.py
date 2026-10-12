@@ -1546,7 +1546,7 @@ def _codex_turn_tool(agg, nm, pl):
             cmd = c if isinstance(c, str) else None
     _turn_tool(agg, nm, cmd=cmd)
 
-_CODEX_COMPACTION_TIMING_VERSION = 1
+_CODEX_COMPACTION_TIMING_VERSION = 2
 
 
 def _codex_timing_state(agg):
@@ -1576,15 +1576,26 @@ def _codex_timing_request(agg, payload):
         return
     state = _codex_timing_state(agg)
     _codex_timing_put(state["requests"], rid, {"turn_id": tid, "thread_id": thread})
-    if state["requests"][rid].get("ambiguous"):
-        for meta in state["checkpoints"].values():
-            if meta.get("response_id") == rid: meta["ambiguous"] = True
+    invalid = state["requests"][rid].get("ambiguous")
+    for meta in state["checkpoints"].values():
+        if meta.get("response_id") == rid and (invalid or
+                (meta.get("turn_id"), meta.get("thread_id")) != (tid, thread)):
+            meta["ambiguous"] = True
+            invalid = True
+    if invalid:
+        event = agg.get("compactions", {}).get("response:" + rid)
+        if event: event["duration_ms"] = None
         _codex_apply_timings(agg)
 
 
-def _codex_timing_checkpoint(agg, payload, key):
+def _codex_timing_checkpoint(agg, payload, key, new):
     rid = _codex_timing_id(payload.get("compaction_response_id"))
     state = _codex_timing_state(agg)
+    if not new and key not in state["checkpoints"]:
+        # An old checkpoint's identity/ambiguity may have left the bounded maps.
+        # Keep its previous result; replaying only one candidate cannot rebind it.
+        _codex_apply_timings(agg)
+        return
     request = state["requests"].get(rid)
     if not request or request.get("ambiguous"):
         _codex_apply_timings(agg)
@@ -1607,8 +1618,18 @@ def _codex_timing_completion(agg, payload):
             or not 0 <= start <= end <= 253402300799999):
         return
     state = _codex_timing_state(agg)
+    previous = state["completions"].get(iid)
     _codex_timing_put(state["completions"], iid, {
         "turn_id": tid, "thread_id": thread, "start": start, "end": end})
+    if state["completions"][iid].get("ambiguous"):
+        # Preserve the conflict on affected checkpoints before the item itself
+        # leaves bounded state. Never let eviction turn it into a unique match.
+        for key, event in agg.get("compactions", {}).items():
+            at = round(_from_iso(event["timestamp"]).timestamp() * 1000)
+            if start <= at <= end or (previous and not previous.get("ambiguous")
+                    and previous["start"] <= at <= previous["end"]):
+                event["duration_ms"] = None
+                if key in state["checkpoints"]: state["checkpoints"][key]["ambiguous"] = True
     _codex_apply_timings(agg)
 
 
@@ -1624,10 +1645,19 @@ def _codex_apply_timings(agg):
     # Include unlinked/older checkpoints when checking uniqueness. Evicting
     # bounded correlation state must never turn an ambiguous interval into one
     # apparently unique candidate.
-    times = [round(_from_iso(e["timestamp"]).timestamp() * 1000)
-             for e in agg.get("compactions", {}).values()]
-    unique = {iid for iid, c in completions.items() if not c.get("ambiguous")
-              and sum(c["start"] <= at <= c["end"] for at in times) == 1}
+    events = agg.get("compactions", {})
+    times = {key: round(_from_iso(e["timestamp"]).timestamp() * 1000)
+             for key, e in events.items()}
+    unique = set()
+    for iid, completion in completions.items():
+        if completion.get("ambiguous"): continue
+        covered = [key for key, at in times.items() if completion["start"] <= at <= completion["end"]]
+        if len(covered) == 1:
+            unique.add(iid)
+        elif len(covered) > 1:
+            for key in covered:
+                events[key]["duration_ms"] = None
+                if key in checkpoints: checkpoints[key]["ambiguous"] = True
     matches = {}
     for key, checkpoint in checkpoints.items():
         matches[key] = [iid for iid, completion in completions.items()
@@ -1640,6 +1670,8 @@ def _codex_apply_timings(agg):
         if event is None: continue
         # Re-evaluate late/interleaved records; ambiguity clears earlier enrichment.
         event["duration_ms"] = None
+        if len(candidates) > 1:
+            checkpoints[key]["ambiguous"] = True
         if len(candidates) != 1: continue
         iid = candidates[0]
         if sum(iid in values for values in matches.values()) != 1: continue
@@ -1658,11 +1690,13 @@ def _codex_compaction(agg, payload, dt):
     key = key or "at:" + dt.astimezone(timezone.utc).isoformat()
     # Trigger/context aren't recorded by CompactedItem. Explicit lifecycle timing
     # can enrich duration, but copied history and usage snapshots cannot.
-    agg.setdefault("compactions", {}).setdefault(key, {
+    events = agg.setdefault("compactions", {})
+    new = key not in events
+    events.setdefault(key, {
         "id": key, "timestamp": dt.isoformat(), "date": _buckets(dt)[0],
         "trigger": "unknown", "before": None, "after": None, "duration_ms": None,
     })
-    _codex_timing_checkpoint(agg, payload, key)
+    _codex_timing_checkpoint(agg, payload, key, new)
 
 
 def parse_codex(agg, lines):

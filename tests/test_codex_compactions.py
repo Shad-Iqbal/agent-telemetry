@@ -343,6 +343,70 @@ class CodexCompactionTests(unittest.TestCase):
         self.assertEqual(len(agg["state"]["compaction_timing"]["requests"]), 32)
         self.assertEqual(next(iter(agg["compactions"].values()))["duration_ms"], 2000)
 
+    def test_completion_eviction_cannot_make_an_ambiguous_duration_known(self):
+        lines = self.timing_lines(); agg = self.parse(lines)
+        overlap = json.loads(lines[-1]); overlap["payload"]["item"]["id"] = "overlap"
+        overlap["payload"]["started_at_ms"] -= 100
+        P.parse_codex(agg, [json.dumps(overlap)])
+        self.assertIsNone(agg["compactions"]["response:timed-response"]["duration_ms"])
+        # Evict the first completion while the second still covers this event.
+        for i in range(31):
+            completion = json.loads(lines[-1]); p = completion["payload"]
+            p["item"]["id"] = f"later-{i}"; p["started_at_ms"] += 10000; p["completed_at_ms"] += 10000
+            P.parse_codex(agg, [json.dumps(completion)])
+        self.assertEqual(len(agg["state"]["compaction_timing"]["completions"]), 32)
+        self.assertIsNone(agg["compactions"]["response:timed-response"]["duration_ms"],
+                          "Eviction forgot the conflicting completion")
+
+    def test_evicted_checkpoint_replay_cannot_forget_its_ambiguity(self):
+        lines = self.timing_lines(); agg = self.parse(lines)
+        overlap = json.loads(lines[-1]); overlap["payload"]["item"]["id"] = "overlap"
+        P.parse_codex(agg, [json.dumps(overlap)])
+        for i in range(33):
+            request = json.loads(lines[2]); request["payload"]["response_id"] = f"later-{i}"
+            checkpoint = json.loads(lines[3]); checkpoint["payload"]["compaction_response_id"] = f"later-{i}"
+            checkpoint["timestamp"] = "2026-10-12T12:01:00Z"
+            completion = json.loads(lines[-1]); p = completion["payload"]
+            p["item"]["id"] = f"later-{i}"; p["started_at_ms"] += 10000; p["completed_at_ms"] += 10000
+            P.parse_codex(agg, [json.dumps(request), json.dumps(checkpoint), json.dumps(completion)])
+        # A replay of an old event after its correlation state was evicted must
+        # not manufacture a unique match from only the replayed records.
+        P.parse_codex(agg, lines[2:])
+        self.assertIsNone(agg["compactions"]["response:timed-response"]["duration_ms"])
+
+    def test_unlinked_checkpoint_clears_duration_even_after_correlation_eviction(self):
+        lines = self.timing_lines(); agg = self.parse(lines)
+        for i in range(33):
+            request = json.loads(lines[2]); request["payload"]["response_id"] = f"later-{i}"
+            checkpoint = json.loads(lines[3]); checkpoint["payload"]["compaction_response_id"] = f"later-{i}"
+            checkpoint["timestamp"] = "2026-10-12T12:01:00Z"
+            P.parse_codex(agg, [json.dumps(request), json.dumps(checkpoint)])
+        self.assertEqual(agg["compactions"]["response:timed-response"]["duration_ms"], 2000)
+        P.parse_codex(agg, [self.line("compacted", {"window_id": "unlinked"}, "2026-10-12T12:00:01.500Z")])
+        self.assertIsNone(agg["compactions"]["response:timed-response"]["duration_ms"],
+                          "Evicted checkpoint retained a now-ambiguous duration")
+
+    def test_conflicting_completion_stays_ambiguous_after_item_eviction(self):
+        lines = self.timing_lines(); agg = self.parse(lines)
+        conflict = json.loads(lines[-1]); conflict["payload"]["started_at_ms"] += 100
+        P.parse_codex(agg, [json.dumps(conflict)])
+        for i in range(33):
+            completion = json.loads(lines[-1]); p = completion["payload"]
+            p["item"]["id"] = f"later-{i}"; p["started_at_ms"] += 10000; p["completed_at_ms"] += 10000
+            P.parse_codex(agg, [json.dumps(completion)])
+        P.parse_codex(agg, [lines[-1]])
+        self.assertIsNone(agg["compactions"]["response:timed-response"]["duration_ms"])
+
+    def test_request_identity_conflict_is_detected_after_request_eviction(self):
+        lines = self.timing_lines(); agg = self.parse(lines)
+        for i in range(33):
+            request = json.loads(lines[2]); request["payload"]["response_id"] = f"later-{i}"
+            request["payload"]["usage"] = {}
+            P.parse_codex(agg, [json.dumps(request)])
+        conflict = json.loads(lines[2]); conflict["payload"]["turn_id"] = "other-turn"
+        P.parse_codex(agg, [json.dumps(conflict)])
+        self.assertIsNone(agg["compactions"]["response:timed-response"]["duration_ms"])
+
 
 if __name__ == "__main__":
     unittest.main()

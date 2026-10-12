@@ -172,9 +172,15 @@ assert.match(run(`compactionDetails({source:'claude',compactions:[{timestamp:'<s
 assert.match(run(`compactionDetails({source:'codex'})`),/Not recorded in this ledger entry/);
 const timedCodexHTML=run(`compactionDetails({source:'codex',compactions:[{timestamp:'2026-10-12T11:42:38+06:00',trigger:'unknown',before:null,after:null,duration_ms:163391}]})`);
 assert.match(timedCodexHTML,/163s/);
-assert.match(timedCodexHTML,/does not record type or context sizes/);
+assert.match(timedCodexHTML,/do not report a manual\/auto trigger or context sizes/);
 assert.match(timedCodexHTML,/uniquely matched completion/);
 assert.doesNotMatch(timedCodexHTML,/does not record type, context sizes or duration/);
+assert.match(timedCodexHTML,/without a recorded trigger/);
+assert.match(timedCodexHTML,/>Trigger</);
+assert.match(timedCodexHTML,/>Not recorded</);
+assert.doesNotMatch(timedCodexHTML,/Unknown|\bunknown\b|— → —/);
+assert.match(run(`compactionDetails({source:'codex',compactions:[{timestamp:'2026-10-12T11:42:38+06:00',trigger:'unknown',before:null,after:null,duration_ms:null}]})`),/missing or cannot be matched uniquely\."\>Unavailable<\/td>/);
+assert.match(run(`compactionDetails({source:'codex',compactions:[{timestamp:'2026-10-12T11:42:38+06:00',trigger:'unknown',before:null,after:null,duration_ms:0}]})`),/>0s<\/td>/);
 assert.equal(run(`compactionDetails({source:'copilot'})`),'');
 run(`S.tools=new Set(['codex']);var codexCompactSession={...compactSession,source:'codex',compactions:[
   {id:'response:fixture',date:'2026-10-10',timestamp:'2026-10-10T13:09:08+06:00',trigger:'unknown',before:null,after:null,duration_ms:null}]};
@@ -182,11 +188,11 @@ run(`S.tools=new Set(['codex']);var codexCompactSession={...compactSession,sourc
 assert.equal(run(`slice({from:'2026-10-10',to:'2026-10-10'}).sessions[0].compaction_count`),1);
 assert.equal(run(`slice({from:'2026-10-10',to:'2026-10-10'}).sessions[0].cost`),0);
 const codexHTML=run(`compactionDetails(slice({from:'2026-10-10',to:'2026-10-10'}).sessions[0])`);
-assert.match(codexHTML,/1 unknown/);
-assert.match(codexHTML,/Unknown/);
+assert.match(codexHTML,/1 without a recorded trigger/);
+assert.match(codexHTML,/Not recorded/);
 assert.match(codexHTML,/already included in session totals/);
 assert.doesNotMatch(codexHTML,/tokens and cost are not recorded/);
-assert.match(codexHTML,/— → —/);
+assert.doesNotMatch(codexHTML,/— → —/);
 run(`S.models=new Set(['M']);`);
 assert.equal(run(`slice({from:'2026-10-10',to:'2026-10-10'}).sessions.length`),0);
 assert.equal(run(`slice({from:'2026-10-09',to:'2026-10-09'}).sessions[0].in`),100);
