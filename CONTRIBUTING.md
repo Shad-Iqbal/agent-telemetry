@@ -96,10 +96,17 @@ These are not style preferences. A PR that breaks one will be asked to change.
   `tools["date\tname"]`, `hourly["date\thour"]` so the UI can filter by range. A new
   aggregate that isn't date-keyed can't be filtered.
 - **Compaction events are separate from usage.** Keep Claude boundary UUIDs and
-  dates, deduplicate replays, and never price context before/after counts. Test
+  Codex checkpoint response/window IDs (UTC completion timestamp for older logs),
+  dates, and replay deduplication. Ignore copied Codex history, fork replay checkpoints
+  and lifecycle twins; never price context sizes or a checkpoint's usage snapshot. Test
   full/incremental parsing, failed metadata backfills, archived entries and peers;
   normal tokens, messages, tools and other aggregates must remain identical.
   Older entries without metadata are unknown, not zero. Preserve them on migration.
+- **opencode has two SQLite schemas.** V1 uses `session/message/part`; V2 uses
+  `session_v2/session_message`, with role in a column and model/tools inside JSON.
+  Read V2 and V1-only history without adding migrated copies twice. Preserve V1
+  history for empty V2 migration stubs. Check fork inheritance, unchanged-cache
+  backfill, failed reparse preservation, live WAL updates and dated usage exports.
 - **A line chart needs two points to draw a segment.** Build line/area datasets with
   `pointRadius: soloPoint(data)` or a single-day range renders as empty axes.
 - **Check the function signature you're calling.** Python won't catch a wrong keyword

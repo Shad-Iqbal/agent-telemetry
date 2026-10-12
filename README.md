@@ -165,7 +165,7 @@ instead of cloning, delete `.usage_cache.json` first — that file is your perso
 | **Codex** | `~/.codex/sessions/**`, `~/.codex/archived_sessions/**` | exact (in/cached/out/reasoning); subagents are identified and labelled |
 | **GitHub Copilot** | VS Code / Insiders / Cursor `workspaceStorage/*/chatSessions/*.{json,jsonl}` | exact where Copilot recorded them (`promptTokens`/`completionTokens` on finished requests in current builds); estimated from message text for older chats · premium-request multiplier read separately |
 | **Cursor** (native AI) | `Cursor/User/globalStorage/state.vscdb` under App Support / `%APPDATA%` / `~/.config` | partial — model, mode, timestamps, tool calls and AI-line stats are exact; tokens are on only ~2% of messages |
-| **opencode** | `~/.local/share/opencode/opencode.db`, `%LOCALAPPDATA%\opencode\opencode.db`, `~/.opencode/opencode.db` (or `$OPENCODE_DATA_DIR`) | exact (in/out/reasoning/cache); cost is read from opencode's own per-message value |
+| **opencode** | `~/.local/share/opencode/opencode.db`, `%LOCALAPPDATA%\opencode\opencode.db`, `~/.opencode/opencode.db` (or `$OPENCODE_DATA_DIR`) | V1/V2 SQLite; exact (in/out/reasoning/cache), prompts and tools; cost is read from opencode's own per-message value |
 | **Hermes Agent** | `~/.hermes/state.db` (or `$HERMES_HOME`, `%LOCALAPPDATA%\hermes`) | exact (in/out/cache/reasoning, per model) |
 | **OpenClaw** | `~/.openclaw/agents/<agent>/agent/openclaw-agent.sqlite` (or `$OPENCLAW_STATE_DIR`; also the older `~/.clawdbot`, `~/.moltbot`) and the older per-session `sessions/*.jsonl` | exact (in/out/cache read/cache write/reasoning, per response); its own logged cost is used only for a model with no verified price. Large events are stored zstd-compressed: read with the `zstd` command or Python 3.14+ |
 
@@ -222,11 +222,14 @@ where clicking a row opens that project's sessions.
 
 **Sessions** — real session titles, tool, project, model, tokens, cost, prompts, replies,
 tool calls, active time, cache % — search, sort, and click any row for a detail panel.
-Claude sessions also show completed compactions in the selected date range, with
-manual/auto counts, context before → after, and duration in the detail panel.
+Claude and Codex sessions also show completed compactions in the selected date range.
+Claude records manual/auto counts, context before → after, and duration in the detail
+panel. Codex checkpoints provide completion times; type, context sizes and duration
+remain unknown because its logs do not record them. Codex compaction request usage,
+when logged, is already included in token/cost totals and is never counted again.
 Compaction-only days remain visible. Events survive log deletion once recorded;
 older ledger entries without event metadata say “Not recorded.” Context sizes are
-separate from billed tokens: compaction request usage/cost is not inferred. Events
+separate from billed tokens: missing compaction request usage/cost is not inferred. Events
 belong to the session and are not attributed to a model filter.
 
 **Optimize** — suggestions derived from your own logs, ranked by what they'd save: sessions

@@ -49,7 +49,7 @@ def main():
         assert manifest["version"] == "2.0.0"
         info = json.loads((app / "BUILD-INFO.json").read_text())
         assert info["commit"] == "83bc824a286ec3fe7ab0ee8155566a758489b57e"
-        subprocess.run([str(python), "-c", "import ctypes, sqlite3, ssl, urllib.request, dashboard; assert dashboard.CACHE_VERSION in (53, 54)"],
+        subprocess.run([str(python), "-c", "import ctypes, sqlite3, ssl, urllib.request, dashboard; assert dashboard.CACHE_VERSION in (53, 54, 55)"],
                        env=environment, check=True, timeout=30)
         subprocess.run([str(python), str(entry), "--self-test"],
                        env=environment, check=True, timeout=30)

@@ -206,11 +206,13 @@ so that file stops being a cache and becomes the sole record. Two consequences:
   discarding them on a version change would silently destroy history the UI promised
   to keep. Newer fields are read with `.get()` defaults, so an old-shape archived
   entry degrades rather than breaks.
-- Version 53 → **54** only adds optional Claude compaction metadata. This migration
-  retains every existing entry; `update_file()` fully reparses available Claude logs
-  missing `compactions`, replacing them only after success. Other sources continue
+- Versions 53/54 → **55** add optional Claude/Codex compaction metadata. This migration
+  retains every existing entry; `update_file()` fully reparses available Claude/Codex logs
+  missing `compactions`, replacing them only after success. opencode databases gain
+  an `opencode_schema` marker and reparse once even on an unchanged signature to
+  discover V2 history. Other sources continue
   incrementally and archived entries stay unchanged. A failed backfill retries even
-  when the source size/mtime is unchanged. Peers with versions 52/53 remain readable.
+  when the source size/mtime is unchanged. Peers with versions 52/53/54 remain readable.
 - **`--rebuild` destroys archived sessions too**, not just the Settings buttons — it
   skips the cache entirely and re-parses from disk, and an archived session has no
   disk to parse. Back up `.usage_cache.json` before running it on a machine whose
@@ -287,6 +289,19 @@ so that file stops being a cache and becomes the sole record. Two consequences:
   The drawer states the events' date-only scope when billed model filters are active.
   Completion can extend session start/end but never advances billed active time or
   creates a record/hourly usage row. Keep cumulative cost-state reconciliation separate.
+
+- **Codex compactions use the same durable event view.** Record only top-level
+  `type:"compacted"` checkpoints, keyed by `compaction_response_id`, then `window_id`,
+  then UTC completion timestamp. Lifecycle `ContextCompaction` completions and
+  `context_compacted` notices are twins, not extra events; starts/failed attempts
+  add nothing. The existing fork replay guard excludes inherited checkpoints.
+  Copied `replacement_history` can contain the large-line skip strings: checkpoints
+  bypass that shortcut for event metadata only. Formerly skipped checkpoints must
+  not advance/reset the old usage parser's replay clock. Never import copied messages,
+  tools or `latest_token_usage_record` (a resume snapshot, not a new model request).
+  Type, context sizes and duration are not recorded by Codex and remain unknown.
+  Real compaction `token_usage_record` usage stays in the existing token/cost totals;
+  events add no usage. Old archived/mirrored entries missing metadata stay unknown.
 
 - **One Claude response is several records, and a resume can replay them all.** Claude
   Code writes one `type:"assistant"` record per content block (thinking, text, each
@@ -415,7 +430,14 @@ so that file stops being a cache and becomes the sole record. Two consequences:
   `~/.copilot/session-state/*/events.jsonl`, JetBrains, and `GitHub.copilot-chat/transcripts/`
   (turns only, no tokens).
 - **opencode**: current versions use one SQLite `opencode.db`; older ones use
-  `storage/message/<session>/msg_*.json`. Both are read. Only the DB records a real
+  `storage/message/<session>/msg_*.json`. All are read. The DB parser supports both
+  `session/message/part` (V1) and `session_v2/session_message` (V2). V2's message role
+  is a column; model identity is `data.model`, and tools are in assistant `content`.
+  Prefer the V2 copy of migrated sessions; keep V1-only sessions and V1 history for
+  empty V2 migration stubs. V2 rows are ordered by session/time/sequence. Fork-copied
+  rows preceding the fork session's creation are excluded, matching opencode's own
+  stats even when its parent is gone. Idle/system/synthetic rows are not user prompts.
+  Bad V2 JSON fails the parse so the previous ledger survives and retries. Only the DB records a real
   per-message cost, so cost routing keys on whether the aggregate's path ends `.db`.
 - **Gemini CLI** is deliberately not parsed — its `chats/*.jsonl` hold only session
   bookkeeping, no prompts/tokens/model.
@@ -688,9 +710,9 @@ local network. Both switches are off until the user turns them on, and each asks
   copy to `.peers/<device id>.json` (0600). While the other machine sleeps, the copy still
   shows, along with the error explaining why it couldn't be reached. An export or saved
   copy with an incompatible `CACHE_VERSION` is refused with "update both". The
-  version-53 reader explicitly accepts version 52 (v1.7.0), whose missing optional
-  precision/attribution fields retain the older detail limits; all other versions
-  are refused.
+  version-55 reader explicitly accepts versions 52–54, whose missing optional
+  precision/attribution/compaction fields retain the older detail limits; other
+  versions are refused.
 - `build_payload` adds the copies to its file loop as `peer:<id>:<path>` with
   `agg["_device"]`, keys everything by device the way it already does by IDE, and prices
   them with THIS machine's `PRICING`. Setup data (MCP inventory and calls, installed-skill

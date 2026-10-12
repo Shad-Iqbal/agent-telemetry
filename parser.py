@@ -531,7 +531,7 @@ def _blank_agg(source, path):
         "state": {"cur_model": None},
         "sessions": [],
     }
-    if source in ("claude", "claude-desktop"):
+    if source in ("claude", "claude-desktop", "codex"):
         # Present and empty means observed zero; absent on an older archive means
         # unknown. Keep event metadata separate from all billed usage counters.
         agg["compactions"] = {}
@@ -1451,21 +1451,45 @@ def _codex_turn_tool(agg, nm, pl):
             cmd = c if isinstance(c, str) else None
     _turn_tool(agg, nm, cmd=cmd)
 
+def _codex_compaction(agg, payload, dt):
+    """Persist a checkpoint without importing its copied history or usage snapshot."""
+    key = None
+    for field, prefix in (("compaction_response_id", "response:"), ("window_id", "window:")):
+        value = payload.get(field)
+        if isinstance(value, str) and value:
+            key = prefix + value
+            break
+    key = key or "at:" + dt.astimezone(timezone.utc).isoformat()
+    # These fields aren't recorded by Codex's CompactedItem. Don't derive them
+    # from surrounding prompts, token_count resets or replacement_history.
+    agg.setdefault("compactions", {}).setdefault(key, {
+        "id": key, "timestamp": dt.isoformat(), "date": _buckets(dt)[0],
+        "trigger": "unknown", "before": None, "after": None, "duration_ms": None,
+    })
+
+
 def parse_codex(agg, lines):
     cur_model = agg["state"].get("cur_model")
     project = agg["project"]
     for line in lines:
         if not line.strip():
             continue
-        # cheap skip for the multi-MB tool-output / reasoning lines
-        if any(s in line for s in _CODEX_SKIP):
+        # A completed checkpoint can contain copied tool outputs/reasoning. Read
+        # it for metadata, retaining the existing skip behavior for every other
+        # record (even one containing a nested "compacted" string).
+        skip = any(s in line for s in _CODEX_SKIP)
+        if skip and '"compacted"' not in line:
             continue
         try:
             o = json.loads(line)
         except Exception:
             continue
+        if skip and (not isinstance(o, dict) or o.get("type") != "compacted"):
+            continue
         t = o.get("type")
         pl = o.get("payload") or {}
+        if t == "compacted" and not isinstance(pl, dict):
+            continue
         pt = pl.get("type")
         dt = _from_iso(o.get("timestamp", "")) if o.get("timestamp") else None
 
@@ -1483,11 +1507,15 @@ def parse_codex(agg, lines):
         if st.get("replay_last") and dt:
             last = _from_iso(st["replay_last"])
             if last and (dt - last).total_seconds() <= 1.0:
-                st["replay_last"] = o["timestamp"]
+                # A checkpoint formerly skipped with its large copied history
+                # must not change the existing usage parser's replay clock.
+                if not skip:
+                    st["replay_last"] = o["timestamp"]
                 if t != "turn_context":
                     continue
             else:
-                st["replay_last"] = None
+                if not skip:
+                    st["replay_last"] = None
 
         if t == "session_meta":
             if pl.get("forked_from_id") and "replay_last" not in st and o.get("timestamp"):
@@ -1524,6 +1552,11 @@ def parse_codex(agg, lines):
             if cwd:
                 project = _leaf(cwd) or cwd
                 agg["cwd"] = cwd
+        elif t == "compacted" and dt:
+            # Only the durable checkpoint counts. Lifecycle item completions and
+            # context_compacted notices can describe the same event; ignore twins.
+            # This sits AFTER the fork replay guard so inherited events stay out.
+            _codex_compaction(agg, pl, dt)
         elif t == "token_usage_record":
             # Newer Codex builds (seen from 2026-09) log one of these per model
             # response. They are the better usage source: token_count below logs
@@ -2314,33 +2347,41 @@ def parse_opencode_db(agg, db_path):
     agg["opencode_ids"] = []
     sess = {}          # sid -> running totals
     model_tokens = {}
-    # Per-session last-message timestamp for active-time gaps (see parse_cursor
-    # for why this is a local dict, not agg-level). The message table has no
-    # ORDER BY here, but SQLite returns un-indexed rows in insertion order, and
-    # opencode writes messages chronologically — the same assumption the "weak
-    # title from first user prompt" logic below already depends on.
+    # Per-session last-message timestamp for active-time gaps. Keep the original
+    # V1 traversal; V2 rows use their persisted chronological/sequence order.
     active_last = {}
     con = _open_ro_sqlite(db_path)
     cur = con.cursor()
     try:
+        tables = {row[0] for row in cur.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        v2 = {"session_v2", "session_message"}.issubset(tables)
+        legacy = {"session", "message", "part"}.issubset(tables)
+        if not (v2 or legacy):
+            raise sqlite3.OperationalError("unsupported opencode session schema")
+        agg["opencode_schema"] = 2 if v2 else 1
         # ---- session metadata ---------------------------------------------
-        for row in cur.execute(
-            "SELECT id, directory, title, agent, model, version, "
-            "parent_id, time_created, time_updated FROM session"):
-            sid, directory, title, agent, model_json, version, parent_id, tc, tu = row
-            model = _loads(model_json) or {}
-            sessions_meta[sid] = {
-                "directory": directory or "",
-                "title": title or "",
-                "agent": agent or "",
-                "model_id": model.get("id"),
-                "provider_id": model.get("providerID"),
-                "variant": model.get("variant"),
-                "version": version or "",
-                "parent_id": parent_id,
-                "start": tc,
-                "end": tu,
-            }
+        session_tables = (["session"] if legacy else []) + (["session_v2"] if v2 else [])
+        for table in session_tables:
+            columns = {r[1] for r in cur.execute("PRAGMA table_info(" + table + ")")}
+            fork = "fork_session_id" if "fork_session_id" in columns else "NULL"
+            for row in cur.execute(
+                    "SELECT id, directory, title, agent, model, version, "
+                    "parent_id, time_created, time_updated, " + fork + " FROM " + table):
+                sid, directory, title, agent, model_json, version, parent_id, tc, tu, fork_id = row
+                model = _loads(model_json) or {}
+                sessions_meta[sid] = {
+                    "directory": directory or "",
+                    "title": title or "",
+                    "agent": agent or "",
+                    "model_id": model.get("id"),
+                    "provider_id": model.get("providerID"),
+                    "variant": model.get("variant"),
+                    "version": version or "",
+                    "parent_id": parent_id,
+                    "start": tc,
+                    "end": tu,
+                    "fork_id": fork_id,
+                }
 
         # dominant project for aggregate-level project bucket
         proj_tally = {}
@@ -2352,8 +2393,8 @@ def parse_opencode_db(agg, db_path):
         # ---- tool parts (batch) --------------------------------------------
         # tool rows in part have {"type":"tool", "tool":"<name>", ...}
         tools_by_msg = {}
-        for mid, data in cur.execute(
-                "SELECT message_id, data FROM part WHERE json_extract(data,'$.type')='tool'"):
+        tool_rows = cur.execute("SELECT message_id, data FROM part WHERE json_extract(data,'$.type')='tool'") if legacy else []
+        for mid, data in tool_rows:
             o = _loads(data)
             if not o:
                 continue
@@ -2361,14 +2402,33 @@ def parse_opencode_db(agg, db_path):
             tools_by_msg.setdefault(mid, []).append(str(name))
 
         # ---- messages -------------------------------------------------------
-        for row in cur.execute(
-                "SELECT id, session_id, time_created, data FROM message"):
-            mid, sid, tc, data = row
+        queries = []
+        if legacy:
+            query = "SELECT id, session_id, time_created, data, NULL AS role, 0 AS v2, 0 AS seq FROM message"
+            if v2:
+                # A migrated V2 session is authoritative; its V1 copy stops
+                # growing. Keep V1-only sessions, never add both full copies.
+                query += (" WHERE session_id NOT IN (SELECT session_id FROM session_message "
+                          "WHERE type IN ('user','assistant') AND session_id IN (SELECT id FROM session_v2))")
+            queries.append(query)
+        if v2:
+            queries.append("SELECT id, session_id, time_created, data, type AS role, 1 AS v2, seq FROM session_message")
+        query = " UNION ALL ".join(queries)
+        if v2:
+            query += " ORDER BY session_id, time_created, seq, id"
+        for row in cur.execute(query):
+            mid, sid, tc, data, stored_role, is_v2, seq = row
             o = _loads(data)
+            if is_v2 and not isinstance(o, dict):
+                raise ValueError("invalid opencode V2 message metadata")
             if not o:
                 continue
             meta = sessions_meta.get(sid)
-            role = o.get("role")
+            # OpenCode's own stats excludes fork-copied messages by creation
+            # time, even if the original parent has since been deleted.
+            if is_v2 and meta and meta.get("fork_id") and tc < meta["start"]:
+                continue
+            role = stored_role if is_v2 else o.get("role")
             ts = (o.get("time") or {}).get("created") or tc
             dt = _from_ms_or_s(ts)
             if not dt:
@@ -2390,7 +2450,7 @@ def parse_opencode_db(agg, db_path):
                 active_last[sid] = dt.isoformat()
                 # weak title from first user prompt of the session
                 if meta and not meta.get("_weak_title_set"):
-                    text = ""
+                    text = o.get("text", "") if is_v2 else ""
                     for part in (o.get("parts") or o.get("content") or []):
                         if isinstance(part, dict) and part.get("type") == "text":
                             text = part.get("text", "")
@@ -2421,14 +2481,18 @@ def parse_opencode_db(agg, db_path):
                 # token-less assistant bookkeeping rows (flow control, etc.)
                 continue
             agg["opencode_ids"].append([sid, mid])
-            provider = o.get("providerID") or (meta.get("provider_id") if meta else None)
-            model = _normalize_opencode(o.get("modelID"), provider)
+            model_ref = o.get("model") if is_v2 else None
+            model_ref = model_ref if isinstance(model_ref, dict) else {}
+            provider = model_ref.get("providerID") or o.get("providerID") or (meta.get("provider_id") if meta else None)
+            model = _normalize_opencode(model_ref.get("id") or o.get("modelID"), provider)
 
             model_tokens[model] = model_tokens.get(model, 0) + inp + out + cr + cw
 
-            # tool calls from preloaded part rows
+            # V2 embeds tools in assistant content instead of the V1 part table.
             ntools = 0
-            for name in tools_by_msg.get(mid, []):
+            names = [str(part.get("name") or "tool") for part in o.get("content", [])
+                     if isinstance(part, dict) and part.get("type") == "tool"] if is_v2 else tools_by_msg.get(mid, [])
+            for name in names:
                 _tool(agg, date, name)
                 ntools += 1
 
@@ -3140,7 +3204,7 @@ def update_file(agg, source, path, editor_hint, proj_map):
             wal_size = os.path.getsize(wal) if os.path.exists(wal) else 0
             wal_mtime = os.path.getmtime(wal) if os.path.exists(wal) else 0
             sig = [size, mtime, wal_size, wal_mtime]
-            if agg and agg.get("_sig") == sig:
+            if agg and agg.get("_sig") == sig and "opencode_schema" in agg:
                 return agg
             fresh = _blank_agg(source, path)
             fresh["editor"] = editor_hint
@@ -3173,7 +3237,7 @@ def update_file(agg, source, path, editor_hint, proj_map):
 
     # jsonl (claude / codex) — incremental append
     if (not agg or agg.get("size", 0) > size
-            or (source in ("claude", "claude-desktop") and "compactions" not in agg)):
+            or (source in ("claude", "claude-desktop", "codex") and "compactions" not in agg)):
         agg = _blank_agg(source, path)  # new/truncated log or missing metadata → reparse
     offset = agg["offset"]
     if size == offset and agg.get("mtime") == mtime:

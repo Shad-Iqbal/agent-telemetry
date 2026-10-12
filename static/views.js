@@ -952,7 +952,7 @@ function openSession(i){
 }
 
 function compactionDetails(s){
-  if(s.source!=="claude" && s.source!=="claude-desktop") return "";
+  if(s.source!=="claude" && s.source!=="claude-desktop" && s.source!=="codex") return "";
   if(!Array.isArray(s.compactions)) return '<div class="kv"><span class="k">Compactions</span><span class="v">Not recorded in this ledger entry</span></div>';
   const events=s.compactions;
   const counts={manual:0,auto:0,unknown:0};
@@ -961,6 +961,9 @@ function compactionDetails(s){
     counts.unknown?`${counts.unknown} unknown`:""].filter(Boolean).join(" · ");
   const value=n=>Number.isFinite(n)?fmtTok(n):"—";
   const duration=n=>Number.isFinite(n)?`${Math.round(n/1000)}s`:"—";
+  const note=s.source==="codex"
+    ? "Codex does not record type, context sizes or duration. Request usage, when logged, is already included in session totals; these events add no tokens or cost."
+    : "Context before → after. Compaction request tokens and cost are not recorded; context reduction is not billed usage.";
   return `<section class="compaction-details"><h3>Compactions · ${fmtNum(events.length)}</h3>
     <p class="hint">${types?esc(types)+" · ":""}Selected date range. Events belong to this session; model filters do not apply.</p>
     ${events.length?`<div class="compaction-table"><table aria-label="Completed compactions in selected date range"><thead><tr><th class="nosort">When</th><th class="nosort">Type</th><th class="nosort">Context</th><th class="nosort">Duration</th></tr></thead><tbody>${events.map(e=>`<tr>
@@ -968,7 +971,7 @@ function compactionDetails(s){
       <td>${e.trigger==="manual"?"Manual":e.trigger==="auto"?"Auto":"Unknown"}</td>
       <td title="Before: ${Number.isFinite(e.before)?fmtNum(e.before):"unknown"}; after: ${Number.isFinite(e.after)?fmtNum(e.after):"unknown"}">${value(e.before)} → ${value(e.after)}</td>
       <td>${duration(e.duration_ms)}</td></tr>`).join("")}</tbody></table></div>
-    <p class="hint">Context before → after. Compaction request tokens and cost are not recorded; context reduction is not billed usage.</p>`:""}</section>`;
+    <p class="hint">${note}</p>`:""}</section>`;
 }
 
 /* ---------------- VERSION + UPDATE ----------------

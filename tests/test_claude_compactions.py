@@ -227,7 +227,7 @@ class ClaudeCompactionTests(unittest.TestCase):
         self.assertNotIn("compactions", old_session)
 
     def test_previous_peers_are_compatible_and_device_events_stay_separate(self):
-        for version in (52, 53, D.CACHE_VERSION): self.assertTrue(D._peer_cache_ok(version))
+        for version in (52, 53, 54, D.CACHE_VERSION): self.assertTrue(D._peer_cache_ok(version))
         for version in (True, "54", 51, D.CACHE_VERSION + 1): self.assertFalse(D._peer_cache_ok(version))
         agg = self.parse([self.boundary(1)])
         remote = copy.deepcopy(agg); remote["_device"] = "other-device"
