@@ -20,6 +20,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import parser as P
 import native as N
+import session_names as SN
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = HERE
@@ -480,6 +481,52 @@ def build_payload():
         return _build_payload_locked()
 
 
+def set_session_name(body):
+    """Prepare a concrete warning, then perform one confirmed original-tool rename."""
+    device, source, session_id = (body.get(k) for k in ("device", "source", "id"))
+    if any(not isinstance(v, str) or not v or len(v) > 512 for v in (device, source, session_id)):
+        raise ValueError("Expected device, source and session id.")
+    if device != _local_id():
+        raise ValueError("Rename this session on its source device.")
+    with _refresh_lock:
+        discovered = {(s, os.path.realpath(p)) for s, p, _ in P.discover()}
+        aggregate = None
+        for candidate in _state["files"].values():
+            if candidate["source"] != source: continue
+            if (source, os.path.realpath(candidate.get("path", ""))) not in discovered: continue
+            session = next((s for s in candidate.get("sessions", []) if SN.identity(candidate, s) == session_id), None)
+            if session is not None and os.path.isfile(candidate.get("path", "")):
+                aggregate = candidate; break
+        if aggregate is None:
+            raise ValueError("The original session log is unavailable. Its telemetry is preserved.")
+        if session.get("subagent") and source == "claude":
+            raise ValueError("Rename the parent Claude session in the original tool.")
+        path = aggregate["path"]
+        original = session.get("title") or session.get("project") or session_id
+        if body.get("action") == "preview":
+            return SN.prepare(device, source, path, session_id, body.get("name"), original)
+        if body.get("action") != "rename":
+            raise ValueError("Review the original-tool rename warning before saving.")
+        result = SN.commit(body.get("ticket"), device, source, path, session_id, body.get("confirmed"))
+        # Parse the metadata through the existing source parser. No cache rebuild,
+        # archived-history deletion or modifications to billed usage are involved.
+        try:
+            updated = P.update_file(aggregate, source, path, aggregate.get("editor"), {})
+            if source == "codex":
+                P._finalize_session(updated, source, path)
+            for key, value in list(_state["files"].items()):
+                if value is aggregate: _state["files"][key] = updated
+            _dirty["v"] = True
+            _gen["v"] += 1
+            if save_cache(): _dirty["v"] = False
+        except Exception as error:
+            sys.stderr.write(f"[session-name:{source}] dashboard refresh pending: {type(error).__name__}: {error}\n")
+            result["warning"] = "The tool's name was saved; the dashboard will retry its metadata refresh."
+        result["title"] = result["name"]
+    notify_refresh()
+    return result
+
+
 def client_snapshot():
     """Freeze both HTTP views for this display tick, even if parsing finishes between requests.
 
@@ -767,6 +814,13 @@ def _build_payload_locked():
             s2["archived"] = bool(agg.get("archived"))
             s2["subagent"] = bool(session.get("subagent"))
             s2["device"] = device
+            available, reason = SN.availability(source, agg.get("path", ""), remote)
+            s2["rename_id"] = SN.identity(agg, session)
+            if not s2["rename_id"]:
+                available, reason = False, "The full native session identity is unavailable."
+            if source == "claude" and session.get("subagent"):
+                available, reason = False, "Rename the parent Claude session in the original tool."
+            s2["rename_available"], s2["rename_reason"] = available, reason
             s2["cost"] = (sum(d["cost"] for d in days.values()) if days else
                           _priced_usage(source, session["model"],
                                         (session.get("end") or session.get("start") or "")[:10],
@@ -2165,7 +2219,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         route = self.path.split("?")[0]
-        if route in ("/api/settings", "/api/cache", "/api/update", "/api/devices", "/api/refresh", "/api/native", "/api/shutdown", "/api/sync"):
+        if route in ("/api/settings", "/api/cache", "/api/update", "/api/devices", "/api/refresh", "/api/native", "/api/shutdown", "/api/sync", "/api/session-name"):
             if not self._csrf_ok():
                 self._send(403, json.dumps({"error": "cross-site request refused"}))
                 return
@@ -2179,7 +2233,9 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(400, json.dumps({"error": "invalid JSON body"}))
                 return
             try:
-                if route == "/api/native":
+                if route == "/api/session-name":
+                    result = set_session_name(body)
+                elif route == "/api/native":
                     result = N.action(body.get("enabled"))
                 elif route == "/api/sync":
                     N.set_refresh_interval(body.get("seconds"))

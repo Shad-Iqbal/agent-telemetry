@@ -409,6 +409,19 @@
 <div class="scrim" id="scrim"></div>
 <aside class="drawer" id="drawer" aria-label="Detail"><button class="x" id="drawerX" aria-label="Close">×</button><div id="drawerBody"></div></aside>
 <div id="tip" role="tooltip"></div>
+<dialog class="modal" id="sessionNameDialog" aria-labelledby="sessionNameHeading" aria-describedby="sessionNameHelp">
+  <form class="modal-in" id="sessionNameForm">
+    <h2 class="modal-h" id="sessionNameHeading">Rename session</h2>
+    <p class="modal-body" id="sessionNameHelp">Renaming changes the original tool’s saved session name. You’ll review a warning before it is saved.</p>
+    <label class="session-name-label" for="sessionNameInput">Session name</label>
+    <input class="session-name-input" id="sessionNameInput" name="name" maxlength="90" required autocomplete="off">
+    <p class="session-name-error" id="sessionNameError" role="alert"></p>
+    <div class="modal-actions">
+      <button class="btn" type="button" id="sessionNameCancel">Cancel</button>
+      <button class="btn primary" type="submit" id="sessionNameSave">Save</button>
+    </div>
+  </form>
+</dialog>
 
 <script>
 /* surface any uncaught error on the root element so headless checks (and the

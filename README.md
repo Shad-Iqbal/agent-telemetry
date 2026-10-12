@@ -232,6 +232,18 @@ older ledger entries without event metadata say “Not recorded.” Context size
 separate from billed tokens: missing compaction request usage/cost is not inferred. Events
 belong to the session and are not attributed to a model filter.
 
+Use the pencil beside a session name (or **Rename** in its detail panel) to rename it
+in the **original tool**. A warning shows the old/new names and exact target before
+anything is saved. Close the session in its original tool before confirming, and reload
+that tool if needed. Token, cost, prompt, tool-call and compaction records stay intact.
+Previous title metadata is backed up privately in
+`AgentTelemetryNative/session-title-backups/`, separately from the usage ledger.
+This supports local Claude Code transcripts, Codex through its installed CLI’s
+[official name API](https://learn.chatgpt.com/docs/app-server), and opencode’s SQLite
+session stores. Other formats, remote sessions and deleted logs cannot be edited.
+Tool/provider icons are bundled locally, including the OpenAI mark for Codex; no remote
+logo requests occur. Their sources and licenses are in `static/tool-icons/README.md`.
+
 **Optimize** — suggestions derived from your own logs, ranked by what they'd save: sessions
 re-reading a very large context, thinking share, tool-heavy sessions that never delegated,
 cache written but never read, a costly model doing light work, what each **Skill** costs,

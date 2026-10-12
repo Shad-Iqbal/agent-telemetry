@@ -5,6 +5,22 @@
    carry a 2px surface gap, and identity is never colour-alone.
    ========================================================================== */
 const charts = {};
+const toolPointStyles = {};
+function toolPointStyle(source){
+  if(!SRC[source] || typeof Image==='undefined') return 'circle';
+  if(!toolPointStyles[source]){
+    const canvas=document.createElement('canvas'),image=new Image();
+    canvas.width=canvas.height=16;
+    image.onload=()=>{
+      const ctx=canvas.getContext('2d');
+      ctx.fillStyle='#fff';ctx.fillRect(0,0,16,16);ctx.drawImage(image,1,1,14,14);
+      Object.values(charts).forEach(chart=>chart.update('none'));
+    };
+    image.src='/static/tool-icons/'+SRC[source].icon+'.svg';
+    toolPointStyles[source]=canvas;
+  }
+  return toolPointStyles[source];
+}
 
 function theme(){
   return {
@@ -34,6 +50,7 @@ function mk(id, cfg){
       displayColors:true, boxWidth:8, boxHeight:8, boxPadding:4,
       titleFont:{weight:"600",size:12}, bodyFont:{size:12}, footerFont:{weight:"600",size:12},
       usePointStyle:true, itemSort:(a,b)=>b.parsed.y-a.parsed.y,
+      callbacks:{labelPointStyle:ctx=>({pointStyle:ctx.dataset.source?toolPointStyle(ctx.dataset.source):'circle',rotation:0})},
     }
   }, cfg.options.plugins||{});
   // Stacked areas: each band fills down to the series beneath it, not to zero —
@@ -71,8 +88,8 @@ function deepMerge(a,b){
   return out;
 }
 /* stacked-bar dataset with the mandated 2px surface gap between segments */
-function stackDS(label, data, color){
-  return {label, data, backgroundColor:color, stack:"a",
+function stackDS(label, data, color, source){
+  return {label, data, source, backgroundColor:color, stack:"a",
     borderColor:cssv("--surface"), borderWidth:{top:2,left:0,right:0,bottom:0},
     borderRadius:3, borderSkipped:false, maxBarThickness:24};
 }
@@ -81,8 +98,8 @@ function stackDS(label, data, color){
 function soloPoint(data){
   return (data||[]).filter(v=>v!=null && v!==undefined).length < 2 ? 4 : 0;
 }
-function areaDS(label, data, color, fill){
-  return {label, data, borderColor:color, backgroundColor:color+"26",
+function areaDS(label, data, color, fill, source){
+  return {label, data, source, borderColor:color, backgroundColor:color+"26",
     borderWidth:2, pointRadius:soloPoint(data), pointHoverRadius:4, tension:.25,
     fill:fill===undefined?true:fill, stack:"a"};
 }
@@ -93,7 +110,7 @@ function chartTable(id){
   const fmt = c.$fmt || fmtNum, labels = c.data.labels || [], ds = c.data.datasets || [];
   const total = c.$stacked && ds.length > 1;
   let h = `<table><thead><tr><th class="nosort">${esc(c.$xLabel||"Day")}</th>${
-    ds.map(d=>`<th class="r nosort">${esc(d.label||"")}</th>`).join("")}${
+    ds.map(d=>`<th class="r nosort">${d.source?toolLabel(d.source):esc(d.label||"")}</th>`).join("")}${
     total?'<th class="r nosort">Total</th>':""}</tr></thead><tbody>`;
   labels.forEach((l,i)=>{
     let tot = 0;
@@ -118,7 +135,7 @@ function applyTableView(id){
 
 /* ---------- HTML building blocks ---------- */
 function toolDot(s){
-  return `<span class="dot" style="background:${srcColor(s)}" title="${esc((SRC[s]||{label:s}).label)}"></span>`;
+  return toolIcon(s);
 }
 /* A ranked list with inline bars — easier to read than a horizontal bar chart,
    and the numbers are text, so nothing is gated behind a tooltip.
@@ -135,7 +152,7 @@ function barList(el, rows, o){
   const shown = rows.slice(0, o.limit || rows.length), rest = rows.length - shown.length;
   el.innerHTML = `<div class="bars">` + shown.map(r=>{
     const w = r.value > 0 ? Math.max(1.5, r.value/max*100) : 0;
-    const lead = r.color ? `<span class="sw" style="background:${r.color}"></span>` : "";
+    const lead = r.source ? toolIcon(r.source,true) : r.color ? `<span class="sw" style="background:${r.color}"></span>` : "";
     const dots = r.dots && r.dots.length ? `<span class="dots">${r.dots.map(toolDot).join("")}</span>` : "";
     const share = o.share === false || !total ? "" : `<span>${fmtPct((r.value||0)/total)}</span>`;
     const bar = r.barColor || r.color;
@@ -150,7 +167,7 @@ function barList(el, rows, o){
 function tilesHTML(items){
   return items.filter(Boolean).map(t=>`<div class="tile"${t.title?` title="${esc(t.title)}"`:""}>
       <div class="l">${esc(t.l)}</div><div class="v">${t.v}</div>
-      <div class="foot"><span class="s">${t.d||""}${t.d&&t.s?" · ":""}${t.s?esc(t.s):""}</span>${t.spark?`<span class="spark">${t.spark}</span>`:""}</div>
+      <div class="foot"><span class="s">${t.d||""}${t.d&&t.s?" · ":""}${t.source?toolIcon(t.source,true)+" ":""}${t.s?esc(t.s):""}</span>${t.spark?`<span class="spark">${t.spark}</span>`:""}</div>
     </div>`).join("");
 }
 function heroHTML(o){
@@ -169,7 +186,7 @@ function stackMeters(el, rows, kinds, fmt){
       const tot = kinds.reduce((a,k)=>a+(r.parts[k.key]||0),0) || 1;
       return `<div style="margin:12px 0 2px">
         <div style="display:flex;justify-content:space-between;gap:10px;font-size:12.5px;margin-bottom:6px">
-          <span style="display:flex;align-items:center;gap:7px"><span class="sw" style="background:${r.color}"></span>${esc(r.label)}</span>
+          <span style="display:flex;align-items:center;gap:7px"><span class="sw" style="background:${r.color}"></span>${r.source?toolLabel(r.source):esc(r.label)}</span>
           <span class="num"><b>${fmt(tot)}</b></span></div>
         <div class="meter" role="img" aria-label="${esc(r.label)}: ${kinds.map(k=>k.label+" "+fmtPct((r.parts[k.key]||0)/tot)).join(", ")}">${
           kinds.filter(k=>r.parts[k.key]>0).map(k=>`<i style="width:${((r.parts[k.key]||0)/tot*100).toFixed(2)}%;background:${k.color}" title="${esc(k.label)}: ${fmt(r.parts[k.key])} (${fmtPct(r.parts[k.key]/tot)})"></i>`).join("")}</div>

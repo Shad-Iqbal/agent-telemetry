@@ -4,9 +4,28 @@ const root=path.resolve(__dirname,'..');
 const document={addEventListener(){},getElementById(){return null},querySelector(){return null}};
 const context=vm.createContext({document,console,URLSearchParams,Set,Date,location:{search:'',hash:''}});
 vm.runInContext(fs.readFileSync(path.join(root,'static/core.js'),'utf8'),context);
+vm.runInContext(fs.readFileSync(path.join(root,'static/charts.js'),'utf8'),context);
 const views=fs.readFileSync(path.join(root,'static/views.js'),'utf8');
 vm.runInContext(views.slice(0,views.indexOf('document.getElementById("tabs").addEventListener')),context);
 const run=code=>vm.runInContext(code,context);
+assert.equal(run(`SRC.codex.icon`),'openai');
+assert.equal(run(`SRC.claude.icon`),run(`SRC['claude-desktop'].icon`));
+for(const source of run(`ORDER`)){
+  const name=run(`SRC[${JSON.stringify(source)}].icon`);
+  assert.ok(fs.existsSync(path.join(root,'static/tool-icons',name+'.svg')),source+' lacks its bundled mark');
+  assert.ok(run(`toolIcon(${JSON.stringify(source)})`).includes('role="img"'));
+  assert.ok(!run(`toolIcon(${JSON.stringify(source)})`).includes('https://'),'Logo fetch would leak a local dashboard visit');
+}
+assert.ok(run(`toolDot('codex')`).includes('/static/tool-icons/openai.svg'));
+assert.ok(run(`srcBadge('copilot')`).includes('/static/tool-icons/copilot.svg'));
+assert.ok(run(`toolLabel('codex')`).includes('aria-hidden="true"'));
+assert.ok(run(`legendHTML('test',[{source:'codex',label:'Codex',color:'#fff'}])`).includes('data-k="Codex"'));
+assert.ok(!run(`toolIcon('<img src=x onerror=alert(1)>')`).includes('<img src=x'));
+assert.ok(!run(`renameButton({device:'Mac',source:'codex',id:'fixture',title:'<img src=x onerror=alert(1)>'})`).includes('<img src=x'));
+assert.notEqual(run(`sessionIdentity({device:'Mac',source:'codex',id:'same'})`),
+                run(`sessionIdentity({device:'PC',source:'codex',id:'same'})`));
+assert.notEqual(run(`sessionIdentity({device:'Mac',source:'claude',id:'same',rename_id:'same-uuid-one'})`),
+                run(`sessionIdentity({device:'Mac',source:'claude',id:'same',rename_id:'same-uuid-two'})`));
 run(`let haikuPreviousRaw=RAW;
  RAW={pricing:{'Claude Haiku 5.5':[.1,.5,.125,.2,.01]},
       prices:{'Claude Haiku 5.5':[.1,.5,.125,.2,.01]},

@@ -177,6 +177,9 @@ on what data.
 1. In `parser.py`: add its path(s), emit entries from `discover()`, write
    `parse_<tool>()`, route it in `update_file()`.
 2. In `static/core.js`: add it to `SRC` and `ORDER`.
+   Add its published icon to `static/tool-icons/` with its source/license; map `SRC.icon`
+   and use the shared tool-label helpers. Icons identify the tool, not the model it runs,
+   and must work offline in both themes. Keep the chart palette and textual labels.
 3. In `static/app.css`: add a `--t-<source>` colour token (see the palette rules).
 4. Bump `CACHE_VERSION`.
 5. Update the source table in `README.md` and `AGENTS.md`.

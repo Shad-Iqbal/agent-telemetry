@@ -121,7 +121,7 @@ function multiPanel(panelId, items, set, isTools){
   const on = k => isTools ? set.has(k) : (set.size===0 || set.has(k));
   p.innerHTML = items.map(it=>`<div class="dd-item" data-k="${esc(it.key)}">
       <input type="checkbox" ${on(it.key)?"checked":""} tabindex="-1" aria-label="${esc(it.label)}">
-      ${it.color?`<span class="sw" style="background:${it.color}"></span>`:""}
+      ${it.source?toolIcon(it.source,true):it.color?`<span class="sw" style="background:${it.color}"></span>`:""}
       <span class="t">${esc(it.label)}</span>
       <span class="v">${it.value||""}</span><span class="only" data-only="1">only</span>
     </div>`).join("") || `<div class="dd-item dim">nothing in this range</div>`;
@@ -144,7 +144,7 @@ function buildFilterPanels(){
     tokByDev[dv]=(tokByDev[dv]||0)+t;
   }
   multiPanel("toolsPanel",
-    ORDER.filter(s=>seen.has(s)).map(s=>({key:s,label:SRC[s].label,color:srcColor(s),value:fmtTok(tokBySrc[s]||0)})),
+    ORDER.filter(s=>seen.has(s)).map(s=>({key:s,source:s,label:SRC[s].label,color:srcColor(s),value:fmtTok(tokBySrc[s]||0)})),
     S.tools, true);
   multiPanel("provPanel",
     PROVIDERS.filter(p=>tokByProv[p]).map(p=>({key:p,label:p,color:provColor(p),value:fmtTok(tokByProv[p])})), S.provs);
@@ -166,8 +166,8 @@ function buildFilterPanels(){
   // the tools phrase: "all tools", "Claude Code", "Claude Code & Codex", "3 tools";
   // any other filter shows as a count beside it
   const picked = ORDER.filter(x => S.tools.has(x) && seen.has(x)), all = ORDER.filter(x => seen.has(x));
-  document.getElementById("qTools").textContent = picked.length===all.length ? "all tools"
-    : !picked.length ? "no tools" : picked.length<=2 ? picked.map(x=>SRC[x].label).join(" & ")
+  document.getElementById("qTools").innerHTML = picked.length===all.length ? "all tools"
+    : !picked.length ? "no tools" : picked.length<=2 ? picked.map(toolLabel).join(" &amp; ")
     : `${picked.length} tools`;
   // "... from all tools on all devices over ..." — only said when there is a choice
   const devPicked = devices().filter(v=>!S.devs.size || S.devs.has(v.id));
@@ -190,7 +190,7 @@ function renderPills(){
   if(S.exactOnly) out.push(["exact","Exact tokens only"]);
   if(S.search) out.push(["search",`“${S.search}”`]);
   document.getElementById("pills").innerHTML = out.map(([k,l])=>
-      `<span class="pill">${esc(l)}<button data-pill="${esc(k)}" title="Remove" aria-label="Remove ${esc(l)}">×</button></span>`).join("")
+      `<span class="pill">${k==="tools"?[...S.tools].map(toolLabel).join(", "):esc(l)}<button data-pill="${esc(k)}" title="Remove" aria-label="Remove ${esc(l)}">×</button></span>`).join("")
     + (out.length>1 ? `<span class="pill reset"><button data-pill="__all" style="color:inherit;font-size:11.5px;padding:0">Clear all</button></span>` : "");
 }
 function resetFilters(){
@@ -201,7 +201,7 @@ function resetFilters(){
 
 /* ---------------- shared bits ---------------- */
 function srcBadge(s){
-  return `<span class="badge"><span class="dot" style="background:${srcColor(s)}"></span>${esc((SRC[s]||{label:s}).label)}</span>`;
+  return `<span class="badge">${toolLabel(s)}</span>`;
 }
 function domSource(srcMap){
   let best=null,bv=-1; for(const k in srcMap) if(srcMap[k]>bv){bv=srcMap[k];best=k;}
@@ -301,7 +301,7 @@ function viewOverview(d){
       {l:"Daily average", v: fmt(activeDays ? cur/activeDays : 0), title:"per active day"},
       {l:"Active days", v: `${fmtNum(activeDays)} <span class="dim" style="font-size:12px;font-weight:500">of ${fmtNum(days.length)}</span>`},
       {l:"Previous period", v: pd ? fmt(prev) : "—"},
-      {l:"Top tool", v: top ? `${esc(SRC[top].label)} <span class="dim" style="font-size:12px;font-weight:500">${fmtPct(bySrc[top]/(cur||1))}</span>` : "—"},
+      {l:"Top tool", v: top ? `${toolLabel(top)} <span class="dim" style="font-size:12px;font-weight:500">${fmtPct(bySrc[top]/(cur||1))}</span>` : "—"},
     ],
   });
 
@@ -309,9 +309,9 @@ function viewOverview(d){
   const srcs = ORDER.filter(s=>S.tools.has(s) && d.recs.some(r=>r.source===s));
   document.getElementById("dailyTitle").textContent = metricTitle() + " per day, by tool";
   const ds = srcs.filter(s=>!isMuted("dailyChart",SRC[s].label)).map(s=>
-    stackDS(SRC[s].label, dailySeries(d.recs.filter(r=>r.source===s), days, val).map(v=>+v.toFixed(4)), srcColor(s)));
+    stackDS(SRC[s].label, dailySeries(d.recs.filter(r=>r.source===s), days, val).map(v=>+v.toFixed(4)), srcColor(s),s));
   document.getElementById("dailyLegend").innerHTML =
-    legendHTML("dailyChart", srcs.map(s=>({label:SRC[s].label,color:srcColor(s)})));
+    legendHTML("dailyChart", srcs.map(s=>({source:s,label:SRC[s].label,color:srcColor(s)})));
   mk("dailyChart",{type:"bar", $fmt:fmt, $stacked:true,
     data:{labels:days.map(shortDay),datasets:ds},
     options:{interaction:{mode:"index",intersect:false},
@@ -341,7 +341,7 @@ function viewOverview(d){
   document.getElementById("toolShareSub").textContent = "share of " + metricNoun();
   const sBy = {}; for(const x of d.sessions) sBy[x.source]=(sBy[x.source]||0)+1;
   const uBy = {}; for(const r of d.recs) uBy[r.source]=(uBy[r.source]||0)+(r.user||0);
-  barList("toolShare", bySrcOrder(bySrc).map(s=>({label:SRC[s].label, value:bySrc[s], color:srcColor(s),
+  barList("toolShare", bySrcOrder(bySrc).map(s=>({source:s,label:SRC[s].label, value:bySrc[s], color:srcColor(s),
       sub:`${fmtNum(sBy[s]||0)} session${sBy[s]===1?"":"s"} · ${fmtNum(uBy[s]||0)} prompts`}))
     .sort((a,b)=>b.value-a.value), {fmt});
 
@@ -431,7 +431,7 @@ function renderTokenMix(d){
   for(const r of d.recs){ const a=agg[r.source]||(agg[r.source]={in:0,cr:0,cc:0,out:0});
     a.in+=r.in||0; a.cr+=r.cr||0; a.cc+=r.cc||0; a.out+=r.out||0; }
   stackMeters("tokenMix", ORDER.filter(s=>agg[s] && (agg[s].in+agg[s].cr+agg[s].cc+agg[s].out)>0)
-    .map(s=>({label:SRC[s].label, color:srcColor(s), parts:agg[s]})), TOKEN_KINDS(), fmtTok);
+    .map(s=>({source:s,label:SRC[s].label, color:srcColor(s), parts:agg[s]})), TOKEN_KINDS(), fmtTok);
 }
 
 /* ---------------- COST ---------------- */
@@ -458,7 +458,7 @@ function viewCost(d){
   const ds = srcs.filter(s=>!isMuted("cumChart",SRC[s].label)).map(s=>{
     let run=0;
     return areaDS(SRC[s].label, dailySeries(d.recs.filter(r=>r.source===s), days, r=>r.cost||0)
-      .map(v=>+(run+=v).toFixed(2)), srcColor(s));
+      .map(v=>+(run+=v).toFixed(2)), srcColor(s),undefined,s);
   });
   if(pd){
     let run=0; const prevData = dailySeries(pd.recs, dateList(prevRange()), r=>r.cost||0)
@@ -467,7 +467,7 @@ function viewCost(d){
       borderDash:[5,4], borderWidth:1.5, pointRadius:soloPoint(prevData), fill:false, tension:.25, stack:"prev"});
   }
   document.getElementById("cumLegend").innerHTML =
-    legendHTML("cumChart", srcs.map(s=>({label:SRC[s].label,color:srcColor(s)})));
+    legendHTML("cumChart", srcs.map(s=>({source:s,label:SRC[s].label,color:srcColor(s)})));
   mk("cumChart",{type:"line", $fmt:fmtUSD2, data:{labels:days.map(shortDay),datasets:ds},
     options:{interaction:{mode:"index",intersect:false},
       scales:axes({y:{stacked:true,min:0,ticks:{callback:v=>fmtUSDk(v)}}}),
@@ -549,10 +549,10 @@ function viewCost(d){
 
   // daily spend stacked
   document.getElementById("dailyCostLegend").innerHTML =
-    legendHTML("dailyCost", srcs.map(s=>({label:SRC[s].label,color:srcColor(s)})));
+    legendHTML("dailyCost", srcs.map(s=>({source:s,label:SRC[s].label,color:srcColor(s)})));
   mk("dailyCost",{type:"bar", $fmt:fmtUSD2, $stacked:true, data:{labels:days.map(shortDay),
       datasets:srcs.filter(s=>!isMuted("dailyCost",SRC[s].label)).map(s=>
-        stackDS(SRC[s].label, dailySeries(d.recs.filter(r=>r.source===s), days, r=>r.cost||0).map(v=>+v.toFixed(3)), srcColor(s)))},
+        stackDS(SRC[s].label, dailySeries(d.recs.filter(r=>r.source===s), days, r=>r.cost||0).map(v=>+v.toFixed(3)), srcColor(s),s))},
     options:{interaction:{mode:"index",intersect:false},
       scales:axes({x:{stacked:true},y:{stacked:true,ticks:{callback:v=>fmtUSDk(v)}}}),
       plugins:{tooltip:{callbacks:{label:c=>" "+c.dataset.label+": "+fmtUSD2(c.parsed.y),
@@ -587,7 +587,7 @@ function viewModels(d){
       <div class="prov-v">${fmt(prov[p])}</div>
       <div class="bar-track"><div class="bar-fill" style="width:${(prov[p]/grand*100).toFixed(1)}%;background:${provColor(p)}"></div></div>
       <div class="prov-s">${models.length} model${models.length>1?"s":""} · top ${esc(models[0][0])}</div>
-      <div class="prov-s" style="margin-top:3px">ran in ${tools.map(([s])=>toolDot(s)+" "+esc(SRC[s].label)).join(" · ")}</div>
+      <div class="prov-s" style="margin-top:3px">ran in ${tools.map(([s])=>toolLabel(s)).join(" · ")}</div>
     </div>`;
   }).join("") || `<div class="card"><div class="empty">Nothing in range.</div></div>`;
 
@@ -653,7 +653,7 @@ function viewModels(d){
 
   // provider x tool matrix
   const srcs = ORDER.filter(s=>S.tools.has(s) && recs.some(r=>r.source===s));
-  let h = `<thead><tr><th class="nosort">Provider</th>${srcs.map(s=>`<th class="r nosort">${esc(SRC[s].label)}</th>`).join("")}<th class="r nosort">Total</th></tr></thead><tbody>`;
+  let h = `<thead><tr><th class="nosort">Provider</th>${srcs.map(s=>`<th class="r nosort">${toolLabel(s)}</th>`).join("")}<th class="r nosort">Total</th></tr></thead><tbody>`;
   for(const p of provs){
     h += `<tr><td><span class="sw" style="background:${provColor(p)};margin-right:8px"></span>${esc(p)}</td>` +
       srcs.map(s=>`<td class="r">${(provTools[p]||{})[s]?fmt(provTools[p][s]):'<span class="dim">—</span>'}</td>`).join("") +
@@ -717,7 +717,7 @@ function renderActivity(d){
 
   const bySrc = Object.values(actSum(rows, x=>x.source)).filter(x=>x.edits);
   barList("osList", ORDER.map(k=>bySrc.find(x=>x.key===k)).filter(Boolean).map(x=>({
-      label:SRC[x.key].label, value:x.oneshot/x.edits, color:`var(${SRC[x.key].v})`,
+      source:x.key, label:SRC[x.key].label, value:x.oneshot/x.edits, color:`var(${SRC[x.key].v})`,
       sub:`${fmtNum(x.oneshot)} of ${fmtNum(x.edits)} editing prompts`})),
     {fmt:fmtPct, share:false, empty:"No edits in range."});
   const edits = all ? all.edits : 0;
@@ -794,7 +794,7 @@ function viewTools(d){
     const srcs = ORDER.filter(x => srcTot[x]);
     const grand = ides.reduce((a,i)=>a+ideTot[i],0) || 1;
     document.getElementById("ideMatrix").innerHTML = ides.length ? `<table><thead><tr><th class="nosort">IDE / surface</th>${
-      srcs.map(x=>`<th class="r nosort">${esc(SRC[x].label)}</th>`).join("")}<th class="r nosort">Total</th><th class="r nosort">Share</th></tr></thead><tbody>` +
+      srcs.map(x=>`<th class="r nosort">${toolLabel(x)}</th>`).join("")}<th class="r nosort">Total</th><th class="r nosort">Share</th></tr></thead><tbody>` +
       ides.map(i=>`<tr><td>${esc(i)}</td>` + srcs.map(x=>`<td class="r">${byIde[i][x] ? fmt(byIde[i][x]) : '<span class="dim">—</span>'}</td>`).join("")
         + `<td class="r"><b>${fmt(ideTot[i])}</b></td><td class="r dim">${fmtPct(ideTot[i]/grand)}</td></tr>`).join("") + "</tbody></table>"
       : `<div class="empty">Nothing in range.</div>`;
@@ -888,7 +888,66 @@ function sessionRows(d){
     when:sessionWhen(s),
     cache:((s.in||0)+(s.cr||0)+(s.cc||0))?(s.cr||0)/((s.in||0)+(s.cr||0)+(s.cc||0)):0,
     name:s.title||s.project||s.id,
-  })).filter(s=>!q || (s.name+" "+(s.project||"")+" "+(s.model||"")+" "+(s.branch||"")).toLowerCase().includes(q));
+  })).filter(s=>!q || (s.name+" "+(s.original_title||"")+" "+(s.project||"")+" "+(s.model||"")+" "+(s.branch||"")).toLowerCase().includes(q));
+}
+function sessionIdentity(s){ return JSON.stringify([s.device||RAW.device.id,s.source,s.rename_id||s.id]); }
+function renameButton(s,text=false){
+  return `<button type="button" class="${text?'btn':'session-rename'}" data-rename="${esc(sessionIdentity(s))}" ${s.rename_available===false?'disabled':''} title="${esc(s.rename_reason||'Rename session')}" aria-label="Rename session ${esc(s.title||s.project||s.id)}">${text?'Rename':
+    '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="m10.5 2.5 3 3-7.5 7.5-4 1 1-4zM9 4l3 3"/></svg>'}</button>`;
+}
+let sessionRenameTarget=null, sessionRenameSaving=false;
+function openSessionRename(identity){
+  if(sessionRenameSaving) return;
+  const s=RAW.sessions.find(x=>sessionIdentity(x)===identity); if(!s) return;
+  sessionRenameTarget={identity,device:s.device||RAW.device.id,source:s.source,id:s.rename_id||s.id};
+  const input=document.getElementById('sessionNameInput');
+  input.value=s.title||s.project||s.id;
+  document.getElementById('sessionNameError').textContent='';
+  document.getElementById('sessionNameDialog').showModal();
+  input.focus(); input.select();
+}
+async function saveSessionName(name){
+  if(!sessionRenameTarget || sessionRenameSaving) return;
+  const target=sessionRenameTarget, dialog=document.getElementById('sessionNameDialog');
+  const buttons=[...dialog.querySelectorAll('button')], input=document.getElementById('sessionNameInput');
+  sessionRenameSaving=true; buttons.forEach(b=>b.disabled=true); input.disabled=true;
+  document.getElementById('sessionNameSave').textContent='Preparing…';
+  document.getElementById('sessionNameError').textContent='';
+  try{
+    const response=await fetch('/api/session-name',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({device:target.device,source:target.source,id:target.id,name,action:'preview'})});
+    const preview=await response.json();
+    if(!response.ok) throw Error(preview.error||'Could not prepare the rename.');
+    dialog.close();
+    if(!await askConfirm({title:'Rename in '+(SRC[target.source]||{label:target.source}).label+'?',ok:'Rename in tool',
+      body:`<p>This changes the name in the <b>original coding tool</b>, not only AgentTelemetry.</p>
+        <p><b>${esc(preview.current_name)}</b> → <b>${esc(preview.name)}</b></p>
+        <div class="modal-note">Close this session in its original tool before continuing. The tool may need a reload. Only title metadata is changed; token, cost and event records are preserved.</div>
+        <p>A backup of the previous title metadata is saved first.</p><p>Target: <code>${esc(preview.target)}</code></p>`})){
+      sessionRenameTarget=target; dialog.showModal(); input.focus(); return;
+    }
+    document.getElementById('sessionNameSave').textContent='Saving…';
+    const saved=await fetch('/api/session-name',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({device:target.device,source:target.source,id:target.id,action:'rename',ticket:preview.ticket,confirmed:true})});
+    const result=await saved.json();
+    if(!saved.ok) throw Error(result.error||'Could not save the session name.');
+    for(const s of RAW.sessions) if(sessionIdentity(s)===target.identity){
+      s.title=result.title;
+    }
+    sessionRenameTarget=null; dialog.close(); renderAll();
+    const drawer=document.getElementById('drawerBody');
+    if(drawer && [...drawer.querySelectorAll('[data-rename]')].some(b=>b.dataset.rename===target.identity))
+      drawer.querySelector('h2').textContent=result.title;
+    const trigger=[...document.querySelectorAll('[data-rename]')].find(b=>b.dataset.rename===target.identity);
+    if(trigger) trigger.focus();
+  }catch(error){
+    sessionRenameTarget=target;
+    if(!dialog.open) dialog.showModal();
+    document.getElementById('sessionNameError').textContent=error.message||'Could not confirm the save. Please retry.';
+  }finally{
+    sessionRenameSaving=false;buttons.forEach(b=>b.disabled=false);input.disabled=false;
+    document.getElementById('sessionNameSave').textContent='Save';
+  }
 }
 let SESS_CACHE=[];
 function viewSessions(d){
@@ -906,7 +965,7 @@ function viewSessions(d){
       <td class="name" title="${esc(s.title||"")}">${
         s.clipped?`<span class="dim" style="margin-right:5px" title="Figures reflect the selected range and model filters.">◔</span>`:""}${
         s.subagent?`<span class="sub-badge" title="A subagent transcript — work its parent delegated.">sub</span>`:""}${esc(s.name)}${
-        s.compaction_count?` <span class="compaction-badge" title="Completed compactions in the selected date range; model filters do not apply.">${fmtNum(s.compaction_count)} compaction${s.compaction_count===1?"":"s"}</span>`:""}</td>
+        s.compaction_count?` <span class="compaction-badge" title="Completed compactions in the selected date range; model filters do not apply.">${fmtNum(s.compaction_count)} compaction${s.compaction_count===1?"":"s"}</span>`:""}${renameButton(s)}</td>
       <td class="dim">${esc(s.project||"—")}</td>
       <td>${esc(s.model)}${s.nmodels>1?` <span class="dim" title="${esc((s.models||[]).join(" · "))}">+${s.nmodels-1}</span>`:""}</td>
       <td class="r">${fmtTok(s.tok)}</td><td class="r"><b>${fmtUSD(s.cost)}</b></td>
@@ -930,7 +989,7 @@ function openSession(i){
   openDrawer(`
     <div class="eyebrow">Session</div>
     <h2>${esc(s.title||s.project||s.id)}</h2>
-    <div style="margin-bottom:16px;display:flex;gap:8px;align-items:center">${srcBadge(s.source)} <span class="dim" style="font-size:12px">${esc(s.id)}</span></div>
+    <div style="margin-bottom:16px;display:flex;gap:8px;align-items:center">${srcBadge(s.source)} <span class="dim" style="font-size:12px">${esc(s.id)}</span>${renameButton(s,true)}</div>
     ${row("Device",multiDevice()?esc(deviceName(s.device||RAW.device.id)):null)}
     ${row("Project",esc(s.project||"—"))}
     ${row("Model",esc((s.models||[s.model]).join(" · ")))}
@@ -1075,28 +1134,28 @@ function viewStorage(){
       commands below reclaim the oldest of them without losing any analytics.</div></div>`:""}`;
 
   document.getElementById("stStats").innerHTML = tilesHTML([
-    {l:"Largest single log", v:biggest?fmtBytes(biggest.bytes):"—", s:biggest?(SRC[biggest.source]||{label:biggest.source}).label+" · "+biggest.project:""},
+    {l:"Largest single log", source:biggest?biggest.source:null, v:biggest?fmtBytes(biggest.bytes):"—", s:biggest?(SRC[biggest.source]||{label:biggest.source}).label+" · "+biggest.project:""},
     {l:"Related, not analysed", v:fmtBytes(extras), s:"see the panel below"},
     {l:"Dashboard cache", v:fmtBytes(st.cache_bytes), s:".usage_cache.json"},
     {l:"Live log files", v:fmtNum(st.files_total||st.files.length), s:"across every tool"},
   ]);
 
   barList("stByTool", st.sources.filter(s=>s.bytes).sort((a,b)=>b.bytes-a.bytes).map(s=>({
-    label:(SRC[s.source]||{label:s.source}).label, value:s.bytes, color:srcColor(s.source)})), {fmt:fmtBytes});
+    source:s.source,label:(SRC[s.source]||{label:s.source}).label, value:s.bytes, color:srcColor(s.source)})), {fmt:fmtBytes});
   const tokBySrc={};
   for(const r of RAW.records) tokBySrc[r.source]=(tokBySrc[r.source]||0)+recTokens(r);
   barList("stEff", st.sources.filter(s=>s.bytes&&tokBySrc[s.source]>1e6).map(s=>({
-    label:(SRC[s.source]||{label:s.source}).label, value:s.bytes/(tokBySrc[s.source]/1e6), color:srcColor(s.source)}))
+    source:s.source,label:(SRC[s.source]||{label:s.source}).label, value:s.bytes/(tokBySrc[s.source]/1e6), color:srcColor(s.source)}))
     .sort((a,b)=>b.value-a.value), {fmt:fmtBytes, share:false, empty:"Needs at least 1M tokens per tool."});
 
   const days=[...new Set(st.growth.map(g=>g.date))].filter(x=>x&&x!=="unknown").sort();
   const srcs=[...new Set(st.growth.map(g=>g.source))].sort((a,b)=>ORDER.indexOf(a)-ORDER.indexOf(b));
   const ds=srcs.filter(s=>!isMuted("stGrowth",(SRC[s]||{label:s}).label)).map(s=>{
     const m={}; for(const g of st.growth) if(g.source===s) m[g.date]=(m[g.date]||0)+g.bytes;
-    let run=0; return areaDS((SRC[s]||{label:s}).label, days.map(x=>(run+=(m[x]||0))), srcColor(s));
+    let run=0; return areaDS((SRC[s]||{label:s}).label, days.map(x=>(run+=(m[x]||0))), srcColor(s),undefined,s);
   });
   document.getElementById("stGrowthLegend").innerHTML=
-    legendHTML("stGrowth", srcs.map(s=>({label:(SRC[s]||{label:s}).label,color:srcColor(s)})));
+    legendHTML("stGrowth", srcs.map(s=>({source:s,label:(SRC[s]||{label:s}).label,color:srcColor(s)})));
   mk("stGrowth",{type:"line", $fmt:fmtBytes, $stacked:true, data:{labels:days.map(shortDay),datasets:ds},
     options:{interaction:{mode:"index",intersect:false},
       scales:axes({y:{stacked:true,min:0,ticks:{callback:v=>fmtBytes(v)}}}),
@@ -2112,15 +2171,15 @@ function scopeLabel(f){
   const t = (f.tools||[]).filter(Boolean);
   const present = new Set(SLICE_SOURCES);
   if(t.length && !(t.length >= present.size && [...present].every(x=>t.includes(x)))){
-    const names = t.map(x=>(SRC[x]||{label:x}).label);
+    const names = t.map(toolLabel);
     // "X only" reads right for a single tool; for several it is nonsense ("A only,
     // B only"), so just name them.
     chips.push(names.length === 1 ? names[0] + " only" : names.join(" · "));
   }
   // a setup check reads this machine's files; with other devices in the data, say so
-  if(f.local && multiDevice()) chips.push(deviceName(RAW.device.id) + " only");
+  if(f.local && multiDevice()) chips.push(esc(deviceName(RAW.device.id)) + " only");
   return chips.length ? `<div class="finding-scope">${chips.map(c=>
-    `<span class="scope-chip">${esc(c)}</span>`).join(" ")}</div>` : "";
+    `<span class="scope-chip">${c}</span>`).join(" ")}</div>` : "";
 }
 let SLICE_SOURCES=[];
 
@@ -2375,6 +2434,8 @@ document.addEventListener("click",e=>{
     if(st){ st.dir = st.key===k ? -st.dir : -1; st.key=k; renderAll(); } return; }
   const pr=e.target.closest("[data-proj]");
   if(pr && !pr.closest(".dd-panel")){ S.projs.clear(); S.projs.add(pr.dataset.proj); setView("sessions"); return; }
+  const rename=e.target.closest('[data-rename]');
+  if(rename){ openSessionRename(rename.dataset.rename); return; }
   const sr=e.target.closest("tr[data-sess]");
   if(sr){ openSession(+sr.dataset.sess); return; }
   const mr=e.target.closest("tr[data-model]");
@@ -2383,6 +2444,12 @@ document.addEventListener("click",e=>{
     renderAll(); return; }
 });
 document.getElementById("drawerX").addEventListener("click",closeDrawer);
+document.getElementById('sessionNameForm').addEventListener('submit',e=>{
+  e.preventDefault(); saveSessionName(document.getElementById('sessionNameInput').value.trim());
+});
+document.getElementById('sessionNameCancel').addEventListener('click',()=>document.getElementById('sessionNameDialog').close());
+document.getElementById('sessionNameDialog').addEventListener('cancel',e=>{if(sessionRenameSaving)e.preventDefault();});
+document.getElementById('sessionNameDialog').addEventListener('close',()=>{if(!sessionRenameSaving&&!document.getElementById('sessionNameDialog').open)sessionRenameTarget=null;});
 document.getElementById("scrim").addEventListener("click",closeDrawer);
 addEventListener("scroll",()=>{ document.getElementById("filters").classList.toggle("stuck", scrollY>8); },{passive:true});
 matchMedia("(prefers-color-scheme: dark)").addEventListener("change",()=>{

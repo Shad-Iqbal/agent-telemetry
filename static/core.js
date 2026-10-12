@@ -6,14 +6,14 @@
 /* Tool identity. ORDER is also the categorical-hue order that was validated
    for colour-blind separation (adjacent pairs, light + dark) — see app.css. */
 const SRC = {
-  claude:           {label:"Claude Code",    v:"--t-claude",          exact:true },
-  codex:            {label:"Codex",          v:"--t-codex",           exact:true },
-  copilot:          {label:"Copilot",        v:"--t-copilot",         exact:false},
-  cursor:           {label:"Cursor",         v:"--t-cursor",          exact:false},
-  "claude-desktop": {label:"Claude Desktop", v:"--t-claude-desktop",  exact:true },
-  opencode:         {label:"opencode",       v:"--t-opencode",        exact:true },
-  hermes:           {label:"Hermes Agent",   v:"--t-hermes",          exact:true },
-  openclaw:         {label:"OpenClaw",       v:"--t-openclaw",        exact:true },
+  claude:           {label:"Claude Code",    v:"--t-claude",          exact:true, icon:"claude", provider:"Anthropic", mono:true},
+  codex:            {label:"Codex",          v:"--t-codex",           exact:true, icon:"openai", provider:"OpenAI", mono:true},
+  copilot:          {label:"Copilot",        v:"--t-copilot",         exact:false, icon:"copilot", provider:"GitHub", mono:true},
+  cursor:           {label:"Cursor",         v:"--t-cursor",          exact:false, icon:"cursor", provider:"Cursor", mono:true},
+  "claude-desktop": {label:"Claude Desktop", v:"--t-claude-desktop",  exact:true, icon:"claude", provider:"Anthropic", mono:true},
+  opencode:         {label:"opencode",       v:"--t-opencode",        exact:true, icon:"opencode", provider:"OpenCode", mono:true},
+  hermes:           {label:"Hermes Agent",   v:"--t-hermes",          exact:true, icon:"hermes", provider:"Nous Research"},
+  openclaw:         {label:"OpenClaw",       v:"--t-openclaw",        exact:true, icon:"openclaw", provider:"OpenClaw"},
 };
 // adjacency is what the palette validator checks — openclaw's red sits between amber
 // and blue, never beside hermes's olive (red/green fails deutan CVD in dark mode)
@@ -92,6 +92,16 @@ const ago = t => { const s = Math.max(0, Date.now()/1000 - (t||0));
   return s<45 ? "just now" : s<3600 ? Math.round(s/60)+"m ago"
        : s<172800 ? Math.round(s/3600)+"h ago" : Math.round(s/86400)+"d ago"; };
 const esc = s => (s==null?"":(""+s)).replace(/[&<>"]/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c]));
+/* Tool identity comes from the source, never the model it happens to run. */
+function toolIcon(source,decorative=false){
+  const item=SRC[source];
+  if(!item) return decorative ? "" : `<span class="tool-icon tool-icon-unknown" role="img" aria-label="${esc(source)}" title="${esc(source)}">?</span>`;
+  const label=item.label+" · "+item.provider;
+  return `<span class="tool-icon${item.mono?' mono':''}" title="${esc(label)}" ${decorative?'aria-hidden="true"':`role="img" aria-label="${esc(label)}"`}><img src="/static/tool-icons/${item.icon}.svg" width="20" height="20" alt="" decoding="async"></span>`;
+}
+function toolLabel(source){
+  return `<span class="tool-label">${toolIcon(source,true)}${esc((SRC[source]||{label:source}).label)}</span>`;
+}
 const recTokens = r => (r.in||0)+(r.out||0)+(r.cr||0)+(r.cc||0);
 const ctxTokens = r => (r.in||0)+(r.cr||0)+(r.cc||0);
 
@@ -339,14 +349,14 @@ function legendHTML(id, items){
   return items.map(it=>{
     const off = (S.muted[id]&&S.muted[id].has(it.label))?" off":"";
     return `<span class="li${off}" data-lg="${id}" data-k="${esc(it.label)}">
-      <span class="sw" style="background:${it.color}"></span>${esc(it.label)}</span>`;
+      <span class="sw" style="background:${it.color}"></span>${it.source?toolLabel(it.source):esc(it.label)}</span>`;
   }).join("");
 }
 /* Read-only legend — part-to-whole and normalised charts, where hiding a series
    would misstate the total. */
 function legendStatic(items){
   return items.map(it=>`<span class="li static">
-      <span class="sw" style="background:${it.color}"></span>${esc(it.label)}</span>`).join("");
+      <span class="sw" style="background:${it.color}"></span>${it.source?toolLabel(it.source):esc(it.label)}</span>`).join("");
 }
 function isMuted(id,label){ return !!(S.muted[id] && S.muted[id].has(label)); }
 function sparkline(vals, color, w, h){

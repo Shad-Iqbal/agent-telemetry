@@ -29,6 +29,19 @@ no third-party GUI dependency. Linux stays on the existing browser workflow.
 - `native.py` owns the installed-client manifest, launch/quit requests and heartbeat
   protocol in the separate **AgentTelemetryNative** application-support directory.
   Do not put those files into the ledger directory: import requires an empty destination.
+  Original-title backups live here in `session-title-backups/` (private metadata only,
+  never token/prompt history). `session_names.py` implements confirmed source edits:
+  Claude appends its native `custom-title` record; Codex uses the official local
+  `thread/read` / `thread/name/set` API, never starts/resumes a thread or model turn;
+  opencode updates only the title columns of recognized SQLite session tables in one
+  transaction. Unknown/generated schemas or title triggers are refused. Remote,
+  missing and unverified source formats cannot be edited. UI/POST targets use FULL
+  native ids (`rename_id`), never the eight-character ids shown in the table.
+  `POST /api/session-name` goes through `_csrf_ok()`: preview returns a one-use,
+  five-minute ticket; writing requires that ticket and explicit warning confirmation.
+  Re-check title/file state after confirmation; back up previous metadata before any
+  write. Never rewrite a usage transcript or rebuild the ledger for a title edit.
+  Source-derived title edits/display capability fields do not change aggregate shape.
 - `windows/tray.py` owns the notification icon and serialized worker queue;
   `windows/popover.py` renders the native counterpart of macOS `StatusMenu` using
   standard button/combobox HWNDs, with theme/DPI support, clipped scrollable settings
@@ -100,6 +113,8 @@ accurately. Keep the existing public tag intact when adding packaging metadata/a
 | `dashboard.py` | stdlib `http.server`. Serves `/`, `/static/*`, `/chart.js`, `/manifest.json`, `/sw.js`, `/api/{data,storage,refresh,settings,cache,update,devices}`. Owns the cache, the aggregate merge, `_cost()` and the device sharing listener. |
 | `parser.py` | `discover()` lists log files; `update_file()` routes each to a `parse_*`. Holds `PRICING` and the model-name normalizers. |
 | `static/core.js` | `SRC`/`ORDER`, state `S`, formatting, date ranges, filtering. |
+| `static/tool-icons/` | Bundled tool/provider SVG marks, pinned sources and licenses. |
+| `session_names.py` | Warning previews, private title backups and verified original-tool renames. |
 | `static/charts.js` | Chart.js theming, `mk()`/`hbar()`/`areaDS()`, calendar + heatmap SVG. |
 | `static/views.js` | The eight views, controls, events, boot. |
 | `index.html` | Shell only: sidebar (device name, tabs, live/refresh/theme/settings), page header (period, range, metric, filters), card markup, an SVG icon sprite. |
@@ -160,6 +175,11 @@ reads) also carries a `device` id; see "Your devices".
     adjacent pairs must clear CVD ΔE ≥ 8 and normal-vision ΔE ≥ 15 in *both* themes.
     Re-run the data-viz skill's `validate_palette.js` over the whole sequence after any
     reorder or hue change. Identity must never be colour-alone: keep legends and tooltips.
+    Tool marks come from `SRC.icon`, not the billed model/provider. Use `toolIcon()` /
+    `toolLabel()` for identity throughout filters, badges, bars, legends and tables;
+    retain chart swatches and the existing series colors. Brand marks are local assets
+    with documented sources; never fetch icons remotely at runtime. Icon-only references
+    carry the full tool name/provider as an accessible label and tooltip.
 
 ## The IDE dimension
 

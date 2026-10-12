@@ -59,6 +59,9 @@ class PackagingTests(unittest.TestCase):
             self.assertEqual((payload / "runtime" / "python313._pth").read_text(), "python313.zip\n.\n..\n")
             self.assertEqual(json.loads((payload / "BUILD-INFO.json").read_text())["commit"], "release-fixture")
             self.assertTrue((payload / "windows" / "register_install.py").is_file())
+            self.assertEqual((payload / "session_names.py").read_bytes(), (ROOT / "session_names.py").read_bytes())
+            for icon in (ROOT / "static" / "tool-icons").glob("*.svg"):
+                self.assertEqual((payload / "static" / "tool-icons" / icon.name).read_bytes(), icon.read_bytes())
             self.assertFalse(any(p.name in {".usage_cache.json", ".peers.json", ".peers", "server.log"} for p in payload.rglob("*")))
 
     def test_runtime_checksum_failure_never_extracts_archive(self):
