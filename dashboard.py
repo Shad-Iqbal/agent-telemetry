@@ -24,7 +24,7 @@ import native as N
 HERE = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = HERE
 CACHE_PATH = os.path.join(DATA_DIR, ".usage_cache.json")
-CACHE_VERSION = 55
+CACHE_VERSION = 56
 
 
 def _configure_data_dir(path):
@@ -40,7 +40,7 @@ def _configure_data_dir(path):
 def _peer_cache_ok(version):
     # v1.7.0 mirrors lack optional attribution/precision fields, but the reader
     # still supports their rows just as it supports archived local entries.
-    return type(version) is int and version in (52, 53, 54, CACHE_VERSION)
+    return type(version) is int and version in (52, 53, 54, 55, CACHE_VERSION)
 
 # ---------------------------------------------------------------------------
 # In-memory store of per-file aggregates, refreshed on a background interval.
@@ -254,13 +254,13 @@ def load_cache():
     if data.get("version") == CACHE_VERSION:
         _state["files"] = files
         return
-    if data.get("version") in (53, 54):
-        # Only optional compaction metadata changed. Keep every existing entry
+    if data.get("version") in (53, 54, 55):
+        # Only optional compaction/pricing metadata changed. Keep every entry
         # until its replacement parses successfully; update_file backfills Claude
-        # and Codex logs lacking compactions; other sources stay incremental.
+        # and Codex logs lacking compactions, and Claude Haiku 5.5 pricing detail.
         _state["files"] = files
         _dirty["v"] = True
-        sys.stderr.write("[cache] backfilling compaction metadata; existing ledger retained\n")
+        sys.stderr.write("[cache] backfilling optional metadata; existing ledger retained\n")
         return
     # Version changed, so the shape may have. Live logs are simply re-parsed from
     # disk — but ARCHIVED entries CANNOT be: their source files are gone. Dropping
@@ -362,7 +362,7 @@ def _refresh_locked(verbose=False):
 # ---------------------------------------------------------------------------
 # Merge per-file aggregates → a single dataset payload for the frontend.
 # ---------------------------------------------------------------------------
-def _cost(source, model, inp, out, cr, cc5, cc1, cc_fallback=0, date=None, logged_cost=None, ws=0):
+def _cost(source, model, inp, out, cr, cc5, cc1, cc_fallback=0, date=None, logged_cost=None, ws=0, long_context=None):
     # opencode's SQLite store logs the actual per-message cost; prefer it over a
     # list-price estimate. Callers pass None (not 0.0) when there is no logged
     # figure — the older opencode JSON layout records no cost at all, and
@@ -384,8 +384,12 @@ def _cost(source, model, inp, out, cr, cc5, cc1, cc_fallback=0, date=None, logge
     # page listed none) bills it at the plain input rate, never at $0.
     pcw5 = pcw5 or pin
     pcw1 = pcw1 or pcw5
-    return ((inp * pin + out * pout + cr * pcr
-             + cc5 * pcw5 + cc1 * pcw1) / 1_000_000.0 + ws * P.WEB_SEARCH_USD)
+    cost = (inp * pin + out * pout + cr * pcr + cc5 * pcw5 + cc1 * pcw1) / 1_000_000.0
+    if long_context and any(long_context):
+        high = P.price_of(model, date, long_context=True)
+        base = (pin, pout, pcw5, pcw1, pcr)
+        cost += sum(n * (h - b) for n, h, b in zip(long_context, high, base)) / 1_000_000.0
+    return cost + ws * P.WEB_SEARCH_USD
 
 
 _UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
@@ -526,13 +530,21 @@ def build_today_summary():
 def _sum_usage(target, row):
     for field in _zero():
         target[field] = target.get(field, 0) + row.get(field, 0)
+    for field in P._LONG_FIELDS + ("asst",):
+        key = "lc_" + field
+        if key in row:
+            target[key] = target.get(key, 0) + row[key]
 
 
 def _priced_usage(source, model, date, row, logged):
     out = {k: row.get(k, 0) for k in _zero()}
     out["cost"] = (0.0 if model == "(user)" else _cost(
         source, model, out["in"], out["out"], out["cr"], out["cc5"], out["cc1"],
-        out["cc"], date, logged_cost=row.get("cost", 0) if logged else None, ws=out["ws"]))
+        out["cc"], date, logged_cost=row.get("cost", 0) if logged else None, ws=out["ws"],
+        long_context=P._long_values(row)))
+    for field in P._LONG_FIELDS + ("asst",):
+        key = "lc_" + field
+        if key in row: out[key] = row[key]
     return out
 
 
@@ -638,15 +650,16 @@ def _build_payload_locked():
                 e[f] += v.get(f, 0)
             e["tok"] += v.get("in", 0) + v.get("out", 0) + v.get("cr", 0) + v.get("cc5", 0) + v.get("cc1", 0)
             e["cost"] += _cost(source, model, v.get("in", 0), v.get("out", 0), v.get("cr", 0),
-                               v.get("cc5", 0), v.get("cc1", 0), 0, date, ws=v.get("ws", 0))
+                               v.get("cc5", 0), v.get("cc1", 0), 0, date, ws=v.get("ws", 0),
+                               long_context=P._long_values(v))
             if v.get("ein") or v.get("eout"):
                 e["edit_cost"] += _cost(source, model, v.get("ein", 0), v.get("eout", 0),
                                         v.get("ecr", 0), v.get("ecc5", 0), v.get("ecc1", 0), 0,
-                                        date, ws=v.get("ews", 0))
+                                        date, ws=v.get("ews", 0), long_context=P._long_values(v, "e"))
             if v.get("rin") or v.get("rout"):
                 e["retry_cost"] += _cost(source, model, v.get("rin", 0), v.get("rout", 0),
                                          v.get("rcr", 0), v.get("rcc5", 0), v.get("rcc1", 0), 0,
-                                         date, ws=v.get("rws", 0))
+                                         date, ws=v.get("rws", 0), long_context=P._long_values(v, "r"))
         if not agg.get("subagent") and not remote:
             for server, e in (agg.get("mcp_offered") or {}).items():
                 mcp_inv.setdefault(server, set()).update(e.get("tools") or ())
@@ -687,10 +700,17 @@ def _build_payload_locked():
             e = skills.setdefault((date, name, device), {"tok": 0, "asst": 0, "cost": 0.0})
             e["tok"] += v.get("tok", 0)
             e["asst"] += v.get("asst", 0)
-            # price the skill's own tokens at this file's dominant model
+            # Retain the older dominant-model approximation for other models;
+            # Haiku's request-tier contributions carry their own model/rates.
+            haiku = v.get("haiku_usage", {})
+            remaining = {f: max(0, v.get(f, 0) - sum(h.get(f, 0) for h in haiku.values()))
+                         for f in ("in", "out", "cr")}
+            remaining["cc"] = max(0, v.get("cc", 0) - sum(h.get("cc5", 0) + h.get("cc1", 0) for h in haiku.values()))
             e["cost"] += _cost(source, agg.get("state", {}).get("dom_model") or "Unknown",
-                               v.get("in", 0), v.get("out", 0), v.get("cr", 0),
-                               v.get("cc", 0), 0, 0, date)
+                               remaining["in"], remaining["out"], remaining["cr"], remaining["cc"], 0, 0, date)
+            for model, h in haiku.items():
+                e["cost"] += _cost(source, model, h.get("in", 0), h.get("out", 0), h.get("cr", 0),
+                    h.get("cc5", 0), h.get("cc1", 0), 0, date, long_context=P._long_values(h))
         for ck, v in agg.get("ctx", {}).items():
             date, _, b = ck.partition("\t")
             if not b:
@@ -836,9 +856,16 @@ def _build_payload_locked():
                     **{m: P.price_of(m) for m in model_meta}}.items()},
         "pricing_history": {m: [[d, list(P.price_of(m, d))] for d, _ in _model_history(m)]
                             for m in set(P.PRICE_HISTORY) | set(model_meta)},
+        "pricing_long_context": {m: list(P.price_of(m, long_context=True))
+            for m in set(P.LONG_CONTEXT_PRICING) | set(model_meta)
+            if P.price_of(m, long_context=True) != P.price_of(m)},
         "pricing_note": ("Anthropic costs use current list pricing (Fable 5 $10/$50, Opus 5.5 "
                          "$4/$20, Opus 5 & 4.x $5/$25, Sonnet 5 & 5.5 $2/$10, Sonnet 4.x "
-                         "$3/$15, Haiku $1/$5 per Mtok) with cache write billed at 1.25x (5-min) "
+                         "$3/$15, Haiku 4.5 $1/$5 per Mtok). Haiku 5.5 uses $0.10/$0.50 "
+                         "up to 100K prompt tokens and $0.50/$2.50 above 100K, including cache "
+                         "reads/writes in each request's threshold; available Claude logs retain "
+                         "that split, while older archives/peers and other tools without request "
+                         "detail use the short-prompt rate. Cache write is billed at 1.25x (5-min) "
                          "/ 2x (1-hour) input and cache read at 0.1x (0.05x on Opus 5.5, 0.025x on Fable 5.1); OpenAI/"
                          "Codex/Copilot/Cursor prices are estimates. Codex GPT-5.4/5.5/5.6/6 use "
                          "verified OpenAI list rates (e.g. GPT-6 Sol $2/$10, cached $0.20; GPT-6.1 Sol cached $0.10), each "

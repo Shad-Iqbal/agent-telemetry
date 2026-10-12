@@ -7,6 +7,25 @@ vm.runInContext(fs.readFileSync(path.join(root,'static/core.js'),'utf8'),context
 const views=fs.readFileSync(path.join(root,'static/views.js'),'utf8');
 vm.runInContext(views.slice(0,views.indexOf('document.getElementById("tabs").addEventListener')),context);
 const run=code=>vm.runInContext(code,context);
+run(`let haikuPreviousRaw=RAW;
+ RAW={pricing:{'Claude Haiku 5.5':[.1,.5,.125,.2,.01]},
+      prices:{'Claude Haiku 5.5':[.1,.5,.125,.2,.01]},
+      pricing_long_context:{'Claude Haiku 5.5':[.5,2.5,.625,1,.05]}};
+ let haikuRow={model:'Claude Haiku 5.5',date:'2026-10-12',in:2,out:3,cc5:4,cc1:5,cr:100001,
+     asst:2,lc_in:1,lc_out:2,lc_cc5:3,lc_cc1:4,lc_cr:100000,lc_asst:1};`);
+const near=(value,expected)=>assert.ok(Math.abs(value-expected)<1e-10,`${value} != ${expected}`);
+near(run(`Object.values(tokenCostParts(haikuRow)).reduce((a,b)=>a+b,0)/1e6`),.00501231);
+near(run(`cacheSavings(haikuRow)`),.04500009);
+near(run(`cachedRequestRate(haikuRow)`),.03);
+near(run(`cacheWriteRate([haikuRow])`),6.2/9/1e6);
+near(run(`rateOf('Claude Haiku 5.5')[0]`),.5);
+run(`RAW.pricing['Legacy']=[1,5,0,0,.1];`);
+near(run(`tokenCostParts({model:'Legacy',in:1,out:2,cc:3,cr:4}).cw`),3);
+run(`RAW.prices['Legacy']=[1,5,0,0,.1]; RAW.pricing_history={'Legacy':[['2026-01-01',[2,10,0,0,.2]]]};`);
+near(run(`tokenCostParts({model:'Legacy',date:'2025-12-31',cc:3}).cw`),6);
+near(run(`cacheWriteRate([{model:'Legacy',date:'2025-12-31',cc:3}])`),1e-6);
+near(run(`cachedRequestRate({model:'Legacy',date:'2025-12-31',asst:1})`),.1);
+run(`RAW=haikuPreviousRaw;`);
 run(`RAW={device:{id:'Mac'},devices:[{id:'Mac',name:'Mac'},{id:'PC',name:'PC'}],
  records:[],sessions:[],hourly:[],tools:[],pricing:{'Claude Opus 5.5 (US)':[4.4,22,5.5,8.8,.22]},
  prices:{'Claude Opus 5.5 (fast)':[8,40,10,16,.4]}};

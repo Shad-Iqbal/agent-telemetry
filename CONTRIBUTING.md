@@ -195,6 +195,10 @@ breaks silently on another.
 3. Pricing applies at request time, so no re-parse is needed after a `PRICING` edit.
    A normalizer change needs a `CACHE_VERSION` bump and a normal restart, which
    reparses live logs while preserving archived entries.
+   Per-request tiers need pricing subsets rather than a threshold on daily totals:
+   Haiku 5.5 uses optional `lc_*` counters and a targeted v56 Claude backfill. These
+   counters never add tokens or replies; test streamed updates, exact boundaries,
+   cache writes/reads, date/turn/skill costs, and archive/failure preservation.
 
 **Link the vendor's pricing page in the PR.** A wrong price silently misreports
 someone's spend.

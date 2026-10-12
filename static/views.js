@@ -233,6 +233,23 @@ function priceOf(m, date){
     if(date <= until) return p;
   return (RAW.pricing && RAW.pricing[m]) || (RAW.prices && RAW.prices[m]) || [0,0,0,0,0];
 }
+function longPriceOf(m,date){ return (RAW.pricing_long_context||{})[m] || priceOf(m,date); }
+function tokenCostParts(r,current=false){
+  const p=(current && RAW.prices && RAW.prices[r.model]) || priceOf(r.model,r.date), high=longPriceOf(r.model,r.date);
+  const cw5=(r.cc5||r.cc1)?(r.cc5||0):(r.cc||0);
+  const cost=(f,n,i,rate)=>n*rate+(r['lc_'+f]||0)*(high[i]-rate);
+  return {in:cost('in',r.in||0,0,p[0]),out:cost('out',r.out||0,1,p[1]),
+    cr:cost('cr',r.cr||0,4,p[4]),
+    cw:cost('cc5',cw5,2,p[2]||p[0])+cost('cc1',r.cc1||0,3,p[3]||p[2]||p[0])};
+}
+function cacheSavings(r){
+  const p=priceOf(r.model,r.date),high=longPriceOf(r.model,r.date);
+  return ((r.cr||0)*(p[0]-p[4])+(r.lc_cr||0)*((high[0]-high[4])-(p[0]-p[4])))/1e6;
+}
+function cachedRequestRate(r){
+  const p=(RAW.prices && RAW.prices[r.model]) || priceOf(r.model,r.date),high=longPriceOf(r.model,r.date),calls=r.asst||r.req||0;
+  return calls ? p[4]+(high[4]-p[4])*(r.lc_asst||0)/calls : p[4];
+}
 /* Per-day series for the metric, plus the same for the previous period (for tiles). */
 function dailySeries(recs, days, f){
   const m = {}; for(const r of recs) m[r.date] = (m[r.date]||0) + f(r);
@@ -423,7 +440,7 @@ function viewCost(d){
   const t = totals(d.recs), pt = pd ? totals(pd.recs) : null;
   const days = dateList(d.r), active = Math.max(1, t.days.size);
   let saved=0;
-  for(const r of d.recs){ const p=priceOf(r.model, r.date); saved += (r.cr||0)*(p[0]-p[4])/1e6; }
+  for(const r of d.recs) saved += cacheSavings(r);
   document.getElementById("costHero").innerHTML = heroHTML({
     label:"Est. spend at API list prices",
     value: fmtUSD2(t.cost),
@@ -490,9 +507,7 @@ function viewCost(d){
     if(!r.cost) continue;
     const p = priceOf(r.model, r.date);
     if(!p[0] && !p[1]) continue;
-    const cw5 = (r.cc5||r.cc1) ? (r.cc5||0) : (r.cc||0);
-    const parts = {in:(r.in||0)*p[0], out:(r.out||0)*p[1], cr:(r.cr||0)*p[4],
-      cw:cw5*(p[2]||p[0])+(r.cc1||0)*(p[3]||p[2]||p[0])};
+    const parts = tokenCostParts(r);
     const sum = parts.in+parts.out+parts.cr+parts.cw;
     if(!sum) continue;
     const scale = r.cost/(sum/1e6);        // match the record's real cost (logged-cost sources, multipliers)
@@ -1538,7 +1553,7 @@ function findCacheWaste(d){
 /* NB: a global priceOf() already exists above (RAW.pricing, zero-tuple fallback).
    This one is deliberately separate — it returns null for an unpriced model so the
    savings math can skip it rather than quietly costing it at zero. */
-function rateOf(m){ return (RAW.prices && RAW.prices[m]) || null; }
+function rateOf(m){ return (RAW.pricing_long_context||{})[m] || (RAW.prices && RAW.prices[m]) || null; }
 function costAt(m, t){
   const p = rateOf(m); if(!p) return null;
   const [pin,pout,pcw5,pcw1,pcr] = p;
@@ -1881,7 +1896,7 @@ function perTokenCost(d, fn, useReq){
   let n = 0, per = 0;
   for(const r of d.recs){ if(r.model==="(user)" || !fn(r)) continue;
     const calls = useReq ? (r.req||r.asst||0) : (r.asst||0);
-    n += calls; per += calls * ((RAW.prices && RAW.prices[r.model]) || priceOf(r.model, r.date))[4] / 1e6; }
+    n += calls; per += calls * cachedRequestRate(r) / 1e6; }
   return {n, per};           // per = $ for one extra token on every one of those requests
 }
 const famOf = src => src==="codex" ? "codex" : (src==="claude"||src==="claude-desktop") ? "claude" : null;
@@ -1890,10 +1905,8 @@ const famOf = src => src==="codex" ? "codex" : (src==="claude"||src==="claude-de
 function cacheWriteRate(recs){
   let tok = 0, usd = 0;
   for(const r of recs){
-    const p = (RAW.prices && RAW.prices[r.model]) || priceOf(r.model, r.date);
     const c5 = r.cc5||0, c1 = r.cc1||0, flat = (c5||c1) ? 0 : (r.cc||0);
-    const w5 = p[2] || p[0], w1 = p[3] || w5;
-    tok += c5 + c1 + flat; usd += (c5 + flat) * w5 + c1 * w1;
+    tok += c5 + c1 + flat; usd += tokenCostParts(r,true).cw;
   }
   return tok ? usd / tok / 1e6 : 0;
 }

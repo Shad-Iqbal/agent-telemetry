@@ -206,13 +206,16 @@ so that file stops being a cache and becomes the sole record. Two consequences:
   discarding them on a version change would silently destroy history the UI promised
   to keep. Newer fields are read with `.get()` defaults, so an old-shape archived
   entry degrades rather than breaks.
-- Versions 53/54 → **55** add optional Claude/Codex compaction metadata. This migration
-  retains every existing entry; `update_file()` fully reparses available Claude/Codex logs
+- Versions 53/54 → **55** add optional Claude/Codex compaction metadata. Version **56**
+  adds Haiku 5.5 request-tier pricing subsets. These migrations
+  retain every existing entry; `update_file()` fully reparses available Claude/Codex logs
   missing `compactions`, replacing them only after success. opencode databases gain
   an `opencode_schema` marker and reparse once even on an unchanged signature to
   discover V2 history. Other sources continue
   incrementally and archived entries stay unchanged. A failed backfill retries even
-  when the source size/mtime is unchanged. Peers with versions 52/53/54 remain readable.
+  when the source size/mtime is unchanged. In v56, only available Claude logs with
+  Haiku 5.5 usage missing `haiku_pricing` need a pricing backfill; other sources stay
+  incremental. Peers with versions 52/53/54/55 remain readable.
 - **`--rebuild` destroys archived sessions too**, not just the Settings buttons — it
   skips the cache entirely and re-parses from disk, and an archived session has no
   disk to parse. Back up `.usage_cache.json` before running it on a machine whose
@@ -272,6 +275,17 @@ so that file stops being a cache and becomes the sole record. Two consequences:
   iteration here is a plain `message`, already covered by the response's own `usage`.
 
 ## Field conventions that differ by source (do not "fix" these)
+
+- **Haiku 5.5 has per-request pricing tiers.** Verified against Anthropic's
+  [pricing page](https://platform.claude.com/docs/en/about-claude/pricing) on 2026-10-12:
+  input/output are $0.10/$0.50 per Mtok up to 100K prompt tokens, $0.50/$2.50 above
+  100K. Input includes cache reads and writes, excludes output/reasoning. `lc_in`,
+  `lc_out`, `lc_cc5`, `lc_cc1`, `lc_cr` and `lc_asst` are subsets used for pricing,
+  never additional usage. The existing eight-response dedup window also bounds
+  `state.haiku_context`; a streamed threshold correction reprices the request's earlier
+  date/turn/skill contributions without changing counts. Old archives/peers and other
+  tools lacking this metadata use the short-prompt rate. Optimize model substitutions
+  use the higher published tier conservatively when the target request size is unknown.
 
 - **Claude compactions are durable session events, not inferred model usage.**
   `agg.compactions` maps boundary UUID → timestamp, local date, manual/auto/unknown
@@ -482,7 +496,8 @@ so that file stops being a cache and becomes the sole record. Two consequences:
 (USD per 1M; OpenAI rows put the cache-write rate in cw5 — 1.25x input where the pricing
 page lists one, else 0, which bills at the input rate — 0 in cw1, and the cached rate last), and
 make the normalizer map the raw id to that name. Pricing applies at request time — no
-re-parse needed; a normalizer change needs a `CACHE_VERSION` bump and a normal restart
+re-parse needed for a flat rate; adding request-tier metadata (Haiku 5.5) or changing
+a normalizer needs a `CACHE_VERSION` bump and a normal restart
 to reparse live logs while preserving archived entries. Never use `--rebuild` for a
 routine migration: it discards the durable history.
 A new `claude-<tier>-<n>-<m>` id normalises by itself, so only the price row is missing and
@@ -710,8 +725,8 @@ local network. Both switches are off until the user turns them on, and each asks
   copy to `.peers/<device id>.json` (0600). While the other machine sleeps, the copy still
   shows, along with the error explaining why it couldn't be reached. An export or saved
   copy with an incompatible `CACHE_VERSION` is refused with "update both". The
-  version-55 reader explicitly accepts versions 52–54, whose missing optional
-  precision/attribution/compaction fields retain the older detail limits; other
+  version-56 reader explicitly accepts versions 52–55, whose missing optional
+  precision/attribution/compaction/pricing fields retain the older detail limits; other
   versions are refused.
 - `build_payload` adds the copies to its file loop as `peer:<id>:<path>` with
   `agg["_device"]`, keys everything by device the way it already does by IDE, and prices

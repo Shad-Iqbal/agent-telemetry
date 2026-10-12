@@ -284,9 +284,16 @@ dollars**, so cost is always derived. Rates live in `parser.py → PRICING` as
 (recomputed on each request, no re-parse needed).
 
 - **Anthropic** rates are current list prices (Opus 5.5 $4/$20, Opus 5 & 4.x $5/$25, Sonnet 5
-  & 5.5 $2/$10, Sonnet 4.x $3/$15, Haiku $1/$5; cache write 1.25×/2× input for 5-min/1-hour, cache
+  & 5.5 $2/$10, Sonnet 4.x $3/$15, Haiku 4.5 $1/$5; cache write 1.25×/2× input for 5-min/1-hour, cache
   read 0.1× — 0.05× on Opus 5.5). **OpenAI** GPT-5.4/5.5/5.6/6 are verified from OpenAI docs;
   older/other models are estimates.
+- **Haiku 5.5** uses [Anthropic's published rates](https://platform.claude.com/docs/en/about-claude/pricing):
+  $0.10/$0.50 per million input/output tokens up to 100K prompt tokens, $0.50/$2.50
+  above 100K. The threshold includes cached input and applies to each request.
+  Available Claude logs backfill this pricing detail on a normal restart; token and
+  message counts stay unchanged. Older archives/peers and other tools without that
+  detail use the short-prompt rate. Optimize model substitutions conservatively use
+  the higher tier when the target request size is unknown.
 - **Price changes are date-aware.** When a vendor cuts a price (OpenAI's GPT-5.6 cuts of
   2026-07-30 and 2026-08-21), usage from before the change keeps the rate it had then —
   see `parser.py → PRICE_HISTORY`.

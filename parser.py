@@ -205,7 +205,10 @@ PRICING = {
     "Claude Sonnet 4": (3, 15, 3.75, 6, 0.30),
     "Claude Sonnet 3.7": (3, 15, 3.75, 6, 0.30),
     "Claude Sonnet 3.5": (3, 15, 3.75, 6, 0.30),
-    # Anthropic Haiku — $1/$5
+    # Haiku 5.5, effective October 7, verified against the Claude pricing page
+    # on 2026-10-12. This tuple is for requests with <=100K total prompt tokens.
+    "Claude Haiku 5.5": (0.10, 0.50, 0.125, 0.20, 0.01),
+    # Earlier Anthropic Haiku
     "Claude Haiku 4.5": (1, 5, 1.25, 2, 0.10),
     "Claude Haiku 3.5": (0.80, 4, 1.0, 1.6, 0.08),
     # OpenAI GPT-5.6 series (Sol/Terra/Luna) — CURRENT rates, verified against
@@ -320,18 +323,22 @@ FAST_PRICING = {
 }
 US_MULTIPLIER = 1.1          # inference_geo "us", every token category
 WEB_SEARCH_USD = 10 / 1000   # Anthropic web search: $10 per 1,000 searches
+LONG_CONTEXT_PRICING = {"Claude Haiku 5.5": (0.50, 2.50, 0.625, 1.0, 0.05)}
+_LONG_FIELDS = ("in", "out", "cc5", "cc1", "cr")
 
 
-def price_of(display, date=None):
+def price_of(display, date=None, long_context=False):
     """(in, out, cw5, cw1, cr) for a model as of `date` ("YYYY-MM-DD"), else today.
     Unknown models price at zero."""
     if display.endswith(US_SUFFIX):
         return tuple(round(x * US_MULTIPLIER, 6)
-                     for x in price_of(display[:-len(US_SUFFIX)], date))
+                     for x in price_of(display[:-len(US_SUFFIX)], date, long_context))
     if display.endswith(FAST_SUFFIX):
         # a model with no published fast rate prices at zero rather than at a guess
         return FAST_PRICING.get(display[:-len(FAST_SUFFIX)], (0, 0, 0, 0, 0))
     display = _canonicalize(display)
+    if long_context and display in LONG_CONTEXT_PRICING:
+        return LONG_CONTEXT_PRICING[display]
     if date:
         for until, p in PRICE_HISTORY.get(display, ()):
             if date <= until:
@@ -928,13 +935,19 @@ def _turn_rows(tr):
     out = {}
     for m, t in tok.items():
         row = {k: t[j] for j, k in enumerate(_ACT_FIELDS)}
+        if len(t) > 7:
+            _bump_long(row, t[7:12])
         row.update(turns=0, edits=0, oneshot=0, retries=0)
         if m == dom and not tr.get("imp"):
             row.update(turns=1, edits=int(edits), oneshot=int(edits and not rt), retries=rt)
         if edits:                # every editing turn, so a retried one can be compared to the rest
             row.update({"e" + k: t[j] for j, k in enumerate(_ACT_FIELDS)})
+            if len(t) > 7:
+                _bump_long(row, t[7:12], "e")
         if edits and rt:         # the whole turn's cost is the price of not landing it
             row.update({"r" + k: t[j] for j, k in enumerate(_ACT_FIELDS)})
+            if len(t) > 7:
+                _bump_long(row, t[7:12], "r")
         out[f"{tr['d']}\t{m}\t{cat}"] = row
     return out
 
@@ -949,7 +962,15 @@ def _add_rows(dst, rows):
 def _turn_close(agg):
     tr = agg["state"].pop("turn", None)
     if tr:
-        _add_rows(agg.setdefault("activity", {}), _turn_rows(tr))
+        rows = _turn_rows(tr)
+        _add_rows(agg.setdefault("activity", {}), rows)
+        for h in agg["state"].get("haiku_context", {}).values():
+            values = h["turns"].pop("", None)
+            if values is not None:
+                key = next((k for k in rows if k.split("\t")[1] == h["model"]), None)
+                if key:
+                    dst = h["turns"].setdefault(key, [0] * 5)
+                    for i, v in enumerate(values): dst[i] += v
 
 
 def activity_of(agg):
@@ -1066,6 +1087,66 @@ def _claude_compaction(agg, obj, dt):
                        "duration_ms": count("durationMs")}
 
 
+def _long_values(row, prefix=""):
+    return tuple(row.get(prefix + "lc_" + f, 0) for f in _LONG_FIELDS)
+
+
+def _bump_long(row, values, prefix=""):
+    # Pricing subsets only: never add these to tokens, messages or model calls.
+    for f, v in zip(_LONG_FIELDS + ("asst",), values):
+        key = prefix + "lc_" + f
+        row[key] = row.get(key, 0) + v
+
+
+def _haiku_price_usage(agg, rk, model, date, full, delta, first, skill):
+    """Remember a request's pricing tier separately from the existing usage deltas."""
+    st = agg["state"]
+    memo = st.setdefault("haiku_context", {})
+    h = memo.setdefault(rk, {"model": model, "long": False, "days": {}, "turns": {}, "skills": {}}) if rk else {
+        "model": model, "long": False, "days": {}, "turns": {}, "skills": {}}
+    values = [delta[0], delta[1], delta[4], delta[5], delta[2], int(first)]
+    _bump_long(_rec(agg, date, model), [0] * 6)
+    day = h["days"].setdefault(date, [0] * 6)
+    for i, v in enumerate(values): day[i] += v
+    tr = st.get("turn")
+    if tr:
+        turn = h["turns"].setdefault("", [0] * 5)
+        for i, v in enumerate(values[:5]): turn[i] += v
+    if skill:
+        sk = date + "\t" + skill
+        usage = agg["skills"][sk].setdefault("haiku_usage", {}).setdefault(model, {})
+        for f, v in zip(_LONG_FIELDS, values): usage[f] = usage.get(f, 0) + v
+        part = h["skills"].setdefault(sk, [0] * 6)
+        for i, v in enumerate(values): part[i] += v
+    # resp holds per-component maxima, including streamed corrections. Input
+    # includes cache reads/writes; output and reasoning do not set the tier.
+    current = st["resp"][rk] if rk else full
+    long = current[0] + current[2] + max(current[3], current[4] + current[5]) > 100_000
+    upgrade = long and not h["long"]
+    if upgrade:
+        # If input metadata grows across blocks, reprice earlier contributions
+        # on their original dates/turns/skills without changing any usage counts.
+        for d, part in h["days"].items(): _bump_long(_rec(agg, d, model), part)
+        for key, part in h["turns"].items():
+            if key:
+                row = agg["activity"][key]
+                _bump_long(row, part)
+                if "ein" in row: _bump_long(row, part, "e")
+                if "rin" in row: _bump_long(row, part, "r")
+        for sk, part in h["skills"].items():
+            _bump_long(agg["skills"][sk]["haiku_usage"][model], part)
+    elif h["long"]:
+        _bump_long(_rec(agg, date, model), values)
+        if skill: _bump_long(usage, values)
+    if tr and (upgrade or h["long"]):
+        part = h["turns"][""] if upgrade else values[:5]
+        tokens = tr["tok"][model]
+        tokens.extend([0] * max(0, 12 - len(tokens)))
+        for i, v in enumerate(part): tokens[7 + i] += v
+    h["long"] = h["long"] or long
+    agg["haiku_pricing"] = 1
+
+
 def parse_claude(agg, lines):
     project = agg["project"]
     st = agg["state"]
@@ -1129,6 +1210,7 @@ def parse_claude(agg, lines):
         # inflating "assistant msgs" (119 of them) and adding a "(synthetic)" row.
         if t == "assistant" and msg and msg.get("model") != "<synthetic>":
             model = normalize_claude(msg.get("model"))
+            haiku = model == "Claude Haiku 5.5"
             u = msg.get("usage") or {}
             # Two request options change the price of every token, so they become
             # their own priced model rows (see price_of): fast mode has its own
@@ -1170,8 +1252,11 @@ def parse_claude(agg, lines):
                 prev = list(prev) + [0] * (len(full) - len(prev))
             if rk:
                 resp[rk] = full if first else [max(a, b) for a, b in zip(full, prev)]
+                st["resp"] = resp
                 while len(resp) > 8:
-                    resp.pop(next(iter(resp)))
+                    old_key = next(iter(resp))
+                    resp.pop(old_key)
+                    st.get("haiku_context", {}).pop(old_key, None)
             if not first:
                 inp, out, cr, cc, cc5, cc1, reason, ws = (max(0, a - b) for a, b in zip(full, prev))
             if dt:
@@ -1245,6 +1330,9 @@ def parse_claude(agg, lines):
                 T["asst"] += int(first)
                 if side:                      # spawned subagent, not the main loop
                     T["side"] += inp + out + cr + cc
+                if haiku:
+                    _haiku_price_usage(agg, rk, model, date0, full,
+                        [inp, out, cr, cc, cc5, cc1], first, sk)
         elif t == "user" and msg:
             # Only count what the user actually typed. type:"user" is also how
             # Claude Code logs tool_result echoes and much of its own traffic:
@@ -3236,7 +3324,11 @@ def update_file(agg, source, path, editor_hint, proj_map):
         return fresh
 
     # jsonl (claude / codex) — incremental append
+    haiku_backfill = (agg and source in ("claude", "claude-desktop")
+                     and "haiku_pricing" not in agg
+                     and any("\tClaude Haiku 5.5" in k for k in agg.get("records", {})))
     if (not agg or agg.get("size", 0) > size
+            or haiku_backfill
             or (source in ("claude", "claude-desktop", "codex") and "compactions" not in agg)):
         agg = _blank_agg(source, path)  # new/truncated log or missing metadata → reparse
     offset = agg["offset"]
