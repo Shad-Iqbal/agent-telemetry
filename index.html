@@ -50,8 +50,10 @@
       </a>
       <button class="icon-btn side-toggle" id="sideToggle" title="Collapse sidebar ([)" aria-label="Collapse sidebar" aria-expanded="true"><svg class="ic"><use href="#i-sidebar"/></svg></button>
       <div class="device" id="device" title="This machine">
-        <svg class="ic"><use href="#i-device"/></svg>
+        <svg class="ic" aria-hidden="true"><use href="#i-device"/></svg>
         <div class="device-txt"><div class="device-name" id="devName">This computer</div><div class="device-os" id="devOs">local</div></div>
+        <svg class="ic device-chevron" aria-hidden="true" hidden><use href="#i-chev"/></svg>
+        <select id="deviceSelect" class="device-picker" aria-label="Filter dashboard by device" hidden></select>
       </div>
     </div>
 

@@ -382,7 +382,9 @@ It's **off by default** and works over your **local network** only. Open **⚙ �
 3. To see each one from the other, do both steps on both.
 
 Once connected, a **Devices** filter appears and the header reads "…from all tools **on all
-devices**…". The connected device's usage is fetched every minute, and a copy is kept in
+devices**…". The sidebar device card also becomes a dropdown: choose **All devices** or
+one computer. Both controls share the same filter, which is preserved in the URL.
+The connected device's usage is fetched every minute, and a copy is kept in
 `.peers/` so it still shows while that computer is asleep. Disconnecting deletes the copy.
 
 What sharing sends: session titles (often the start of a prompt), project and branch names,

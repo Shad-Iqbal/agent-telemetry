@@ -199,6 +199,44 @@ function resetFilters(){
   document.querySelectorAll(".search-in").forEach(x=>x.value="");
 }
 
+/* The sidebar and header share S.devs, including URL persistence. A native select
+   handles keyboard interaction and stays usable in the collapsed sidebar. */
+function sidebarDeviceState(){
+  const all=devices(), local=RAW.device||{};
+  const picked=all.filter(d=>S.devs.has(d.id));
+  const unfiltered=!S.devs.size || picked.length===all.length;
+  const one=!unfiltered && picked.length===1 ? picked[0] : null;
+  const multiple=all.length>1;
+  return {
+    multiple,
+    name:!multiple ? local.name||'This computer' : unfiltered ? 'All devices' : one ? one.name : `${picked.length} devices`,
+    detail:!multiple ? local.os||'' : unfiltered ? `${all.length} devices available` : one ? (one.local?'This device':one.error?'Sync unavailable':'Synced device') : `${picked.length} of ${all.length} devices`,
+    value:unfiltered?'all':one?'device:'+one.id:'selected',
+    options:(unfiltered||one?'':'<option value="selected" disabled>Selected devices</option>')+
+      '<option value="all">All devices</option>'+all.map(d=>
+        `<option value="${esc('device:'+d.id)}">${esc(d.name)}${d.local?' (this device)':''}</option>`).join(''),
+    title:all.length ? all.map(d=>`${d.name}${d.local?' · this device':''}${d.synced?' · synced '+ago(d.synced):''}${d.error?' · '+d.error:''}`).join('\n') : [local.name,local.host,local.os].filter(Boolean).join(' · '),
+  };
+}
+function renderSidebarDevices(){
+  const state=sidebarDeviceState(), card=document.getElementById('device'), picker=document.getElementById('deviceSelect');
+  document.getElementById('devName').textContent=state.name;
+  document.getElementById('devOs').textContent=state.detail;
+  card.classList.toggle('selectable',state.multiple);
+  card.title=state.title;
+  card.querySelector('.device-chevron').toggleAttribute('hidden',!state.multiple);
+  picker.hidden=!state.multiple;
+  // Keep an open native picker intact during ordinary background refreshes.
+  if(picker.dataset.options!==state.options){picker.innerHTML=state.options;picker.dataset.options=state.options;}
+  if(picker.value!==state.value) picker.value=state.value;
+}
+function selectSidebarDevice(value){
+  if(value==='all'){S.devs.clear();return true;}
+  const device=devices().find(d=>'device:'+d.id===value);
+  if(!device) return false;
+  S.devs.clear();S.devs.add(device.id);return true;
+}
+
 /* ---------------- shared bits ---------------- */
 function srcBadge(s){
   return `<span class="badge">${toolLabel(s)}</span>`;
@@ -2232,7 +2270,7 @@ function renderAll(){
   Object.entries(tot).sort((a,b)=>b[1]-a[1]).forEach(([m])=>{
     const p=providerOf(m); (MODEL_RANK[p]=MODEL_RANK[p]||[]).push(m); });
 
-  syncRangeUI(); syncMetricUI(); buildFilterPanels(); renderPills();
+  syncRangeUI(); syncMetricUI(); buildFilterPanels(); renderPills(); renderSidebarDevices();
   filtersToURL();
   document.querySelectorAll(".view").forEach(v=>v.classList.toggle("on", v.id==="v-"+S.view));
   document.querySelectorAll("#tabs button").forEach(b=>b.classList.toggle("on", b.dataset.v===S.view));
@@ -2305,13 +2343,6 @@ async function load(){
       + (RAW.openclaw_undecoded ? ` · ${fmtNum(RAW.openclaw_undecoded)} OpenClaw events unread — install zstd` : "");
     if(RAW.cache_error) document.getElementById("coverage").textContent += " · " + RAW.cache_error;
     renderVersion();
-    const dev = RAW.device || {};
-    document.getElementById("devName").textContent = dev.name || "This computer";
-    const others = devices().filter(v=>!v.local);
-    document.getElementById("devOs").textContent = others.length
-      ? `+ ${others.length} other device${others.length>1?"s":""}` : (dev.os || "");
-    document.getElementById("device").title = [dev.name, dev.host, dev.os].filter(Boolean).join(" · ")
-      + others.map(v=>`\n+ ${v.name}${v.synced?" · synced "+ago(v.synced):""}${v.error?" · "+v.error:""}`).join("");
     // a device that was disconnected can't stay selected, or it would filter out everything
     for(const id of [...S.devs]) if(!devices().some(v=>v.id===id)) S.devs.delete(id);
     document.getElementById("pricingNote").textContent=RAW.pricing_note;
@@ -2374,6 +2405,9 @@ wireMulti("modelPanel",()=>S.models,false);
 wireMulti("projPanel",()=>S.projs,false);
 wireMulti("idePanel",()=>S.ides,false);
 wireMulti("devPanel",()=>S.devs,false);
+document.getElementById('deviceSelect').addEventListener('change',e=>{
+  if(selectSidebarDevice(e.target.value)) renderAll();
+});
 document.getElementById("filtersPanel").addEventListener("click",e=>{
   const a=e.target.closest("[data-fall],[data-fnone],[data-fclear]"); if(!a) return;
   e.preventDefault();

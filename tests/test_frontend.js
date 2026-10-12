@@ -91,6 +91,23 @@ run(`S.metric='messages';`);assert.equal(run(`deviceDistribution(deviceData)[0].
 run(`S.metric='cost';`);assert.equal(run(`deviceDistribution(deviceData)[0].value`),4);
 run(`S.devs=new Set(['Mac']);`);assert.equal(run(`deviceDistribution(deviceData).length`),1);
 assert.equal(run(`deviceDistribution(deviceData)[0].value`),1);
+// Sidebar selection uses the existing device filter rather than a separate scope.
+run(`S.devs.clear();`);
+assert.equal(run(`sidebarDeviceState().value`),'all');
+assert.equal(run(`selectSidebarDevice('device:PC')`),true);
+assert.equal(run(`deviceDistribution(deviceData).length`),1);
+assert.equal(run(`deviceDistribution(deviceData)[0].value`),4);
+assert.equal(run(`sidebarDeviceState().name`),'PC');
+assert.equal(run(`selectSidebarDevice('device:missing')`),false);
+assert.equal(run(`sidebarDeviceState().value`),'device:PC');
+assert.equal(run(`selectSidebarDevice('all')`),true);
+assert.equal(run(`deviceDistribution(deviceData).length`),2);
+run(`RAW.devices.push({id:'Third',name:'Third'});S.devs=new Set(['Mac','PC']);`);
+assert.equal(run(`sidebarDeviceState().value`),'selected');
+assert.ok(run(`sidebarDeviceState().options`).includes('value="selected" disabled'));
+run(`RAW.devices=[{id:'Mac',name:'Mac'}];S.devs.clear();`);
+assert.equal(run(`sidebarDeviceState().multiple`),false);
+run(`RAW.devices=[{id:'Mac',name:'Mac'},{id:'PC',name:'PC'}];`);
 const syncCode=views.slice(views.indexOf('const POLL_KEY='),views.indexOf('let nativeSettingsTimer;'));
 for(const search of ['', '?nativeApp=1&nativePollSeconds=300']){
   const fixture=vm.createContext({URLSearchParams,location:{search}, document, console});

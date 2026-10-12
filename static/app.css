@@ -98,9 +98,16 @@ a{color:inherit}
 .mark{width:26px;height:26px;flex:none}
 .mark-bg{fill:var(--text)} .mark-line{fill:none;stroke:var(--bg);stroke-width:2.6;stroke-linecap:round;stroke-linejoin:round}
 .mark-dot{fill:var(--good)}
-.device{display:flex;align-items:center;gap:10px;margin-top:14px;padding:10px 10px;border:1px solid var(--border);
+.device{position:relative;display:flex;align-items:center;gap:10px;margin-top:14px;padding:10px 10px;border:1px solid var(--border);
   border-radius:var(--r-sm);background:var(--surface);color:var(--text-2)}
-.device-txt{min-width:0}
+.device-txt{min-width:0;flex:1}
+.device.selectable:hover{background:var(--surface-2);border-color:var(--border-2)}
+.device:focus-within{outline:2px solid var(--text);outline-offset:2px}
+.device-chevron{width:12px;height:12px;margin-left:auto}
+.device.selectable .device-name{visibility:hidden}
+.device-picker{position:absolute;inset:0;width:100%;height:100%;padding:0 28px 15px 36px;appearance:none;border:0;background:transparent;color:var(--text);font-size:13px;font-weight:620;cursor:pointer}
+.device-picker option{background:var(--surface);color:var(--text)}
+.device-picker[hidden],.device-chevron[hidden]{display:none}
 .device-name{font-size:13px;font-weight:620;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .device-os{font-size:11.5px;color:var(--text-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .nav{display:flex;flex-direction:column;gap:2px}
@@ -507,6 +514,8 @@ code.cmd{display:block;background:var(--surface-2);border:1px solid var(--border
   .side-collapsed .brand span,.side-collapsed .device-txt,.side-collapsed .side-note,
   .side-collapsed #statusText{display:none}
   .side-collapsed .device{margin-top:0;padding:8px;justify-content:center}
+  .side-collapsed .device-chevron{display:none}
+  .side-collapsed .device-picker{padding:0;color:transparent}
   .side-collapsed .nav{align-items:center}
   .side-collapsed .nav button{width:40px;height:38px;padding:0;justify-content:center;position:relative}
   .side-collapsed .nav button>span:not(.nav-count){display:none}
@@ -528,6 +537,8 @@ code.cmd{display:block;background:var(--surface-2);border:1px solid var(--border
   .side-top{display:flex;align-items:center;gap:10px;min-width:0;flex:1}
   .device{margin-top:0;padding:4px 8px;border-radius:8px;min-width:0}
   .device .ic{display:none}
+  .device .device-chevron:not([hidden]){display:block}
+  .device-picker{padding:0 24px 15px 8px}
   .nav{order:3;flex-direction:row;overflow-x:auto;width:100%;scrollbar-width:none;gap:4px}
   .nav::-webkit-scrollbar{display:none}
   .nav button{width:auto;white-space:nowrap;padding:6px 10px}
