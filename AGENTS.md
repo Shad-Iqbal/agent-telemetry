@@ -284,6 +284,10 @@ sign-in. They stay explicitly unbound. Missing fields are unavailable; observati
 older than five minutes, future-dated observations, passed/missing resets and failed
 lookups are stale. Never refill a percentage just because the reset time passed.
 Account metadata is excluded from peer exports and remote session displays.
+After a failed lookup, reconcile the web view with an offline GET: the backend may
+have discarded a switched account. Hide unverified previous identity/live limits
+if reconciliation fails, and keep retry controls. Resolve log profile components
+across both path separators so copied Windows ledgers stay distinct on macOS.
 
 Versions 53–56 keep all entries during migration. Only available Claude/Codex logs
 missing the private metadata marker reparse transactionally; archives stay unchanged

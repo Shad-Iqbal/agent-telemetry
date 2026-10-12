@@ -10,7 +10,7 @@ import hashlib
 import json
 import math
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import queue
 import shutil
 import subprocess
@@ -265,7 +265,9 @@ def build_accounts(aggregates, device, now=None):
     for agg in aggregates:
         if agg.get("_device") and agg["_device"] != device: continue
         if agg.get("source") != "codex": continue
-        path = Path(agg.get("path", ""))
+        # Ledger paths can come from another OS. Inspect components without
+        # interpreting a copied Windows path as one filename on macOS/Linux.
+        path = PurePosixPath(str(agg.get("path", "")).replace("\\", "/"))
         root = next((p.parent for p in path.parents if p.name in ("sessions", "archived_sessions")), None)
         profile = str(root) if root else "unresolved profile"
         for key, snapshot in (agg.get("account_metadata", {}).get("quota_snapshots") or {}).items():

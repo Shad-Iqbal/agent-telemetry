@@ -128,6 +128,16 @@ class AccountTests(unittest.TestCase):
             A.build_accounts([self.aggregate()], "local", now=AT)
             codex.assert_not_called(); claude.assert_not_called()
 
+    def test_windows_profiles_remain_distinct_when_read_on_mac_or_linux(self):
+        a = self.aggregate(); b = copy.deepcopy(a); archived = copy.deepcopy(a)
+        a["path"] = r"C:\Users\fixture\.codex\sessions\2026\10\12\a.jsonl"
+        b["path"] = r"D:\profiles\work\sessions\2026\10\12\b.jsonl"
+        archived["path"] = r"C:\Users\fixture\.codex\archived_sessions\a.jsonl"
+        entries = A.build_accounts([a, b, archived], "local", now=AT)["entries"]
+        logs = [e for e in entries if any(s["origin"] == "Local Codex log" for s in e["snapshots"])]
+        self.assertEqual({e["profile"] for e in logs}, {"C:/Users/fixture/.codex", "D:/profiles/work"})
+        self.assertEqual(len(logs), 2, "Archived and live copies share a profile; separate profiles do not")
+
     def test_opt_in_and_strict_allowlist_for_live_account(self):
         with patch.object(A, "_codex_read", return_value=({"type": "chatgpt", "email": "fixture@example.invalid",
             "planType": "plus", "accessToken": "DO NOT COPY"}, {"rateLimits": limits(camel=True), "secret": "DO NOT COPY"})) as read:

@@ -218,6 +218,30 @@ console.log('Frontend regression checks passed: pricing, precision, scope, model
   await vm.runInContext('loadAccounts()',accountFixture);
   assert.equal(vm.runInContext('ACCOUNTS.entries[0].profile',accountFixture),'new-account','Failed read dropped last successful account');
   assert.match(accountNode.innerHTML,/stale/i);
+  // A failed opt-in lookup may have discarded a switched account on the server.
+  // Re-read only local observations instead of indefinitely displaying its identity.
+  accountCalls=[];
+  accountFixture.fetch=async(url,options)=>{
+    accountCalls.push({url,options});
+    return options?{ok:false,json:async()=>({error:'Account changed during lookup'})}
+      :{ok:true,json:async()=>({entries:[{source:'codex',profile:'current-profile',identity:null,snapshots:[]}]})};
+  };
+  await vm.runInContext('refreshAccount("codex")',accountFixture);
+  assert.equal(accountCalls.length,2,'Failed lookup did not reconcile local account state');
+  assert.equal(accountCalls[1].options,undefined,'Failure triggered another provider lookup');
+  assert.doesNotMatch(accountNode.innerHTML,/new-account/,'Switched account remained visible after failure');
+  assert.match(accountNode.innerHTML,/Account changed during lookup/);
+  accountFixture.fetch=async(url,options)=>options
+    ?{ok:false,json:async()=>({error:'Provider unavailable'})}
+    :{ok:true,json:async()=>({entries:[{source:'codex',profile:'same-account',identity:{auth:'chatgpt'},snapshots:[]}]})};
+  await vm.runInContext('refreshAccount("codex")',accountFixture);
+  assert.match(accountNode.innerHTML,/same-account/,'Verified same-account failure discarded local state');
+  assert.match(accountNode.innerHTML,/stale/i);
+  accountFixture.fetch=async()=>{throw new Error('Dashboard unreachable')};
+  await vm.runInContext('refreshAccount("codex")',accountFixture);
+  assert.doesNotMatch(accountNode.innerHTML,/same-account/,'Unverified identity remained visible after failed reconciliation');
+  assert.equal(vm.runInContext('accountBusy',accountFixture),false,'Failure left refresh disabled');
+  assert.match(accountNode.innerHTML,/data-account-refresh="codex"/,'Failed reconciliation removed the retry control');
   vm.runInContext('S.devs.add("remote");renderAccountLimits()',accountFixture);
   assert.match(accountNode.innerHTML,/source device/);assert.doesNotMatch(accountNode.innerHTML,/new-account/);
   console.log('Account quota consent, privacy, stale values and superseded requests passed.');

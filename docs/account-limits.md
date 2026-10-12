@@ -56,6 +56,10 @@ the meter 100% remaining: the last percentage is kept as a historical observatio
 Absent or malformed fields show unavailable rather than zero usage. Account lookup
 failure retains last successful values only while the local credential signature
 matches, marks them stale, and allows a retry.
+The web view reconciles a failed lookup with an offline local read. If that read
+also fails, previous identities and live limits stay hidden until verified; retry
+controls remain available. Windows-style log paths retain their profile grouping
+when a copied ledger is read on macOS or Linux.
 
 Credit balances, model-specific Claude weekly windows, exact remaining token/message
 counts, plan pricing and historical per-request account attribution are not supported.

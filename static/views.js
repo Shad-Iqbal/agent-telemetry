@@ -360,7 +360,9 @@ function renderAccountLimits(){
     target.innerHTML='<p class="hint">Account metadata stays on its source device. Open this dashboard on that device to view its limits.</p>';return;
   }
   target.innerHTML=(accountFetchError?`<p class="warnbar">${esc(accountFetchError)} Previous figures are stale.</p>`:"")
-    +(ACCOUNTS?ACCOUNTS.entries.map(accountEntryHTML).join(""):'<p class="hint">Account details unavailable. Waiting for local observations.</p>');
+    +(ACCOUNTS?ACCOUNTS.entries.map(accountEntryHTML).join(""):`<p class="hint">Account details unavailable. Waiting for local observations.</p>
+      <button class="btn" data-account-refresh="codex" ${accountBusy?'disabled':''}>Refresh Codex account & limits</button>
+      <button class="btn" data-account-refresh="claude" ${accountBusy?'disabled':''}>Refresh Claude account</button>`);
 }
 async function loadAccounts(){
   if(accountBusy) return;
@@ -382,7 +384,18 @@ async function refreshAccount(source){
     const r=await fetch("/api/accounts",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({source,confirmed:true})});
     const result=await r.json();if(!r.ok)throw new Error(result.error||"Account lookup failed.");
     if(sequence===accountSequence){ACCOUNTS=result;accountFetchError="";}
-  }catch(e){if(sequence===accountSequence)accountFetchError=e.message||"Account lookup failed.";}
+  }catch(e){
+    if(sequence===accountSequence){
+      accountFetchError=e.message||"Account lookup failed.";
+      // A switched account is discarded by the backend even when POST fails.
+      // Reconcile its local state without running another provider lookup.
+      ACCOUNTS=null;
+      try{
+        const r=await fetch("/api/accounts");if(!r.ok)throw new Error("Local account state unavailable.");
+        const payload=await r.json();if(sequence===accountSequence)ACCOUNTS=payload;
+      }catch(_){/* Unverified previous identities and live limits stay hidden. */}
+    }
+  }
   finally{accountBusy=false;renderAccountLimits();}
 }
 
