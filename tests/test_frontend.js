@@ -9,6 +9,19 @@ const views=fs.readFileSync(path.join(root,'static/views.js'),'utf8');
 vm.runInContext(views.slice(0,views.indexOf('document.getElementById("tabs").addEventListener')),context);
 const run=code=>vm.runInContext(code,context);
 assert.equal(run(`SRC.codex.icon`),'openai');
+assert.equal(run(`SRC.opencode.label`),'OpenCode');
+assert.match(run(`toolLabel('opencode')`),/>OpenCode</);
+assert.match(run(`srcBadge('opencode')`),/OpenCode/);
+assert.match(run(`quotaWindowHTML({label:'5-hour limit',remaining_percent:89,resets_at:2000},{observed_at:1000},1000)`),/89% left/);
+assert.match(run(`quotaWindowHTML({label:'5-hour limit',remaining_percent:0,resets_at:2000},{observed_at:1000},1000)`),/value="0"/);
+assert.doesNotMatch(run(`quotaWindowHTML({label:'5-hour limit',remaining_percent:null,resets_at:null},{observed_at:1000},1000)`),/<progress|100% left/);
+assert.match(run(`quotaWindowHTML({label:'5-hour limit',remaining_percent:89,resets_at:1100},{observed_at:1000},1301)`),/Stale|Reset passed/);
+assert.match(run(`quotaWindowHTML({label:'5-hour limit',remaining_percent:89,resets_at:1100},{observed_at:1000},1301)`),/89% left/);
+assert.doesNotMatch(run(`quotaWindowHTML({label:'<img src=x onerror=alert(1)>',remaining_percent:89,resets_at:2000},{observed_at:1000},1000)`),/<img src=x/);
+assert.match(run(`sessionAccountDetails({source:'codex',account_metadata:{creator_account_id:'creator-A'}})`),/Thread creator account/);
+assert.match(run(`sessionAccountDetails({source:'claude'})`),/Not recorded/);
+assert.doesNotMatch(run(`sessionAccountDetails({source:'claude',account_metadata:{recorded_account_ids:['<img src=x onerror=alert(1)>']}})`),/<img src=x/);
+assert.doesNotMatch(run(`accountEntryHTML({source:'codex',profile:'<img src=x onerror=alert(1)>',identity:{auth:'apiKey',email:'<img src=x>',plan:null},snapshots:[]})`),/<img src=x/);
 assert.equal(run(`SRC.claude.icon`),run(`SRC['claude-desktop'].icon`));
 for(const source of run(`ORDER`)){
   const name=run(`SRC[${JSON.stringify(source)}].icon`);
@@ -186,6 +199,60 @@ assert.equal(run(`slice({from:'2026-10-10',to:'2026-10-10'}).sessions.length`),0
 run(`S.projs.clear();S.tools=new Set(['claude']);`);
 console.log('Frontend regression checks passed: pricing, precision, scope, model contributions, Optimize, device distribution, shared refresh and compaction metadata.');
 (async()=>{
+  const accountNode={innerHTML:''}; let accountCalls=[], resolveAccountOld;
+  const accountFixture=vm.createContext({Date,Number,Set,console,RAW:{device:{id:'local'}},S:{devs:new Set()},
+    esc:value=>String(value??'').replaceAll('<','&lt;'),toolLabel:value=>value,
+    document:{getElementById:()=>accountNode},askConfirm:async()=>false,
+    fetch:async(url,options)=>{accountCalls.push({url,options});return {ok:true,json:async()=>({entries:[]})}}});
+  vm.runInContext(views.slice(views.indexOf('let ACCOUNTS='),views.indexOf('function viewOverview(')),accountFixture);
+  await vm.runInContext('loadAccounts()',accountFixture);
+  await vm.runInContext('refreshAccount("codex")',accountFixture);
+  assert.equal(accountCalls.length,1,'Declined consent ran a live lookup');
+  assert.equal(accountCalls[0].options,undefined,'Local read unexpectedly posted a live lookup');
+  accountFixture.askConfirm=async()=>true;
+  accountFixture.fetch=async(url,options)=>{
+    accountCalls.push({url,options});
+    if(!options) return await new Promise(resolve=>{resolveAccountOld=resolve});
+    return {ok:true,json:async()=>({entries:[{source:'codex',profile:'new-account',snapshots:[],identity:{auth:'apiKey'}}]})};
+  };
+  const oldAccountLoad=vm.runInContext('loadAccounts()',accountFixture);
+  await vm.runInContext('refreshAccount("codex")',accountFixture);
+  resolveAccountOld({ok:true,json:async()=>({entries:[{source:'codex',profile:'old-account',snapshots:[]}]})});
+  await oldAccountLoad;
+  assert.equal(vm.runInContext('ACCOUNTS.entries[0].profile',accountFixture),'new-account','Late GET undid a newer account lookup');
+  assert.equal(JSON.parse(accountCalls.at(-1).options.body).confirmed,true);
+  assert.equal(accountCalls.at(-1).options.headers['Content-Type'],'application/json');
+  accountFixture.fetch=async()=>({ok:false});
+  await vm.runInContext('loadAccounts()',accountFixture);
+  assert.equal(vm.runInContext('ACCOUNTS.entries[0].profile',accountFixture),'new-account','Failed read dropped last successful account');
+  assert.match(accountNode.innerHTML,/stale/i);
+  // A failed opt-in lookup may have discarded a switched account on the server.
+  // Re-read only local observations instead of indefinitely displaying its identity.
+  accountCalls=[];
+  accountFixture.fetch=async(url,options)=>{
+    accountCalls.push({url,options});
+    return options?{ok:false,json:async()=>({error:'Account changed during lookup'})}
+      :{ok:true,json:async()=>({entries:[{source:'codex',profile:'current-profile',identity:null,snapshots:[]}]})};
+  };
+  await vm.runInContext('refreshAccount("codex")',accountFixture);
+  assert.equal(accountCalls.length,2,'Failed lookup did not reconcile local account state');
+  assert.equal(accountCalls[1].options,undefined,'Failure triggered another provider lookup');
+  assert.doesNotMatch(accountNode.innerHTML,/new-account/,'Switched account remained visible after failure');
+  assert.match(accountNode.innerHTML,/Account changed during lookup/);
+  accountFixture.fetch=async(url,options)=>options
+    ?{ok:false,json:async()=>({error:'Provider unavailable'})}
+    :{ok:true,json:async()=>({entries:[{source:'codex',profile:'same-account',identity:{auth:'chatgpt'},snapshots:[]}]})};
+  await vm.runInContext('refreshAccount("codex")',accountFixture);
+  assert.match(accountNode.innerHTML,/same-account/,'Verified same-account failure discarded local state');
+  assert.match(accountNode.innerHTML,/stale/i);
+  accountFixture.fetch=async()=>{throw new Error('Dashboard unreachable')};
+  await vm.runInContext('refreshAccount("codex")',accountFixture);
+  assert.doesNotMatch(accountNode.innerHTML,/same-account/,'Unverified identity remained visible after failed reconciliation');
+  assert.equal(vm.runInContext('accountBusy',accountFixture),false,'Failure left refresh disabled');
+  assert.match(accountNode.innerHTML,/data-account-refresh="codex"/,'Failed reconciliation removed the retry control');
+  vm.runInContext('S.devs.add("remote");renderAccountLimits()',accountFixture);
+  assert.match(accountNode.innerHTML,/source device/);assert.doesNotMatch(accountNode.innerHTML,/new-account/);
+  console.log('Account quota consent, privacy, stale values and superseded requests passed.');
   // A completed check must leave a way to check again without reloading.
   const versionNode={innerHTML:''}, updateRequests=[];
   let updateResult={behind:0,changes:[]};
@@ -250,7 +317,7 @@ console.log('Frontend regression checks passed: pricing, precision, scope, model
   const loading=vm.createContext({console,Date,Set,S:{live:true,devs:new Set()},RAW:null,
     document:{getElementById:id=>loadNodes[id],documentElement:{dataset:{}}},
     fetch:async()=>{pending++;if(pending===1)return await new Promise(resolve=>{resolveOld=resolve});return {ok:true,json:async()=>payload(200)}},
-    devices:()=>[],renderVersion(){},fmtNum:value=>value,renderAll(){rendered++}});
+    devices:()=>[],renderVersion(){},loadAccounts(){},fmtNum:value=>value,renderAll(){rendered++}});
   vm.runInContext(views.slice(views.indexOf('let loadSequence='),views.indexOf('async function loadStorage()')),loading);
   const oldLoad=vm.runInContext('load()',loading);
   await vm.runInContext('load()',loading);

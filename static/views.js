@@ -318,7 +318,89 @@ function renderDeviceDistribution(d){
     options:{indexAxis:"y",scales:axes({x:{ticks:{callback:v=>tickOf()(v)}},y:{grid:{display:false}}}),
       plugins:{tooltip:{callbacks:{label:c=>" "+fmt(c.parsed.x)+" · "+fmtPct(total?c.parsed.x/total:0)}}}}});
 }
+let ACCOUNTS=null, accountSequence=0, accountBusy=false, accountFetchError="";
+function sessionAccountDetails(s){
+  if(s.source!=="codex" && s.source!=="claude") return "";
+  const m=s.account_metadata||{};
+  const fields=s.source==="codex"
+    ? [["Thread creator account",m.creator_account_id],["Thread creator user",m.creator_user_id]]
+    : [["Account IDs observed in records",(m.recorded_account_ids||[]).join(" · ")]];
+  return fields.map(([label,value])=>`<div class="kv"><span class="k">${label}</span><span class="v">${esc(value||"Not recorded")}</span></div>`).join("")
+    + '<p class="hint">Historical metadata is incomplete. Creator or observed account IDs do not establish auth mode, plan or the account billing every request.</p>';
+}
+function quotaWindowHTML(w,s,now=Date.now()/1000){
+  const pct=Number.isFinite(w.remaining_percent)?w.remaining_percent:null;
+  const expired=Number.isFinite(w.resets_at)&&now>=w.resets_at;
+  const stale=accountFetchError||w.stale||s.stale||now-s.observed_at>300||now<s.observed_at;
+  const state=expired?"Reset passed · refresh required":stale?"Stale snapshot":pct===null?"Unavailable":"Last reported";
+  const reset=Number.isFinite(w.resets_at)?new Date(w.resets_at*1000).toLocaleString():"Reset time unavailable";
+  const left=pct===null?"Unavailable":`${Math.round(pct*10)/10}% left`;
+  const label=`${w.label}: ${left} · ${state}`;
+  return `<div class="quota-window"><div class="quota-line"><strong>${esc(w.label)}</strong><span>${esc(left)}</span></div>
+    ${pct===null?'':`<progress max="100" value="${pct}" aria-label="${esc(label)}"></progress>`}
+    <div class="quota-line hint"><span>${esc(state)}</span><span>${esc(reset)}</span></div></div>`;
+}
+function accountEntryHTML(e){
+  const id=e.identity, observed=e.observed_at?new Date(e.observed_at*1000).toLocaleString():null;
+  const stale=e.identity_stale||accountFetchError||(e.observed_at&&Date.now()/1000-e.observed_at>300);
+  const auth=id?`${id.auth||"Auth unavailable"} · ${id.plan||"Plan unavailable"}`:"Account / auth / plan unavailable";
+  return `<section class="quota-account"><div class="quota-line"><h4>${toolLabel(e.source)}</h4>
+    ${e.snapshots.some(s=>s.origin==="Local Codex log")?'':`<button class="btn" data-account-refresh="${esc(e.source)}" ${accountBusy?'disabled':''}>Refresh account${e.source==="codex"?' & limits':''}</button>`}</div>
+    <p class="hint">${esc(auth)}${id&&id.email?` · ${esc(id.email)}`:""}${id&&id.provider?` · ${esc(id.provider)}`:""}${id&&id.organization_id?` · Org ${esc(id.organization_id)}`:""}${id&&id.credential_source?` · ${esc(id.credential_source)}`:""}${id&&stale?' · Stale account details':''}</p>
+    <p class="hint quota-profile">CLI profile: ${esc(e.profile)}${observed?` · Account checked ${esc(observed)}`:""}</p>
+    ${e.error?`<p class="warnbar">${esc(e.error)}</p>`:""}
+    ${e.snapshots.map(s=>`<div class="quota-snapshot"><p class="hint">${esc(s.origin)}${s.limit_name||s.limit_id?` · ${esc(s.limit_name||s.limit_id)}`:""}${s.plan?` · Reported plan: ${esc(s.plan)}`:""} · Observed ${esc(new Date(s.observed_at*1000).toLocaleString())}</p>
+      ${s.windows.length?s.windows.map(w=>quotaWindowHTML(w,s)).join(""):'<p class="hint">Quota percentages unavailable.</p>'}
+      <p class="hint">${esc(s.attribution)}</p></div>`).join("")}
+    ${!e.snapshots.length?`<p class="hint">${esc(e.unavailable)}</p>`:""}</section>`;
+}
+function renderAccountLimits(){
+  const target=document.getElementById("accountLimits"); if(!target) return;
+  if(RAW&&S.devs.size&&!S.devs.has(RAW.device.id)){
+    target.innerHTML='<p class="hint">Account metadata stays on its source device. Open this dashboard on that device to view its limits.</p>';return;
+  }
+  target.innerHTML=(accountFetchError?`<p class="warnbar">${esc(accountFetchError)} Previous figures are stale.</p>`:"")
+    +(ACCOUNTS?ACCOUNTS.entries.map(accountEntryHTML).join(""):`<p class="hint">Account details unavailable. Waiting for local observations.</p>
+      <button class="btn" data-account-refresh="codex" ${accountBusy?'disabled':''}>Refresh Codex account & limits</button>
+      <button class="btn" data-account-refresh="claude" ${accountBusy?'disabled':''}>Refresh Claude account</button>`);
+}
+async function loadAccounts(){
+  if(accountBusy) return;
+  const sequence=++accountSequence;
+  try{
+    const r=await fetch("/api/accounts");if(!r.ok) throw new Error("Cannot read local account observations.");
+    const payload=await r.json();if(sequence!==accountSequence) return;
+    ACCOUNTS=payload;accountFetchError="";
+  }catch(e){if(sequence!==accountSequence)return;accountFetchError=e.message||"Account observations unavailable.";}
+  renderAccountLimits();
+}
+async function refreshAccount(source){
+  if(accountBusy) return;
+  const ok=await askConfirm({title:"Read account details"+(source==="codex"?" and limits":""),
+    body:`<p>Run ${source==="codex"?'Codex’s read-only account API':'Claude Code’s auth status'} for the CLI profile available to this dashboard.</p><p>This may contact the provider using the CLI’s existing sign-in. It starts no conversation or model turn. Other apps and running sessions may use different credentials. Account details stay on this device.</p>`,ok:"Read once"});
+  if(!ok||accountBusy) return;
+  accountBusy=true;const sequence=++accountSequence;renderAccountLimits();
+  try{
+    const r=await fetch("/api/accounts",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({source,confirmed:true})});
+    const result=await r.json();if(!r.ok)throw new Error(result.error||"Account lookup failed.");
+    if(sequence===accountSequence){ACCOUNTS=result;accountFetchError="";}
+  }catch(e){
+    if(sequence===accountSequence){
+      accountFetchError=e.message||"Account lookup failed.";
+      // A switched account is discarded by the backend even when POST fails.
+      // Reconcile its local state without running another provider lookup.
+      ACCOUNTS=null;
+      try{
+        const r=await fetch("/api/accounts");if(!r.ok)throw new Error("Local account state unavailable.");
+        const payload=await r.json();if(sequence===accountSequence)ACCOUNTS=payload;
+      }catch(_){/* Unverified previous identities and live limits stay hidden. */}
+    }
+  }
+  finally{accountBusy=false;renderAccountLimits();}
+}
+
 function viewOverview(d){
+  renderAccountLimits();
   const pd = hasPrev() ? slice(prevRange()) : null;
   const days = dateList(d.r), val = metricOf(), fmt = fmtOf();
   const t = totals(d.recs), pt = pd ? totals(pd.recs) : null;
@@ -1035,6 +1117,7 @@ function openSession(i){
     ${row("Entrypoint",s.entry?esc(s.entry):null)}
     ${row("Daily detail",s.detail_limited?"Limited in this older ledger entry":null)}
     ${row("Tool version",s.cliver?esc(s.cliver):null)}
+    ${sessionAccountDetails(s)}
     ${s.clipped?`<div class="warnbar">Figures below reflect the selected range and model filters.${s.range_clipped?` This session spans ${s.span} days in total.`:""}</div>`:""}
     ${row("Started",s.start?s.start.slice(0,19).replace("T"," "):"—")}
     ${row("Last activity",s.end?s.end.slice(0,19).replace("T"," "):"—")}
@@ -2324,6 +2407,7 @@ async function load(){
     const payload=await r.json();
     if(sequence!==loadSequence) return false;
     RAW=payload;
+    loadAccounts();
   }catch(e){
     if(sequence!==loadSequence) return false;
     console.error(e);
@@ -2452,6 +2536,8 @@ document.getElementById("liveBtn").addEventListener("click",e=>{
   const st=document.getElementById("statusText"); st.textContent = st.textContent.replace(/^(Live|Paused)/, S.live?"Live":"Paused");
 });
 document.addEventListener("click",e=>{
+  const accountButton=e.target.closest('[data-account-refresh]');
+  if(accountButton){refreshAccount(accountButton.dataset.accountRefresh);return;}
   const tv=e.target.closest(".tv[data-tv]");
   if(tv){ const id=tv.dataset.tv; if(S.tableView.has(id)) S.tableView.delete(id); else S.tableView.add(id);
     applyTableView(id); return; }

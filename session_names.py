@@ -124,16 +124,16 @@ def _opencode_rows(connection, session_id):
     rows = []
     if connection.execute("SELECT 1 FROM sqlite_master WHERE type='trigger' "
                           "AND tbl_name IN ('session','session_v2') LIMIT 1").fetchone():
-        raise ValueError("Unsupported opencode title triggers; original data was not changed.")
+        raise ValueError("Unsupported OpenCode title triggers; original data was not changed.")
     tables = {r[0] for r in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     for table in ("session", "session_v2"):
         if table not in tables: continue
         info = {r[1]: r[6] for r in connection.execute("PRAGMA table_xinfo(" + table + ")")}
         if not {"id", "title"}.issubset(info) or info["title"] != 0:
-            raise ValueError("Unsupported opencode title schema; original data was not changed.")
+            raise ValueError("Unsupported OpenCode title schema; original data was not changed.")
         row = connection.execute("SELECT title FROM " + table + " WHERE id=?", (session_id,)).fetchone()
         if row is not None: rows.append((table, row[0]))
-    if not rows: raise ValueError("The session no longer exists in opencode.")
+    if not rows: raise ValueError("The session no longer exists in OpenCode.")
     return rows
 
 

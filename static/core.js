@@ -11,7 +11,7 @@ const SRC = {
   copilot:          {label:"Copilot",        v:"--t-copilot",         exact:false, icon:"copilot", provider:"GitHub", mono:true},
   cursor:           {label:"Cursor",         v:"--t-cursor",          exact:false, icon:"cursor", provider:"Cursor", mono:true},
   "claude-desktop": {label:"Claude Desktop", v:"--t-claude-desktop",  exact:true, icon:"claude", provider:"Anthropic", mono:true},
-  opencode:         {label:"opencode",       v:"--t-opencode",        exact:true, icon:"opencode", provider:"OpenCode", mono:true},
+  opencode:         {label:"OpenCode",       v:"--t-opencode",        exact:true, icon:"opencode", provider:"OpenCode", mono:true},
   hermes:           {label:"Hermes Agent",   v:"--t-hermes",          exact:true, icon:"hermes", provider:"Nous Research"},
   openclaw:         {label:"OpenClaw",       v:"--t-openclaw",        exact:true, icon:"openclaw", provider:"OpenClaw"},
 };

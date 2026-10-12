@@ -77,6 +77,9 @@ cp "$AT_REPO_ROOT/dashboard.py" "$AT_REPO_ROOT/parser.py" "$AT_REPO_ROOT/native.
 if [[ -f "$AT_REPO_ROOT/session_names.py" ]]; then
   cp "$AT_REPO_ROOT/session_names.py" "$AT_BACKEND_DIR/"
 fi
+if [[ -f "$AT_REPO_ROOT/accounts.py" ]]; then
+  cp "$AT_REPO_ROOT/accounts.py" "$AT_BACKEND_DIR/"
+fi
 ditto "$AT_REPO_ROOT/static" "$AT_BACKEND_DIR/static"
 
 if [[ -n "${AGENT_TELEMETRY_PYTHON_ARCHIVE:-}" ]]; then

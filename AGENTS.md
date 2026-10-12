@@ -3,7 +3,7 @@
 **AgentTelemetry** — a local, **stdlib-only** dashboard that reads the logs your AI coding tools already write
 to this machine and shows tokens, estimated cost, and breakdowns by model / day / tool /
 project / hour. Nothing leaves the machine unless the user turns on sharing (see "Your
-devices"). Nothing to install.
+devices") or explicitly requests a one-time account lookup (see "Account snapshots"). Nothing to install.
 
 ```bash
 python3 dashboard.py            # http://127.0.0.1:7878
@@ -33,7 +33,7 @@ no third-party GUI dependency. Linux stays on the existing browser workflow.
   never token/prompt history). `session_names.py` implements confirmed source edits:
   Claude appends its native `custom-title` record; Codex uses the official local
   `thread/read` / `thread/name/set` API, never starts/resumes a thread or model turn;
-  opencode updates only the title columns of recognized SQLite session tables in one
+  OpenCode updates only the title columns of recognized SQLite session tables in one
   transaction. Unknown/generated schemas or title triggers are refused. Remote,
   missing and unverified source formats cannot be edited. UI/POST targets use FULL
   native ids (`rename_id`), never the eight-character ids shown in the table.
@@ -115,6 +115,7 @@ accurately. Keep the existing public tag intact when adding packaging metadata/a
 | `static/core.js` | `SRC`/`ORDER`, state `S`, formatting, date ranges, filtering. |
 | `static/tool-icons/` | Bundled tool/provider SVG marks, pinned sources and licenses. |
 | `session_names.py` | Warning previews, private title backups and verified original-tool renames. |
+| `accounts.py` | Private account observations, optional read-only CLI account queries and Claude status-line capture. |
 | `static/charts.js` | Chart.js theming, `mk()`/`hbar()`/`areaDS()`, calendar + heatmap SVG. |
 | `static/views.js` | The eight views, controls, events, boot. |
 | `index.html` | Shell only: sidebar (device name, tabs, live/refresh/theme/settings), page header (period, range, metric, filters), card markup, an SVG icon sprite. |
@@ -166,7 +167,7 @@ reads) also carries a `device` id; see "Your devices".
 7. **Bump `CACHE_VERSION`** whenever an aggregate's shape changes.
 8. **Never `except Exception: pass` around a parser.** A swallowed error is
    indistinguishable from "the user doesn't have this tool" — that's how a `TypeError`
-   once made the whole opencode parser silently yield nothing. Write to stderr.
+   once made the whole OpenCode parser silently yield nothing. Write to stderr.
 9. **Any write endpoint goes through `Handler._csrf_ok()`.** There's no auth, so any page
    the user visits can POST here; with `Content-Type: text/plain` it's a CORS simple
    request with no preflight. That was enough to set `cleanupPeriodDays=1` and make Claude
@@ -180,6 +181,8 @@ reads) also carries a `device` id; see "Your devices".
     retain chart swatches and the existing series colors. Brand marks are local assets
     with documented sources; never fetch icons remotely at runtime. Icon-only references
     carry the full tool name/provider as an accessible label and tooltip.
+    OpenCode's display name is `OpenCode`; its source id, paths and asset names
+    remain `opencode` for compatibility with existing ledgers and saved filters.
 
 ## The IDE dimension
 
@@ -187,7 +190,7 @@ reads) also carries a `device` id; see "Your devices".
 aggregate by `_ide_of()` and filterable like project or model. Each source records it
 differently and none agree on spelling, so they collapse to a shared vocabulary:
 Copilot's comes from *which editor's storage* the file sat in, Claude/Codex stamp an
-`entrypoint`/`originator`, and Cursor/Claude Desktop/opencode/Hermes run in exactly one
+`entrypoint`/`originator`, and Cursor/Claude Desktop/OpenCode/Hermes run in exactly one
 place. An unrecognised entrypoint passes through **as itself** rather than being forced
 into a bucket, so a new host appears rather than silently becoming "VS Code".
 
@@ -229,7 +232,7 @@ so that file stops being a cache and becomes the sole record. Two consequences:
 - Versions 53/54 → **55** add optional Claude/Codex compaction metadata. Version **56**
   adds Haiku 5.5 request-tier pricing subsets. These migrations
   retain every existing entry; `update_file()` fully reparses available Claude/Codex logs
-  missing `compactions`, replacing them only after success. opencode databases gain
+  missing `compactions`, replacing them only after success. OpenCode databases gain
   an `opencode_schema` marker and reparse once even on an unchanged signature to
   discover V2 history. Other sources continue
   incrementally and archived entries stay unchanged. A failed backfill retries even
@@ -260,6 +263,42 @@ so that file stops being a cache and becomes the sole record. Two consequences:
   restarted, or explicitly deleted through the existing warned cache action.
 - Payload construction and cache actions share `_refresh_lock` with parsing. Aggregates
   mutate in place, so copying only the outer file list is not a consistent snapshot.
+
+## Account snapshots
+
+Overview's subscription-limit meters use `GET /api/accounts`, separate from usage
+data/summary and health. GET is offline. `POST /api/accounts` requires `_csrf_ok()`
+and explicit `confirmed:true` consent for a one-time CLI lookup that may contact the
+provider. Never start/resume a thread or model turn, login/logout, or redeem credits.
+Codex uses only initialize, account/read (refreshToken:false), and account/rateLimits/read;
+Claude uses auth status. Read accounts before/after Codex quota lookup and discard
+changed accounts. Credential contents are never decoded; only file signatures and
+non-reversible environment fingerprints detect changes. Other processes' credentials
+remain unknown. A pipe reader owns closing stdout; closing it on another thread can
+hang on an inherited pipe's read lock with recent Codex CLI builds.
+
+`account_metadata` is private optional aggregate metadata in cache version 57.
+Codex creator ids mean thread creator, never per-request payer. Claude accountUuid
+values are incomplete observed record identities, never inferred auth/plan. Quota
+snapshots are account-wide, timestamped and never summed across sessions/devices or
+derived from tokens. Log quotas and Claude captures cannot be matched to current
+sign-in. They stay explicitly unbound. Missing fields are unavailable; observations
+older than five minutes, future-dated observations, passed/missing resets and failed
+lookups are stale. Never refill a percentage just because the reset time passed.
+Account metadata is excluded from peer exports and remote session displays.
+After a failed lookup, reconcile the web view with an offline GET: the backend may
+have discarded a switched account. Hide unverified previous identity/live limits
+if reconciliation fails, and keep retry controls. Resolve log profile components
+across both path separators so copied Windows ledgers stay distinct on macOS.
+
+Versions 53–56 keep all entries during migration. Only available Claude/Codex logs
+missing the private metadata marker reparse transactionally; archives stay unchanged
+and a failed backfill retries. Peers 52–56 remain readable. Do not rebuild. Live
+account results are memory-only. Optional `accounts.py --capture-claude` stores only
+Claude's documented five_hour/seven_day status-line fields in AgentTelemetryNative,
+outside the ledger; missing fields replace older captures. Never edit a user's status
+line automatically. See docs/account-limits.md for verified sources and limitations.
+Use tests/preview_accounts.py for web checks with mock data only.
 
 ## What the logs cannot show
 
@@ -471,13 +510,13 @@ so that file stops being a cache and becomes the sole record. Two consequences:
   that's its real billing unit. Not read yet (none exist on this machine): the Copilot CLI's
   `~/.copilot/session-state/*/events.jsonl`, JetBrains, and `GitHub.copilot-chat/transcripts/`
   (turns only, no tokens).
-- **opencode**: current versions use one SQLite `opencode.db`; older ones use
+- **OpenCode**: current versions use one SQLite `opencode.db`; older ones use
   `storage/message/<session>/msg_*.json`. All are read. The DB parser supports both
   `session/message/part` (V1) and `session_v2/session_message` (V2). V2's message role
   is a column; model identity is `data.model`, and tools are in assistant `content`.
   Prefer the V2 copy of migrated sessions; keep V1-only sessions and V1 history for
   empty V2 migration stubs. V2 rows are ordered by session/time/sequence. Fork-copied
-  rows preceding the fork session's creation are excluded, matching opencode's own
+  rows preceding the fork session's creation are excluded, matching OpenCode's own
   stats even when its parent is gone. Idle/system/synthetic rows are not user prompts.
   Bad V2 JSON fails the parse so the previous ledger survives and retries. Only the DB records a real
   per-message cost, so cost routing keys on whether the aggregate's path ends `.db`.
@@ -514,7 +553,7 @@ so that file stops being a cache and becomes the sole record. Two consequences:
   the `-wal` entirely. The helper tries the first, probes it with a query (connect is lazy),
   and falls back to the second.
 - **Live SQLite refreshes must track the WAL too.** Cursor and Hermes use a signature
-  of the database and its `-wal`, like opencode. A committed message can change only the
+  of the database and its `-wal`, like OpenCode. A committed message can change only the
   WAL until the writer checkpoints; checking just the main DB leaves the dashboard stale.
 
 ## Common tasks
@@ -690,13 +729,13 @@ must not report three days of "active" time. Formatted client-side by `fmtDur()`
 - **Computed at the same choke point every source already shares**: `_bump_time()`
   receives a real timestamp at every one of its 11 call sites, so `_active_gap()` sits
   right next to it rather than duplicating cap logic per source.
-- **Single-session sources** (Claude/Claude Desktop, Codex, Copilot, legacy opencode —
+- **Single-session sources** (Claude/Claude Desktop, Codex, Copilot, legacy OpenCode —
   one file per session) persist the last-event timestamp on `agg["_active_last"]`,
   because Claude/Codex/Copilot-jsonl parse incrementally (byte-offset resume): the
   function only ever sees the NEW lines, so the previous timestamp must survive across
   calls or every incremental chunk looks like the start of a fresh burst. A fresh
   `_blank_agg` (full reparse) correctly resets it to `None`.
-- **Multi-session sources** (Cursor, opencode's SQLite DB, Hermes — one store holding
+- **Multi-session sources** (Cursor, OpenCode's SQLite DB, Hermes — one store holding
   many unrelated sessions) use a LOCAL dict keyed by session id instead, never
   `agg`-level: these are always fully reparsed from scratch on change (see
   `update_file`), so nothing needs to persist, and persisting at the `agg` level would
@@ -712,7 +751,7 @@ must not report three days of "active" time. Formatted client-side by `fmtDur()`
   the 5-minute cap apart. That is the heuristic doing its job, not a parsing gap.
   Completed mutation-log requests are finalized in their recorded request order;
   iterating a set would make active-time gaps change between reparses.
-- Cursor, opencode SQLite, Hermes and OpenClaw retain per-session `records` keyed by
+- Cursor, OpenCode SQLite, Hermes and OpenClaw retain per-session `records` keyed by
   date/model. Payload records use each session's project; session days price each
   model and cache tier before summing. `model_days` allows filtering secondary models.
   Copilot additionally retains an `exact` contribution per record, with `exact_days`
@@ -753,7 +792,7 @@ local network. Both switches are off until the user turns them on, and each asks
   copy to `.peers/<device id>.json` (0600). While the other machine sleeps, the copy still
   shows, along with the error explaining why it couldn't be reached. An export or saved
   copy with an incompatible `CACHE_VERSION` is refused with "update both". The
-  version-56 reader explicitly accepts versions 52–55, whose missing optional
+  version-57 reader explicitly accepts versions 52–56, whose missing optional
   precision/attribution/compaction/pricing fields retain the older detail limits; other
   versions are refused.
 - `build_payload` adds the copies to its file loop as `peer:<id>:<path>` with
@@ -788,9 +827,9 @@ local network. Both switches are off until the user turns them on, and each asks
 ## Version and self-update
 
 The sidebar footer shows the running version from this checkout's git metadata
-(`VERSION` in `dashboard.py`: `git describe --tags`, commit, branch). **Apart from the
-opt-in device sharing above, checking for an update is the only thing that touches the
-network, and only on a click** — never on a timer, which would break "nothing leaves
+(`VERSION` in `dashboard.py`: `git describe --tags`, commit, branch). **Apart from
+opt-in device sharing and explicit one-time account lookups, checking for an update
+is the only thing that touches the network, and only on a click** — never on a timer, which would break "nothing leaves
 this machine". `POST /api/update` (through
 `_csrf_ok()`): `check` fetches the upstream and reports how far behind; `apply`
 fast-forwards only — it refuses local edits to tracked files and commits the upstream
