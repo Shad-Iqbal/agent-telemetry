@@ -22,6 +22,7 @@ import parser as P
 import native as N
 import session_names as SN
 import accounts as A
+from local_servers import LocalServerInventory
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = HERE
@@ -2193,6 +2194,14 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 import traceback; traceback.print_exc()
                 self._send(500, json.dumps({"error": str(e)}))
+        elif route == "/api/local-servers":
+            if not self._loopback_client():
+                self._send(403, json.dumps({"error": "local server details are available only on this Mac"}))
+                return
+            try:
+                self._send(200, json.dumps(LocalServerInventory(DATA_DIR).snapshot()))
+            except Exception as e:
+                self._send(500, json.dumps({"error": str(e)}))
         elif route == "/api/refresh":
             self._send(405, json.dumps({"error": "use POST with a JSON body"}))
         elif route == "/api/data":
@@ -2253,9 +2262,19 @@ class Handler(BaseHTTPRequestHandler):
         ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
         return ctype == "application/json" and self._origin_ok()
 
+    def _loopback_client(self):
+        try:
+            return ipaddress.ip_address(self.client_address[0]).is_loopback
+        except (ValueError, TypeError):
+            return False
+
     def do_POST(self):
         route = self.path.split("?")[0]
-        if route in ("/api/settings", "/api/cache", "/api/update", "/api/devices", "/api/refresh", "/api/native", "/api/shutdown", "/api/sync", "/api/session-name", "/api/accounts"):
+        local_server_routes = {"/api/local-servers/stop"}
+        if route in ("/api/settings", "/api/cache", "/api/update", "/api/devices", "/api/refresh", "/api/native", "/api/shutdown", "/api/sync", "/api/session-name", "/api/accounts") or route in local_server_routes:
+            if route in local_server_routes and not self._loopback_client():
+                self._send(403, json.dumps({"error": "local servers can be managed only on this Mac"}))
+                return
             if not self._csrf_ok():
                 self._send(403, json.dumps({"error": "cross-site request refused"}))
                 return
@@ -2299,6 +2318,8 @@ class Handler(BaseHTTPRequestHandler):
                 elif route == "/api/devices":
                     result = devices_action(body)
                     notify_refresh()
+                elif route == "/api/local-servers/stop":
+                    result = LocalServerInventory(DATA_DIR).stop(body.get("id"))
                 else:
                     result = save_claude_cleanup_days(body.get("cleanupPeriodDays"))
                 self._send(200, json.dumps(result))

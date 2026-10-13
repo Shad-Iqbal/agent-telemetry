@@ -1,9 +1,11 @@
 /* ==========================================================================
-   views.js — controls, the eight views, and the boot sequence.
+   views.js — controls, dashboard views, and the boot sequence.
    ========================================================================== */
 
 const VIEW_TITLES = {overview:"Overview", cost:"Cost", models:"Models", tools:"Tools & agents",
-  projects:"Projects", sessions:"Sessions", optimize:"Optimize", storage:"Storage"};
+  projects:"Projects", sessions:"Sessions", optimize:"Optimize", storage:"Storage", "local-servers":"Local servers"};
+let LOCAL_SERVERS={servers:[],updatedAt:""};
+let LOCAL_SERVER_SEARCH="";
 
 /* ---------------- measure (one switch for every view) ---------------- */
 function metricOf(kind){
@@ -1317,14 +1319,22 @@ function compactionDetails(s){
    update is the one action that contacts the network, and only on a click. */
 let UPD = null;              // last check result, or {busy|error}
 function versionLabel(v){
-  if(!v || !v.git) return "Unknown build";
+  if(!v) return "Unknown build";
+  if(!v.git){
+    if(!v.describe) return "Unknown build";
+    const packaged = /^(v[\d.]+)(?:-(\d+)-g([0-9a-f]+))?(-dirty)?$/.exec(v.describe);
+    return packaged
+      ? `${packaged[1]}${packaged[2]?` +${packaged[2]}`:""}${packaged[3]?` · ${packaged[3]}`:""}${packaged[4]?" · local changes":""}`
+      : v.describe;
+  }
   const m = /^(v[\d.]+)(?:-(\d+)-g[0-9a-f]+)?$/.exec(v.describe||"");
   return m ? `${m[1]}${m[2]?` +${m[2]}`:""} · ${v.commit}` : v.commit;
 }
 function renderVersion(){
   const el = document.getElementById("version"); if(!el) return;
   const v = RAW.version || {};
-  const title = v.git ? `${v.describe||v.commit} · ${v.branch} · committed ${v.date}` : "not a git checkout";
+  const title = v.git ? `${v.describe||v.commit} · ${v.branch} · committed ${v.date}`
+    : v.describe ? `Packaged build ${v.describe}` : "not a git checkout";
   let action = "";
   if(!v.git) action = "";
   else if(UPD && UPD.busy) action = `<span class="dim">${esc(UPD.busy)}</span>`;
@@ -2487,6 +2497,54 @@ function viewOptimize(d){
 
 /* ---------------- dispatch ---------------- */
 const VIEW_HTML={};
+function localServerTime(value){
+  if(!value) return "—";
+  const date=new Date(value);
+  return Number.isNaN(date.getTime()) ? "—" : date.toLocaleString([], {dateStyle:"medium",timeStyle:"short"});
+}
+function renderLocalServers(){
+  const root=document.getElementById("localServersRoot"); if(!root) return;
+  const all=LOCAL_SERVERS.servers||[];
+  const q=LOCAL_SERVER_SEARCH.trim().toLowerCase();
+  const matches=s=>!q || [s.process,s.project,s.cwd,s.port].some(v=>String(v||"").toLowerCase().includes(q));
+  const running=all.filter(s=>s.state==="running"&&matches(s));
+  const stopped=all.filter(s=>s.state!=="running"&&matches(s));
+  const projects=new Set(all.map(s=>s.project).filter(Boolean));
+  document.getElementById("localServerCount").textContent=all.filter(s=>s.state==="running").length||"";
+  const scanTime=localServerTime(LOCAL_SERVERS.updatedAt);
+  const row=(s,active)=>{
+    const process=s.process||"Unknown process";
+    const project=s.project||"";
+    const title=project||process;
+    const address=s.host&&s.host!=="*"?s.host+":"+s.port:"localhost:"+s.port;
+    const detail=project?`${address} · ${process}`:address;
+    return `<div class="ls-row">
+      <span class="ls-dot${active?"":" stopped"}" aria-hidden="true"></span>
+      <div class="ls-copy"><strong>${esc(title)} · PID ${Number(s.pid)||"?"}</strong>
+        <span>${esc(detail)}</span>
+        ${s.cwd?`<code title="${esc(s.cwd)}">${esc(s.cwd)}</code>`:""}
+      </div>
+      <div class="ls-actions">${active?`<a class="btn sm" href="http://localhost:${Number(s.port)}" target="_blank" rel="noopener">Open ↗</a>
+        <button class="btn sm danger" data-local-server-stop="${esc(s.id)}">Stop</button>`:`<span class="ls-scan-time">Stopped ${esc(localServerTime(s.stoppedAt))}</span>`}</div>
+    </div>`;
+  };
+  root.innerHTML=`<div class="eyebrow">LOCAL ACTIVITY</div>
+    <div class="ls-heading"><div><h2>Local servers</h2><p>See what is listening on this Mac and revisit servers you ran recently.</p></div>
+      <button class="btn" id="localServersRefresh"${LOCAL_SERVERS.loading?" disabled":""}>${LOCAL_SERVERS.loading?"Scanning…":"Scan again"}</button></div>
+    ${LOCAL_SERVERS.error?`<div class="ls-error" role="alert">${esc(LOCAL_SERVERS.error)}</div>`:""}
+    <div class="ls-stats">
+      <div class="ls-stat"><div><label>Running now</label><strong>${all.filter(s=>s.state==="running").length}</strong></div><span class="ls-stat-ic"><svg class="ic"><use href="#i-servers"/></svg></span></div>
+      <div class="ls-stat"><div><label>Stopped recently</label><strong>${all.filter(s=>s.state!=="running").length}</strong></div><span class="ls-stat-ic neutral"><svg class="ic"><use href="#i-sessions"/></svg></span></div>
+      <div class="ls-stat"><div><label>Projects seen</label><strong>${projects.size}</strong></div><span class="ls-stat-ic neutral"><svg class="ic"><use href="#i-projects"/></svg></span></div>
+    </div>
+    <div class="card ls-card"><div class="card-h"><div><h3>Listening now</h3><p class="card-sub">TCP ports owned by your user account</p></div><span class="ls-scan-time">Scanned ${esc(scanTime)}</span></div>
+      <label class="search"><svg class="ic sm"><use href="#i-search"/></svg><input type="search" id="localServerSearch" value="${esc(LOCAL_SERVER_SEARCH)}" placeholder="Search process, project, or port…" aria-label="Search local servers"></label>
+      <div class="ls-list">${running.map(s=>row(s,true)).join("")||`<div class="ls-empty">${q?"No running servers match this search.":LOCAL_SERVERS.loading?"Scanning local ports…":"No local servers are listening right now."}</div>`}</div>
+    </div>
+    <div class="card ls-card"><div class="card-h"><div><h3>Stopped recently</h3><p class="card-sub">Servers seen in the last 30 days</p></div></div>
+      <div class="ls-list">${stopped.map(s=>row(s,false)).join("")||`<div class="ls-empty">${q?"No stopped servers match this search.":"Stopped servers will appear here after they have been discovered."}</div>`}</div>
+    </div>`;
+}
 function renderAll(){
   if(!RAW) return;
   // model colour ranking: siblings of a provider separate by lightness
@@ -2502,6 +2560,12 @@ function renderAll(){
   document.querySelectorAll("#tabs button").forEach(b=>b.classList.toggle("on", b.dataset.v===S.view));
   document.getElementById("pageTitle").textContent = VIEW_TITLES[S.view] || "Overview";
   document.title = (S.view==="overview" ? "" : (VIEW_TITLES[S.view]||"") + " · ") + "AgentTelemetry";
+  const localServerView=S.view==="local-servers";
+  document.getElementById("filters").style.display=localServerView?"none":"";
+  if(S.view==="local-servers"){
+    renderLocalServers();
+    return;
+  }
   const d = slice();
   const host = document.getElementById("v-"+S.view);
   if(!VIEW_HTML[S.view]) VIEW_HTML[S.view] = host.innerHTML;
@@ -2536,6 +2600,7 @@ function setView(v){
   S.view = v;
   if(location.hash.slice(1) !== v) history.replaceState(null, "", "#"+v);
   if(v==="storage" && !STORAGE) loadStorage();
+  if(v==="local-servers") loadLocalServers(true);
   renderAll();
   scrollTo({top:0});
 }
@@ -2586,10 +2651,58 @@ async function loadStorage(){
   try{ const r=await fetch("/api/storage"); STORAGE=await r.json();
     if(S.view==="storage") renderAll(); }catch(e){ console.error(e); }
 }
+let localServerLoadSequence=0;
+async function loadLocalServers(render=true){
+  const sequence=++localServerLoadSequence;
+  LOCAL_SERVERS={...LOCAL_SERVERS,loading:true,error:""};
+  if(render&&S.view==="local-servers") renderLocalServers();
+  try{
+    const response=await fetch("/api/local-servers",{cache:"no-store"});
+    const payload=await response.json();
+    if(sequence!==localServerLoadSequence) return;
+    if(!response.ok) throw new Error(payload.error||"Could not scan local servers.");
+    LOCAL_SERVERS={...payload,loading:false,error:""};
+  }catch(error){
+    if(sequence!==localServerLoadSequence) return;
+    LOCAL_SERVERS={...LOCAL_SERVERS,loading:false,error:error.message||"Could not scan local servers."};
+  }
+  document.getElementById("localServerCount").textContent=(LOCAL_SERVERS.servers||[]).filter(s=>s.state==="running").length||"";
+  if(render&&S.view==="local-servers") renderLocalServers();
+}
 
 /* ---------------- events ---------------- */
 document.getElementById("tabs").addEventListener("click",e=>{
   const b=e.target.closest("button[data-v]"); if(b) setView(b.dataset.v);
+});
+document.addEventListener("click",async e=>{
+  if(e.target.closest("#localServersRefresh")){
+    await loadLocalServers(true);
+    return;
+  }
+  const stop=e.target.closest("[data-local-server-stop]");
+  if(!stop) return;
+  const server=(LOCAL_SERVERS.servers||[]).find(s=>s.id===stop.dataset.localServerStop);
+  if(!server || server.state!=="running") return;
+  const name=`${server.process||"server"} (PID ${server.pid})`;
+  if(!confirm(`Stop ${name}? AgentTelemetry will send SIGTERM to the process. This can stop every port it owns.`)) return;
+  stop.disabled=true;
+  try{
+    const response=await fetch("/api/local-servers/stop",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id:server.id})});
+    const payload=await response.json();
+    if(!response.ok) throw new Error(payload.error||"Could not stop that server.");
+    await loadLocalServers(true);
+  }catch(error){
+    alert(error.message||"Could not stop that server.");
+    stop.disabled=false;
+  }
+});
+document.addEventListener("input",e=>{
+  if(e.target.id!=="localServerSearch") return;
+  LOCAL_SERVER_SEARCH=e.target.value;
+  renderLocalServers();
+  const input=document.getElementById("localServerSearch");
+  input?.focus();
+  input?.setSelectionRange(LOCAL_SERVER_SEARCH.length,LOCAL_SERVER_SEARCH.length);
 });
 document.querySelector(".brand").addEventListener("click",e=>{ e.preventDefault(); setView("overview"); });
 addEventListener("hashchange",()=>{ const v=location.hash.slice(1); if(v!==S.view && VIEW_TITLES[v]) setView(v); });
@@ -2726,7 +2839,7 @@ const QP=new URLSearchParams(location.search);
   applyTheme(QP.get("theme")||saved); }
 filtersFromURL(); syncSearchBoxes();
 if(location.hash && VIEW_TITLES[location.hash.slice(1)]) S.view=location.hash.slice(1);
-load().then(()=>{ if(S.view==="storage") loadStorage(); });
+load().then(()=>{ if(S.view==="storage") loadStorage(); loadLocalServers(S.view==="local-servers"); });
 setTimeout(loadStorage, 1200);
 /* The tiny shared clock is sampled each second. Full figures load only on a
    changed tick; Manual still listens for another client's explicit refresh. */
@@ -2737,6 +2850,7 @@ function applyPollInterval(){
   if(NATIVE_APP_MODE && document.visibilityState==="hidden") return;
   pollTimers.push(setInterval(pollRefreshSync,1000));
   pollTimers.push(setInterval(()=>{ if(S.live&&pollMs()) loadStorage(); },120000));
+  pollTimers.push(setInterval(()=>loadLocalServers(S.view==="local-servers"),30000));
   pollRefreshSync();
 }
 applyPollInterval();

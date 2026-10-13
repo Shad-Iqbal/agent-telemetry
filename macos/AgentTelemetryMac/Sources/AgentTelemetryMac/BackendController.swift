@@ -323,7 +323,8 @@ final class BackendController: ObservableObject {
         child.environment = ProcessInfo.processInfo.environment.merging([
             "PYTHONUNBUFFERED": "1",
             "PYTHONDONTWRITEBYTECODE": "1",
-            "AGENT_TELEMETRY_VERSION": Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "development"
+            "AGENT_TELEMETRY_VERSION": Bundle.main.infoDictionary?["AgentTelemetryBuildVersion"] as? String
+                ?? Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "development"
         ]) { _, new in new }
 
         let output = Pipe()

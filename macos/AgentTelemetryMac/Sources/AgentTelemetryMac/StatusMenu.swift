@@ -9,11 +9,19 @@ private final class DisclosureState: ObservableObject {
 struct StatusMenu: View {
     @ObservedObject var backend: BackendController
     @ObservedObject var settings: AppSettings
+    @ObservedObject var localServers: LocalServerMonitor
     let openDashboard: () -> Void
+    let openLocalServers: () -> Void
     let quit: () -> Void
     let onDisclosureChange: (Bool) -> Void
 
     @StateObject private var disclosure = DisclosureState()
+    @State private var recentServersExpanded = false
+    @State private var pendingStop: LocalServer?
+    @State private var showStopConfirmation = false
+    @State private var stopError: String?
+    @State private var showStopError = false
+    @State private var stoppingServerID: String?
     private var detailsExpanded: Bool {
         get { disclosure.expanded }
         nonmutating set { disclosure.expanded = newValue }
@@ -50,6 +58,8 @@ struct StatusMenu: View {
                             .buttonStyle(.bordered)
                     }
 
+                    localServersSection
+
                     Button {
                         detailsExpanded.toggle()
                         onDisclosureChange(detailsExpanded)
@@ -78,7 +88,7 @@ struct StatusMenu: View {
                 .padding(.top, 12)
             }
             .frame(
-                height: detailsExpanded ? 220 : (backend.status.message == nil ? 44 : 112),
+                height: detailsExpanded ? 400 : 226,
                 alignment: .top
             )
             .scrollIndicators(.automatic)
@@ -117,6 +127,147 @@ struct StatusMenu: View {
         .onChange(of: settings.refreshIntervalSeconds) { _ in
             backend.refreshIntervalDidChange()
         }
+        .confirmationDialog(
+            "Stop \(pendingStop?.process ?? "server")?",
+            isPresented: $showStopConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Stop server", role: .destructive) {
+                guard let server = pendingStop else { return }
+                stoppingServerID = server.id
+                Task {
+                    defer { stoppingServerID = nil; pendingStop = nil }
+                    do {
+                        try await localServers.stop(server)
+                    } catch {
+                        stopError = error.localizedDescription
+                        showStopError = true
+                    }
+                }
+            }
+            Button("Cancel", role: .cancel) { pendingStop = nil }
+        } message: {
+            if let server = pendingStop {
+                Text("AgentTelemetry will send a graceful termination signal to \(server.process) (PID \(server.pid)). This may stop every port owned by that process.")
+            }
+        }
+        .alert("Couldn’t stop server", isPresented: $showStopError) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text(stopError ?? "Please refresh and try again.")
+        }
+    }
+
+    private var localServersSection: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 6) {
+                Text("Local servers")
+                    .font(.system(size: 10, weight: .semibold))
+                Spacer(minLength: 4)
+                Text("\(localServers.runningServers.count) running")
+                    .font(.system(size: 9, weight: .medium).monospacedDigit())
+                    .foregroundStyle(.secondary)
+                Button {
+                    Task { await localServers.refresh() }
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 9, weight: .medium))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .help("Scan local servers")
+                .accessibilityLabel("Scan local servers")
+            }
+
+            if localServers.runningServers.isEmpty {
+                Text(localServers.isRefreshing ? "Scanning local ports…" : (localServers.errorMessage ?? "No local servers are running."))
+                    .font(.system(size: 9))
+                    .foregroundStyle(localServers.errorMessage == nil ? Color.secondary : Color.orange)
+                    .padding(.vertical, 3)
+            } else {
+                ForEach(localServers.runningServers.prefix(3)) { server in
+                    HStack(spacing: 8) {
+                        Circle()
+                            .fill(Color.green)
+                            .frame(width: 6, height: 6)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(server.location)
+                                .font(.system(size: 10, weight: .semibold))
+                                .lineLimit(1)
+                            Text(server.displayDetails)
+                                .font(.system(size: 9))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                        Spacer(minLength: 2)
+                        if stoppingServerID == server.id {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Button("Stop") {
+                                pendingStop = server
+                                showStopConfirmation = true
+                            }
+                            .font(.system(size: 9, weight: .medium))
+                            .buttonStyle(.plain)
+                            .foregroundStyle(.secondary)
+                            .disabled(!server.isRunning)
+                        }
+                    }
+                    .padding(.vertical, 3)
+                }
+            }
+
+            if !localServers.recentlyStopped.isEmpty {
+                Button {
+                    recentServersExpanded.toggle()
+                } label: {
+                    HStack {
+                        Text("\(localServers.recentlyStopped.count) stopped recently")
+                        Spacer()
+                        Image(systemName: recentServersExpanded ? "chevron.down" : "chevron.right")
+                    }
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                if recentServersExpanded {
+                    ForEach(localServers.recentlyStopped.prefix(2)) { server in
+                        HStack {
+                            Text("\(server.location) · \(server.displayDetails)")
+                                .lineLimit(1)
+                            Spacer(minLength: 4)
+                            Text(server.stoppedAt.map(shortTime) ?? "Stopped")
+                                .lineLimit(1)
+                        }
+                        .font(.system(size: 9))
+                        .foregroundStyle(.secondary)
+                    }
+                }
+            }
+
+            Button(action: openLocalServers) {
+                HStack {
+                    Text("Manage all servers")
+                    Image(systemName: "arrow.up.right")
+                }
+                .font(.system(size: 9, weight: .semibold))
+                .frame(maxWidth: .infinity, alignment: .center)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(Color.accentColor)
+            .padding(.top, 1)
+        }
+        .padding(10)
+        .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 9))
+        .overlay(RoundedRectangle(cornerRadius: 9).stroke(Color.primary.opacity(0.07)))
+    }
+
+    private func shortTime(_ stamp: String) -> String {
+        let formatter = ISO8601DateFormatter()
+        guard let date = formatter.date(from: stamp) else { return "Stopped" }
+        return date.formatted(date: .omitted, time: .shortened)
     }
 
     private var header: some View {
