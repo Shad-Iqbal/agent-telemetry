@@ -361,6 +361,26 @@ function renderMonthlyRhythmCard(){
   renderMonthlyRhythm(rows,row=>{ S.preset="custom"; S.from=row.from; S.to=row.to; renderAll(); });
 }
 
+function overviewSpendSummary(t, days, recs){
+  return {
+    label:"Est. spend",
+    value:fmtUSD(t.cost),
+    title:"API list-price estimate; cache reads are included at the cached-input rate.",
+    spark:sparkline(dailySeries(recs,days,r=>r.cost||0),cssv("--text-3"),260,64).replace("<svg ",'<svg preserveAspectRatio="none" '),
+  };
+}
+
+function overviewCacheDetail(t){
+  const tokens=Math.max(0,t.tok-t.cr);
+  const value=tokens>=1e9?(tokens/1e9).toFixed(2).replace(/\.?0+$/,"")+"B"
+    :tokens>=1e6?Math.round(tokens/1e6)+"M":fmtTok(tokens);
+  return {
+    label:"Excluded Cache",
+    value,
+    title:"Token total excluding cache reads. Cache reads remain included in estimated spend at their discounted rate.",
+  };
+}
+
 let ACCOUNTS=null, accountSequence=0, accountBusy=false, accountFetchError="";
 function sessionAccountDetails(s){
   if(s.source!=="codex" && s.source!=="claude") return "";
@@ -497,20 +517,24 @@ function viewOverview(d){
   const bySrc = {}; for(const r of d.recs) bySrc[r.source] = (bySrc[r.source]||0) + val(r);
   const top = topSources(bySrc, 1)[0];
   const activeDays = t.days.size;
+  const facts = [
+    {l:"Daily average", v: fmt(activeDays ? cur/activeDays : 0), title:"per active day"},
+    {l:"Active days", v: `${fmtNum(activeDays)} <span class="dim" style="font-size:12px;font-weight:500">of ${fmtNum(days.length)}</span>`},
+    {l:"Previous period", v: pd ? fmt(prev) : "—"},
+    {l:"Top tool", v: top ? `${toolLabel(top)} <span class="dim" style="font-size:12px;font-weight:500">${fmtPct(bySrc[top]/(cur||1))}</span>` : "—"},
+  ];
+  const tokenMetric=S.metric==="tokens";
 
   // hero — the one number this view leads with, in the measure the user picked
   const big = S.metric==="cost" ? fmtUSD2(cur) : fmtOf()(cur);
   document.getElementById("ovHero").innerHTML = heroHTML({
     label: metricTitle() + (S.metric==="cost" ? " at API list prices" : ""),
     value: big,
+    secondary:tokenMetric?overviewCacheDetail(t):null,
     delta: pd ? deltaHTML(cur, prev, S.metric==="cost") : "",
     note: pd ? `vs the ${prevLabel()}` : "",
-    facts: [
-      {l:"Daily average", v: fmt(activeDays ? cur/activeDays : 0), title:"per active day"},
-      {l:"Active days", v: `${fmtNum(activeDays)} <span class="dim" style="font-size:12px;font-weight:500">of ${fmtNum(days.length)}</span>`},
-      {l:"Previous period", v: pd ? fmt(prev) : "—"},
-      {l:"Top tool", v: top ? `${toolLabel(top)} <span class="dim" style="font-size:12px;font-weight:500">${fmtPct(bySrc[top]/(cur||1))}</span>` : "—"},
-    ],
+    feature:tokenMetric?overviewSpendSummary(t,days,d.recs):null,
+    facts,
   });
 
   // per-day, stacked by tool
@@ -532,7 +556,6 @@ function viewOverview(d){
   const tile = (l, curV, prevV, f, fmtV, invert, s) => ({l, v: fmtV(curV),
     d: pd ? deltaHTML(curV, prevV, invert) : "", s, spark: ser(f)});
   const tiles = [];
-  if(S.metric!=="cost") tiles.push(tile("Est. spend", t.cost, pt&&pt.cost, r=>r.cost||0, fmtUSD, true));
   if(S.metric!=="tokens") tiles.push(tile("Tokens", t.tok, pt&&pt.tok, recTokens, fmtTok));
   if(S.metric!=="time"){ const a = d.recs.reduce((x,r)=>x+(r.active||0),0), pa = pd ? pd.recs.reduce((x,r)=>x+(r.active||0),0) : null;
     tiles.push(tile("Active time", a, pa, r=>r.active||0, fmtDur, false)); }

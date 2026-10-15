@@ -2,7 +2,8 @@
 const fs=require('fs'), path=require('path'), vm=require('vm'), assert=require('assert');
 const root=path.resolve(__dirname,'..');
 const document={addEventListener(){},getElementById(){return null},querySelector(){return null}};
-const context=vm.createContext({document,console,URLSearchParams,Set,Date,location:{search:'',hash:''}});
+const context=vm.createContext({document,console,URLSearchParams,Set,Date,location:{search:'',hash:''},
+  getComputedStyle:()=>({getPropertyValue:()=>"#000"})});
 vm.runInContext(fs.readFileSync(path.join(root,'static/core.js'),'utf8'),context);
 vm.runInContext(fs.readFileSync(path.join(root,'static/charts.js'),'utf8'),context);
 const views=fs.readFileSync(path.join(root,'static/views.js'),'utf8');
@@ -22,6 +23,29 @@ assert.match(run(`sessionAccountDetails({source:'codex',account_metadata:{creato
 assert.match(run(`sessionAccountDetails({source:'claude'})`),/Not recorded/);
 assert.doesNotMatch(run(`sessionAccountDetails({source:'claude',account_metadata:{recorded_account_ids:['<img src=x onerror=alert(1)>']}})`),/<img src=x/);
 assert.doesNotMatch(run(`accountEntryHTML({source:'codex',profile:'<img src=x onerror=alert(1)>',identity:{auth:'apiKey',email:'<img src=x>',plan:null},snapshots:[]})`),/<img src=x/);
+{
+  const spend=run(`overviewSpendSummary({cost:209.49},['2026-10-14','2026-10-15'],
+    [{date:'2026-10-14',cost:100},{date:'2026-10-15',cost:109.49}])`);
+  assert.equal(spend.label,'Est. spend');
+  assert.equal(spend.value,'$209','Overview spend must use complete priced record costs with the design’s whole-dollar formatting');
+  assert.match(spend.title,/cache reads are included/);
+  assert.match(spend.spark,/<svg/,'The spend row should retain its wide trend sparkline');
+  const cache=run(`overviewCacheDetail({tok:1190000000,cr:1137000000})`);
+  assert.equal(cache.label,'Excluded Cache');
+  assert.equal(cache.value,'53M','Excluded-cache tokens must be total tokens minus cached reads, rounded to whole millions');
+  assert.equal(run(`overviewCacheDetail({tok:1190000000,cr:52700000}).value`),'1.14B');
+  assert.match(cache.title,/remain included in estimated spend/);
+  assert.equal(run(`overviewCacheDetail({tok:100,cr:120}).value`),'0','Malformed overcount must not produce negative excluded tokens');
+  const hero=run(`heroHTML({label:'Tokens',value:'1.19B',
+    secondary:{label:'Excluded Cache',value:'53M',title:'Cache reads'},
+    feature:{label:'Est. spend',value:'$209',title:'API estimate',spark:'<svg></svg>'},
+    facts:[{l:'Daily average',v:'27.6M'}]})`);
+  assert.ok(hero.indexOf('hero-secondary')<hero.indexOf('hero-delta'));
+  assert.ok(hero.indexOf('hero-feature')<hero.indexOf('hero-facts'));
+  assert.match(hero,/Excluded Cache/);
+  assert.match(hero,/hero-feature-spark/);
+  assert.doesNotMatch(views,/tiles\.push\(tile\("Est\. spend"/,'Estimated spend should no longer render as a lower KPI tile');
+}
 const shell=fs.readFileSync(path.join(root,'index.html'),'utf8');
 const overviewShell=shell.slice(shell.indexOf('id="v-overview"'),shell.indexOf('id="v-cost"'));
 const costShell=shell.slice(shell.indexOf('id="v-cost"'),shell.indexOf('id="v-models"'));

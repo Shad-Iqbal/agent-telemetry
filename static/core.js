@@ -379,7 +379,7 @@ function deltaHTML(cur, prev, invert){
   const d=(cur-prev)/Math.abs(prev);
   if(Math.abs(d)<0.005) return `<span class="delta flat">no change</span>`;
   const up=d>0, good = invert ? !up : up;
-  const pct = Math.abs(d)>=10 ? Math.round(Math.abs(d))+"×" : Math.abs(d*100).toFixed(0)+"%";
+  const pct = Math.abs(d)>=1000 ? Math.round(Math.abs(d)/1000)+"k×" : Math.abs(d)>=10 ? Math.round(Math.abs(d))+"×" : Math.abs(d*100).toFixed(0)+"%";
   return `<span class="delta ${good?"up":"down"}">${up?"▲":"▼"} ${pct}</span>`;
 }
 
