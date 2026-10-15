@@ -73,6 +73,13 @@ cp "$AT_REPO_ROOT/dashboard.py" "$AT_REPO_ROOT/parser.py" "$AT_REPO_ROOT/native.
    "$AT_REPO_ROOT/index.html" "$AT_REPO_ROOT/chart.umd.min.js" \
    "$AT_REPO_ROOT/manifest.json" "$AT_REPO_ROOT/sw.js" \
    "$AT_REPO_ROOT/LICENSE" "$AT_BACKEND_DIR/"
+# Older immutable release tags predate the title-editing module.
+if [[ -f "$AT_REPO_ROOT/session_names.py" ]]; then
+  cp "$AT_REPO_ROOT/session_names.py" "$AT_BACKEND_DIR/"
+fi
+if [[ -f "$AT_REPO_ROOT/accounts.py" ]]; then
+  cp "$AT_REPO_ROOT/accounts.py" "$AT_BACKEND_DIR/"
+fi
 ditto "$AT_REPO_ROOT/static" "$AT_BACKEND_DIR/static"
 
 if [[ -n "${AGENT_TELEMETRY_PYTHON_ARCHIVE:-}" ]]; then

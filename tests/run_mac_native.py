@@ -33,6 +33,10 @@ class Handler(BaseHTTPRequestHandler):
                 if self.path == "/api/health" else {"seconds": state["seconds"], "revision": str(state["revision"])}
                 if self.path == "/api/sync" else {"date": "2026-10-10", "tokens": state["tokens"], "spend": 1.25}).encode()
         else:
+            # Keep navigation slower than the old 700 ms baseline delay, so the
+            # regression exercises waiting for completion rather than timing luck.
+            if "range=today" in self.path:
+                time.sleep(1)
             self.send_response(200)
             body = b"<!doctype html><html><head><title>Fixture</title></head><body>Fixture</body></html>"
         self.send_header("Content-Length", str(len(body)))

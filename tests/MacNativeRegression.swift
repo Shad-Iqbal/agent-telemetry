@@ -107,8 +107,15 @@ struct MacNativeRegression {
             return view.subviews.compactMap(findWebView).first
         }
         let web = findWebView(host)!
-        web.load(URLRequest(url: URL(string: base.absoluteString + "/?nativeApp=1&nativePollSeconds=60&range=today&models=Fixture&devices=Fixture#cost")!))
-        try await Task.sleep(nanoseconds: 700_000_000)
+        let filteredURL = URL(string: base.absoluteString + "/?nativeApp=1&nativePollSeconds=60&range=today&models=Fixture&devices=Fixture#cost")!
+        web.load(URLRequest(url: filteredURL))
+        // A slow CI WebKit process may still be navigating after 700 ms. Take
+        // the baseline only after the requested page and its saved URL settle.
+        let navigationDeadline = Date().addingTimeInterval(5)
+        while web.isLoading || web.url != filteredURL || latestURL != filteredURL {
+            precondition(Date() < navigationDeadline, "Fixture WebView navigation did not finish")
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
         let previousURL = web.url
         host.rootView = DashboardWebView(url: base, onNavigate: { latestURL = $0 })
         host.layoutSubtreeIfNeeded()

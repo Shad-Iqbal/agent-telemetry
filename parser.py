@@ -13,6 +13,7 @@ Mac/Linux install of the same tools.
 No third-party dependencies — stdlib only.
 """
 import os, sys, json, glob, re, time, shutil, subprocess, copy
+import accounts as A
 from datetime import datetime, timezone
 
 HOME = os.path.expanduser("~")
@@ -205,7 +206,10 @@ PRICING = {
     "Claude Sonnet 4": (3, 15, 3.75, 6, 0.30),
     "Claude Sonnet 3.7": (3, 15, 3.75, 6, 0.30),
     "Claude Sonnet 3.5": (3, 15, 3.75, 6, 0.30),
-    # Anthropic Haiku — $1/$5
+    # Haiku 5.5, effective October 7, verified against the Claude pricing page
+    # on 2026-10-12. This tuple is for requests with <=100K total prompt tokens.
+    "Claude Haiku 5.5": (0.10, 0.50, 0.125, 0.20, 0.01),
+    # Earlier Anthropic Haiku
     "Claude Haiku 4.5": (1, 5, 1.25, 2, 0.10),
     "Claude Haiku 3.5": (0.80, 4, 1.0, 1.6, 0.08),
     # OpenAI GPT-5.6 series (Sol/Terra/Luna) — CURRENT rates, verified against
@@ -320,18 +324,22 @@ FAST_PRICING = {
 }
 US_MULTIPLIER = 1.1          # inference_geo "us", every token category
 WEB_SEARCH_USD = 10 / 1000   # Anthropic web search: $10 per 1,000 searches
+LONG_CONTEXT_PRICING = {"Claude Haiku 5.5": (0.50, 2.50, 0.625, 1.0, 0.05)}
+_LONG_FIELDS = ("in", "out", "cc5", "cc1", "cr")
 
 
-def price_of(display, date=None):
+def price_of(display, date=None, long_context=False):
     """(in, out, cw5, cw1, cr) for a model as of `date` ("YYYY-MM-DD"), else today.
     Unknown models price at zero."""
     if display.endswith(US_SUFFIX):
         return tuple(round(x * US_MULTIPLIER, 6)
-                     for x in price_of(display[:-len(US_SUFFIX)], date))
+                     for x in price_of(display[:-len(US_SUFFIX)], date, long_context))
     if display.endswith(FAST_SUFFIX):
         # a model with no published fast rate prices at zero rather than at a guess
         return FAST_PRICING.get(display[:-len(FAST_SUFFIX)], (0, 0, 0, 0, 0))
     display = _canonicalize(display)
+    if long_context and display in LONG_CONTEXT_PRICING:
+        return LONG_CONTEXT_PRICING[display]
     if date:
         for until, p in PRICE_HISTORY.get(display, ()):
             if date <= until:
@@ -534,7 +542,11 @@ def _blank_agg(source, path):
     if source in ("claude", "claude-desktop", "codex"):
         # Present and empty means observed zero; absent on an older archive means
         # unknown. Keep event metadata separate from all billed usage counters.
+        if source in ("claude", "codex"):
+            agg["account_metadata_version"] = A.METADATA_VERSION
         agg["compactions"] = {}
+    if source == "codex":
+        _codex_timing_state(agg)  # empty logs need no repeated timing backfill
     return agg
 
 
@@ -928,13 +940,19 @@ def _turn_rows(tr):
     out = {}
     for m, t in tok.items():
         row = {k: t[j] for j, k in enumerate(_ACT_FIELDS)}
+        if len(t) > 7:
+            _bump_long(row, t[7:12])
         row.update(turns=0, edits=0, oneshot=0, retries=0)
         if m == dom and not tr.get("imp"):
             row.update(turns=1, edits=int(edits), oneshot=int(edits and not rt), retries=rt)
         if edits:                # every editing turn, so a retried one can be compared to the rest
             row.update({"e" + k: t[j] for j, k in enumerate(_ACT_FIELDS)})
+            if len(t) > 7:
+                _bump_long(row, t[7:12], "e")
         if edits and rt:         # the whole turn's cost is the price of not landing it
             row.update({"r" + k: t[j] for j, k in enumerate(_ACT_FIELDS)})
+            if len(t) > 7:
+                _bump_long(row, t[7:12], "r")
         out[f"{tr['d']}\t{m}\t{cat}"] = row
     return out
 
@@ -949,7 +967,15 @@ def _add_rows(dst, rows):
 def _turn_close(agg):
     tr = agg["state"].pop("turn", None)
     if tr:
-        _add_rows(agg.setdefault("activity", {}), _turn_rows(tr))
+        rows = _turn_rows(tr)
+        _add_rows(agg.setdefault("activity", {}), rows)
+        for h in agg["state"].get("haiku_context", {}).values():
+            values = h["turns"].pop("", None)
+            if values is not None:
+                key = next((k for k in rows if k.split("\t")[1] == h["model"]), None)
+                if key:
+                    dst = h["turns"].setdefault(key, [0] * 5)
+                    for i, v in enumerate(values): dst[i] += v
 
 
 def activity_of(agg):
@@ -1066,7 +1092,68 @@ def _claude_compaction(agg, obj, dt):
                        "duration_ms": count("durationMs")}
 
 
+def _long_values(row, prefix=""):
+    return tuple(row.get(prefix + "lc_" + f, 0) for f in _LONG_FIELDS)
+
+
+def _bump_long(row, values, prefix=""):
+    # Pricing subsets only: never add these to tokens, messages or model calls.
+    for f, v in zip(_LONG_FIELDS + ("asst",), values):
+        key = prefix + "lc_" + f
+        row[key] = row.get(key, 0) + v
+
+
+def _haiku_price_usage(agg, rk, model, date, full, delta, first, skill):
+    """Remember a request's pricing tier separately from the existing usage deltas."""
+    st = agg["state"]
+    memo = st.setdefault("haiku_context", {})
+    h = memo.setdefault(rk, {"model": model, "long": False, "days": {}, "turns": {}, "skills": {}}) if rk else {
+        "model": model, "long": False, "days": {}, "turns": {}, "skills": {}}
+    values = [delta[0], delta[1], delta[4], delta[5], delta[2], int(first)]
+    _bump_long(_rec(agg, date, model), [0] * 6)
+    day = h["days"].setdefault(date, [0] * 6)
+    for i, v in enumerate(values): day[i] += v
+    tr = st.get("turn")
+    if tr:
+        turn = h["turns"].setdefault("", [0] * 5)
+        for i, v in enumerate(values[:5]): turn[i] += v
+    if skill:
+        sk = date + "\t" + skill
+        usage = agg["skills"][sk].setdefault("haiku_usage", {}).setdefault(model, {})
+        for f, v in zip(_LONG_FIELDS, values): usage[f] = usage.get(f, 0) + v
+        part = h["skills"].setdefault(sk, [0] * 6)
+        for i, v in enumerate(values): part[i] += v
+    # resp holds per-component maxima, including streamed corrections. Input
+    # includes cache reads/writes; output and reasoning do not set the tier.
+    current = st["resp"][rk] if rk else full
+    long = current[0] + current[2] + max(current[3], current[4] + current[5]) > 100_000
+    upgrade = long and not h["long"]
+    if upgrade:
+        # If input metadata grows across blocks, reprice earlier contributions
+        # on their original dates/turns/skills without changing any usage counts.
+        for d, part in h["days"].items(): _bump_long(_rec(agg, d, model), part)
+        for key, part in h["turns"].items():
+            if key:
+                row = agg["activity"][key]
+                _bump_long(row, part)
+                if "ein" in row: _bump_long(row, part, "e")
+                if "rin" in row: _bump_long(row, part, "r")
+        for sk, part in h["skills"].items():
+            _bump_long(agg["skills"][sk]["haiku_usage"][model], part)
+    elif h["long"]:
+        _bump_long(_rec(agg, date, model), values)
+        if skill: _bump_long(usage, values)
+    if tr and (upgrade or h["long"]):
+        part = h["turns"][""] if upgrade else values[:5]
+        tokens = tr["tok"][model]
+        tokens.extend([0] * max(0, 12 - len(tokens)))
+        for i, v in enumerate(part): tokens[7 + i] += v
+    h["long"] = h["long"] or long
+    agg["haiku_pricing"] = 1
+
+
 def parse_claude(agg, lines):
+    agg["account_metadata_version"] = A.METADATA_VERSION
     project = agg["project"]
     st = agg["state"]
     # Every record already counted in this file, as the first 12 hex chars of its
@@ -1096,6 +1183,7 @@ def parse_claude(agg, lines):
             seen.add(uk)
             fresh_uuids.append(uk)
         t = o.get("type")
+        A.observe_claude(agg, o)
         cwd = o.get("cwd")
         if cwd:
             project = _leaf(cwd) or cwd
@@ -1129,6 +1217,7 @@ def parse_claude(agg, lines):
         # inflating "assistant msgs" (119 of them) and adding a "(synthetic)" row.
         if t == "assistant" and msg and msg.get("model") != "<synthetic>":
             model = normalize_claude(msg.get("model"))
+            haiku = model == "Claude Haiku 5.5"
             u = msg.get("usage") or {}
             # Two request options change the price of every token, so they become
             # their own priced model rows (see price_of): fast mode has its own
@@ -1170,8 +1259,11 @@ def parse_claude(agg, lines):
                 prev = list(prev) + [0] * (len(full) - len(prev))
             if rk:
                 resp[rk] = full if first else [max(a, b) for a, b in zip(full, prev)]
+                st["resp"] = resp
                 while len(resp) > 8:
-                    resp.pop(next(iter(resp)))
+                    old_key = next(iter(resp))
+                    resp.pop(old_key)
+                    st.get("haiku_context", {}).pop(old_key, None)
             if not first:
                 inp, out, cr, cc, cc5, cc1, reason, ws = (max(0, a - b) for a, b in zip(full, prev))
             if dt:
@@ -1245,6 +1337,9 @@ def parse_claude(agg, lines):
                 T["asst"] += int(first)
                 if side:                      # spawned subagent, not the main loop
                     T["side"] += inp + out + cr + cc
+                if haiku:
+                    _haiku_price_usage(agg, rk, model, date0, full,
+                        [inp, out, cr, cc, cc5, cc1], first, sk)
         elif t == "user" and msg:
             # Only count what the user actually typed. type:"user" is also how
             # Claude Code logs tool_result echoes and much of its own traffic:
@@ -1451,6 +1546,139 @@ def _codex_turn_tool(agg, nm, pl):
             cmd = c if isinstance(c, str) else None
     _turn_tool(agg, nm, cmd=cmd)
 
+_CODEX_COMPACTION_TIMING_VERSION = 2
+
+
+def _codex_timing_state(agg):
+    return agg["state"].setdefault("compaction_timing", {
+        "version": _CODEX_COMPACTION_TIMING_VERSION,
+        "requests": {}, "checkpoints": {}, "completions": {}})
+
+
+def _codex_timing_id(value):
+    return value if isinstance(value, str) and 0 < len(value) <= 200 else None
+
+
+def _codex_timing_put(bucket, key, value):
+    previous = bucket.get(key)
+    # Conflicting identities/timestamps are ambiguous, never last-write-wins.
+    if previous is not None and previous != value:
+        bucket[key] = {"ambiguous": True}
+    else:
+        bucket[key] = value
+    while len(bucket) > 32:
+        del bucket[next(iter(bucket))]
+
+
+def _codex_timing_request(agg, payload):
+    rid, tid, thread = (_codex_timing_id(payload.get(k)) for k in ("response_id", "turn_id", "thread_id"))
+    if not all((rid, tid, thread)) or (agg.get("_session_id") and thread != agg["_session_id"]):
+        return
+    state = _codex_timing_state(agg)
+    _codex_timing_put(state["requests"], rid, {"turn_id": tid, "thread_id": thread})
+    invalid = state["requests"][rid].get("ambiguous")
+    for meta in state["checkpoints"].values():
+        if meta.get("response_id") == rid and (invalid or
+                (meta.get("turn_id"), meta.get("thread_id")) != (tid, thread)):
+            meta["ambiguous"] = True
+            invalid = True
+    if invalid:
+        event = agg.get("compactions", {}).get("response:" + rid)
+        if event: event["duration_ms"] = None
+        _codex_apply_timings(agg)
+
+
+def _codex_timing_checkpoint(agg, payload, key, new):
+    rid = _codex_timing_id(payload.get("compaction_response_id"))
+    state = _codex_timing_state(agg)
+    if not new and key not in state["checkpoints"]:
+        # An old checkpoint's identity/ambiguity may have left the bounded maps.
+        # Keep its previous result; replaying only one candidate cannot rebind it.
+        _codex_apply_timings(agg)
+        return
+    request = state["requests"].get(rid)
+    if not request or request.get("ambiguous"):
+        _codex_apply_timings(agg)
+        return  # No explicit top-level request -> turn -> thread identity chain.
+    _codex_timing_put(state["checkpoints"], key, {
+        **request, "response_id": rid,
+        "timestamp_ms": round(_from_iso(agg["compactions"][key]["timestamp"]).timestamp() * 1000)})
+    _codex_apply_timings(agg)
+
+
+def _codex_timing_completion(agg, payload):
+    item = payload.get("item")
+    if (payload.get("type") != "item_completed" or not isinstance(item, dict)
+            or item.get("type") not in ("ContextCompaction", "contextCompaction")):
+        return
+    iid, tid, thread = (_codex_timing_id(v) for v in (item.get("id"), payload.get("turn_id"), payload.get("thread_id")))
+    start, end = payload.get("started_at_ms"), payload.get("completed_at_ms")
+    if (not all((iid, tid, thread)) or (agg.get("_session_id") and thread != agg["_session_id"])
+            or type(start) is not int or type(end) is not int
+            or not 0 <= start <= end <= 253402300799999):
+        return
+    state = _codex_timing_state(agg)
+    previous = state["completions"].get(iid)
+    _codex_timing_put(state["completions"], iid, {
+        "turn_id": tid, "thread_id": thread, "start": start, "end": end})
+    if state["completions"][iid].get("ambiguous"):
+        # Preserve the conflict on affected checkpoints before the item itself
+        # leaves bounded state. Never let eviction turn it into a unique match.
+        for key, event in agg.get("compactions", {}).items():
+            at = round(_from_iso(event["timestamp"]).timestamp() * 1000)
+            if start <= at <= end or (previous and not previous.get("ambiguous")
+                    and previous["start"] <= at <= previous["end"]):
+                event["duration_ms"] = None
+                if key in state["checkpoints"]: state["checkpoints"][key]["ambiguous"] = True
+    _codex_apply_timings(agg)
+
+
+def _codex_apply_timings(agg):
+    """Enrich existing checkpoints only through an unambiguous identity/time match.
+
+    Duration is the explicit lifecycle end-start, never the distance between log
+    lines. One completion must cover exactly one checkpoint in the same turn and
+    thread, and that checkpoint must have exactly one covering completion.
+    """
+    state = _codex_timing_state(agg)
+    checkpoints, completions = state["checkpoints"], state["completions"]
+    # Include unlinked/older checkpoints when checking uniqueness. Evicting
+    # bounded correlation state must never turn an ambiguous interval into one
+    # apparently unique candidate.
+    events = agg.get("compactions", {})
+    times = {key: round(_from_iso(e["timestamp"]).timestamp() * 1000)
+             for key, e in events.items()}
+    unique = set()
+    for iid, completion in completions.items():
+        if completion.get("ambiguous"): continue
+        covered = [key for key, at in times.items() if completion["start"] <= at <= completion["end"]]
+        if len(covered) == 1:
+            unique.add(iid)
+        elif len(covered) > 1:
+            for key in covered:
+                events[key]["duration_ms"] = None
+                if key in checkpoints: checkpoints[key]["ambiguous"] = True
+    matches = {}
+    for key, checkpoint in checkpoints.items():
+        matches[key] = [iid for iid, completion in completions.items()
+            if iid in unique and not checkpoint.get("ambiguous") and not completion.get("ambiguous")
+            and checkpoint["thread_id"] == completion["thread_id"]
+            and checkpoint["turn_id"] == completion["turn_id"]
+            and completion["start"] <= checkpoint["timestamp_ms"] <= completion["end"]]
+    for key, candidates in matches.items():
+        event = agg.get("compactions", {}).get(key)
+        if event is None: continue
+        # Re-evaluate late/interleaved records; ambiguity clears earlier enrichment.
+        event["duration_ms"] = None
+        if len(candidates) > 1:
+            checkpoints[key]["ambiguous"] = True
+        if len(candidates) != 1: continue
+        iid = candidates[0]
+        if sum(iid in values for values in matches.values()) != 1: continue
+        completion = completions[iid]
+        event["duration_ms"] = completion["end"] - completion["start"]
+
+
 def _codex_compaction(agg, payload, dt):
     """Persist a checkpoint without importing its copied history or usage snapshot."""
     key = None
@@ -1460,15 +1688,19 @@ def _codex_compaction(agg, payload, dt):
             key = prefix + value
             break
     key = key or "at:" + dt.astimezone(timezone.utc).isoformat()
-    # These fields aren't recorded by Codex's CompactedItem. Don't derive them
-    # from surrounding prompts, token_count resets or replacement_history.
-    agg.setdefault("compactions", {}).setdefault(key, {
+    # Trigger/context aren't recorded by CompactedItem. Explicit lifecycle timing
+    # can enrich duration, but copied history and usage snapshots cannot.
+    events = agg.setdefault("compactions", {})
+    new = key not in events
+    events.setdefault(key, {
         "id": key, "timestamp": dt.isoformat(), "date": _buckets(dt)[0],
         "trigger": "unknown", "before": None, "after": None, "duration_ms": None,
     })
+    _codex_timing_checkpoint(agg, payload, key, new)
 
 
 def parse_codex(agg, lines):
+    agg["account_metadata_version"] = A.METADATA_VERSION
     cur_model = agg["state"].get("cur_model")
     project = agg["project"]
     for line in lines:
@@ -1517,6 +1749,7 @@ def parse_codex(agg, lines):
                 if not skip:
                     st["replay_last"] = None
 
+        A.observe_codex(agg, t, pl, o.get("timestamp"))
         if t == "session_meta":
             if pl.get("forked_from_id") and "replay_last" not in st and o.get("timestamp"):
                 st["replay_last"] = o["timestamp"]
@@ -1558,6 +1791,7 @@ def parse_codex(agg, lines):
             # This sits AFTER the fork replay guard so inherited events stay out.
             _codex_compaction(agg, pl, dt)
         elif t == "token_usage_record":
+            _codex_timing_request(agg, pl)
             # Newer Codex builds (seen from 2026-09) log one of these per model
             # response. They are the better usage source: token_count below logs
             # zeros for a compaction request and nothing for a response cut off
@@ -1567,6 +1801,7 @@ def parse_codex(agg, lines):
             agg["state"]["usage_records"] = True
             _codex_usage(agg, dt, pl.get("usage") or {}, cur_model)
         elif t == "event_msg":
+            _codex_timing_completion(agg, pl)
             if pt == "patch_apply_end":
                 _codex_edit_event(agg, pl.get("changes"))
             if pt == "token_count":
@@ -1663,6 +1898,7 @@ def parse_codex(agg, lines):
                 _rec(agg, date, cur_model or "Unknown")["tools"] += 1
                 _codex_turn_tool(agg, nm, pl)
 
+    _codex_timing_state(agg)
     agg["state"]["cur_model"] = cur_model
     agg["project"] = project
     agg["editor"] = "Codex (CLI)"
@@ -3236,7 +3472,17 @@ def update_file(agg, source, path, editor_hint, proj_map):
         return fresh
 
     # jsonl (claude / codex) — incremental append
+    if (source == "codex" and agg
+            and agg.get("state", {}).get("compaction_timing", {}).get("version") != _CODEX_COMPACTION_TIMING_VERSION):
+        # Stage a full timing backfill locally; the caller retains its old ledger
+        # entry/signature if parsing fails. No global cache reset is involved.
+        agg = None
+    haiku_backfill = (agg and source in ("claude", "claude-desktop")
+                     and "haiku_pricing" not in agg
+                     and any("\tClaude Haiku 5.5" in k for k in agg.get("records", {})))
     if (not agg or agg.get("size", 0) > size
+            or haiku_backfill
+            or (source in ("claude", "codex") and agg.get("account_metadata_version") != A.METADATA_VERSION)
             or (source in ("claude", "claude-desktop", "codex") and "compactions" not in agg)):
         agg = _blank_agg(source, path)  # new/truncated log or missing metadata → reparse
     offset = agg["offset"]

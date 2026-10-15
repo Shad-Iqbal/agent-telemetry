@@ -4,9 +4,116 @@ const root=path.resolve(__dirname,'..');
 const document={addEventListener(){},getElementById(){return null},querySelector(){return null}};
 const context=vm.createContext({document,console,URLSearchParams,Set,Date,location:{search:'',hash:''}});
 vm.runInContext(fs.readFileSync(path.join(root,'static/core.js'),'utf8'),context);
+vm.runInContext(fs.readFileSync(path.join(root,'static/charts.js'),'utf8'),context);
 const views=fs.readFileSync(path.join(root,'static/views.js'),'utf8');
 vm.runInContext(views.slice(0,views.indexOf('document.getElementById("tabs").addEventListener')),context);
 const run=code=>vm.runInContext(code,context);
+assert.equal(run(`SRC.codex.icon`),'openai');
+assert.equal(run(`SRC.opencode.label`),'OpenCode');
+assert.match(run(`toolLabel('opencode')`),/>OpenCode</);
+assert.match(run(`srcBadge('opencode')`),/OpenCode/);
+assert.match(run(`quotaWindowHTML({label:'5-hour limit',remaining_percent:89,resets_at:2000},{observed_at:1000},1000)`),/89% left/);
+assert.match(run(`quotaWindowHTML({label:'5-hour limit',remaining_percent:0,resets_at:2000},{observed_at:1000},1000)`),/value="0"/);
+assert.doesNotMatch(run(`quotaWindowHTML({label:'5-hour limit',remaining_percent:null,resets_at:null},{observed_at:1000},1000)`),/<progress|100% left/);
+assert.match(run(`quotaWindowHTML({label:'5-hour limit',remaining_percent:89,resets_at:1100},{observed_at:1000},1301)`),/Stale|Reset passed/);
+assert.match(run(`quotaWindowHTML({label:'5-hour limit',remaining_percent:89,resets_at:1100},{observed_at:1000},1301)`),/89% left/);
+assert.doesNotMatch(run(`quotaWindowHTML({label:'<img src=x onerror=alert(1)>',remaining_percent:89,resets_at:2000},{observed_at:1000},1000)`),/<img src=x/);
+assert.match(run(`sessionAccountDetails({source:'codex',account_metadata:{creator_account_id:'creator-A'}})`),/Thread creator account/);
+assert.match(run(`sessionAccountDetails({source:'claude'})`),/Not recorded/);
+assert.doesNotMatch(run(`sessionAccountDetails({source:'claude',account_metadata:{recorded_account_ids:['<img src=x onerror=alert(1)>']}})`),/<img src=x/);
+assert.doesNotMatch(run(`accountEntryHTML({source:'codex',profile:'<img src=x onerror=alert(1)>',identity:{auth:'apiKey',email:'<img src=x>',plan:null},snapshots:[]})`),/<img src=x/);
+const shell=fs.readFileSync(path.join(root,'index.html'),'utf8');
+const overviewShell=shell.slice(shell.indexOf('id="v-overview"'),shell.indexOf('id="v-cost"'));
+const costShell=shell.slice(shell.indexOf('id="v-cost"'),shell.indexOf('id="v-models"'));
+assert.doesNotMatch(overviewShell,/accountLimitsCard/);
+assert.ok(costShell.indexOf('accountLimitsCard')>costShell.indexOf('tv-dailyCost'),'Limits must follow every other Cost card');
+{
+  const host={innerHTML:costShell,dataset:{}}, node={}, today=run('dkey(new Date())');
+  let costRenders=0;
+  const emptyCost=vm.createContext({Date,Set,console,Object,dkey:date=>run(`dkey(new Date(${date.getTime()}))`),
+    RAW:{records:[],device:{id:'local'},sessions:[{source:'codex',days:{[today]:[1]}}]},
+    S:{view:'cost',devs:new Set(),tools:new Set(['codex'])},VIEW_TITLES:{cost:'Cost',overview:'Overview'},
+    document:{querySelectorAll:()=>[],getElementById:id=>id==='v-cost'?host:node},
+    syncRangeUI(){},syncMetricUI(){},buildFilterPanels(){},renderPills(){},renderSidebarDevices(){},filtersToURL(){},
+    runFinders:()=>[],slice:()=>({recs:[],sessions:[]}),viewCost(){costRenders++;}});
+  vm.runInContext(views.slice(views.indexOf('function activeQuotaSources('),views.indexOf('function quotaEntries(')),emptyCost);
+  vm.runInContext(views.slice(views.indexOf('const VIEW_HTML={};'),views.indexOf('function syncSearchBoxes(')),emptyCost);
+  vm.runInContext('renderAll()',emptyCost);
+  assert.equal(costRenders,1,'An empty historical date range must not suppress current quotas');
+  assert.match(host.innerHTML,/accountLimitsCard/);
+  vm.runInContext('RAW.sessions=[];renderAll()',emptyCost);
+  assert.match(host.innerHTML,/No activity/,'No current sessions should keep the regular empty view');
+}
+run(`var previousQuotaRaw=RAW;var quotaDay='2026-10-13';var quotaNow=new Date('2026-10-13T12:00:00');
+ RAW={device:{id:'local'},sessions:[{source:'codex',device:'local',days:{[quotaDay]:[0,0,0,0,0,0,1]}},
+   {source:'claude',device:'local',days:{'2026-10-12':[1]}},{source:'claude',device:'remote',days:{[quotaDay]:[1]}}]};`);
+assert.equal(run(`activeQuotaSources(quotaNow).join(',')`),'codex','Yesterday and remote sessions must not show tools');
+run(`RAW.sessions.push({source:'claude',device:'local',days:{},compactions:[{date:quotaDay}]});`);
+assert.equal(run(`activeQuotaSources(quotaNow).join(',')`),'codex,claude','Compaction-only activity counts as a session today');
+run(`S.tools.delete('claude');`);
+assert.equal(run(`activeQuotaSources(quotaNow).join(',')`),'codex');
+run(`S.tools.add('claude');S.devs.add('remote');`);
+assert.equal(run(`activeQuotaSources(quotaNow).length`),0,'Private account cards must not appear for remote-only devices');
+run(`S.devs.clear();RAW.sessions=[{source:'codex',start:'2026-10-13T09:00:00',days:{}}];`);
+assert.equal(run(`activeQuotaSources(quotaNow).join(',')`),'codex','A newly started session can have no usage yet');
+assert.equal(run(`activeQuotaSources(new Date('2026-10-14T12:00:00')).length`),0,'Visibility must update at midnight');
+run(`var quotaSnapshot={origin:'Local Codex log',limit_id:'codex',observed_at:1000,windows:[{label:'5-hour limit',remaining_percent:89,resets_at:2000}]};
+ ACCOUNTS={entries:[{source:'codex',device:'local',profile:'C:\\\\Users\\\\fixture\\\\.codex',identity:null,snapshots:[]},
+  {source:'codex',device:'local',profile:'C:/Users/fixture/.codex',identity:null,snapshots:[quotaSnapshot]},
+  {source:'codex',device:'local',profile:'C:/Users/fixture/.codex',identity:null,snapshots:[{...quotaSnapshot,limit_id:'premium',windows:[]}]},
+  {source:'codex',device:'remote',profile:'remote',identity:null,snapshots:[quotaSnapshot]}]};`);
+assert.equal(run(`quotaEntries('codex').length`),1,'Path separators must not duplicate the same profile');
+assert.equal(run(`quotaEntries('codex')[0].snapshots.length`),1,'Empty and remote buckets must be hidden');
+const tidyQuota=run(`accountEntryHTML(quotaEntries('codex')[0])`);
+assert.match(tidyQuota,/89% left/);
+assert.match(tidyQuota,/Account unverified/);
+assert.match(tidyQuota,/data-account-refresh="codex"/);
+assert.doesNotMatch(tidyQuota,/CLI profile:|Account \/ auth \/ plan unavailable|Quota percentages unavailable|Reported plan:|billing account is not recorded|premium/);
+run(`ACCOUNTS.entries[0].identity={auth:'apiKey',email:'fixture@example.invalid'};`);
+const apiQuota=run(`accountEntryHTML(quotaEntries('codex')[0])`);
+assert.match(apiQuota,/API key · fixture@example.invalid/);
+assert.doesNotMatch(apiQuota,/<progress|89% left/,'An API-key sign-in must not show an old subscription quota');
+run(`ACCOUNTS.entries[0].identity=null;ACCOUNTS.entries.push({source:'codex',profile:'/other-profile',snapshots:[quotaSnapshot]});`);
+assert.equal(run(`quotaEntries('codex').length`),2,'Distinct profiles must remain separate');
+assert.match(run(`accountEntryHTML(quotaEntries('codex')[1])`),/Profile 2/);
+assert.match(run(`accountEntryHTML({source:'claude',snapshots:[]})`),/How to show Claude limits/);
+run(`RAW=previousQuotaRaw;ACCOUNTS=null;`);
+assert.equal(run(`SRC.claude.icon`),run(`SRC['claude-desktop'].icon`));
+for(const source of run(`ORDER`)){
+  const name=run(`SRC[${JSON.stringify(source)}].icon`);
+  assert.ok(fs.existsSync(path.join(root,'static/tool-icons',name+'.svg')),source+' lacks its bundled mark');
+  assert.ok(run(`toolIcon(${JSON.stringify(source)})`).includes('role="img"'));
+  assert.ok(!run(`toolIcon(${JSON.stringify(source)})`).includes('https://'),'Logo fetch would leak a local dashboard visit');
+}
+assert.ok(run(`toolDot('codex')`).includes('/static/tool-icons/openai.svg'));
+assert.ok(run(`srcBadge('copilot')`).includes('/static/tool-icons/copilot.svg'));
+assert.ok(run(`toolLabel('codex')`).includes('aria-hidden="true"'));
+assert.ok(run(`legendHTML('test',[{source:'codex',label:'Codex',color:'#fff'}])`).includes('data-k="Codex"'));
+assert.ok(!run(`toolIcon('<img src=x onerror=alert(1)>')`).includes('<img src=x'));
+assert.ok(!run(`renameButton({device:'Mac',source:'codex',id:'fixture',title:'<img src=x onerror=alert(1)>'})`).includes('<img src=x'));
+assert.notEqual(run(`sessionIdentity({device:'Mac',source:'codex',id:'same'})`),
+                run(`sessionIdentity({device:'PC',source:'codex',id:'same'})`));
+assert.notEqual(run(`sessionIdentity({device:'Mac',source:'claude',id:'same',rename_id:'same-uuid-one'})`),
+                run(`sessionIdentity({device:'Mac',source:'claude',id:'same',rename_id:'same-uuid-two'})`));
+run(`let haikuPreviousRaw=RAW;
+ RAW={pricing:{'Claude Haiku 5.5':[.1,.5,.125,.2,.01]},
+      prices:{'Claude Haiku 5.5':[.1,.5,.125,.2,.01]},
+      pricing_long_context:{'Claude Haiku 5.5':[.5,2.5,.625,1,.05]}};
+ let haikuRow={model:'Claude Haiku 5.5',date:'2026-10-12',in:2,out:3,cc5:4,cc1:5,cr:100001,
+     asst:2,lc_in:1,lc_out:2,lc_cc5:3,lc_cc1:4,lc_cr:100000,lc_asst:1};`);
+const near=(value,expected)=>assert.ok(Math.abs(value-expected)<1e-10,`${value} != ${expected}`);
+near(run(`Object.values(tokenCostParts(haikuRow)).reduce((a,b)=>a+b,0)/1e6`),.00501231);
+near(run(`cacheSavings(haikuRow)`),.04500009);
+near(run(`cachedRequestRate(haikuRow)`),.03);
+near(run(`cacheWriteRate([haikuRow])`),6.2/9/1e6);
+near(run(`rateOf('Claude Haiku 5.5')[0]`),.5);
+run(`RAW.pricing['Legacy']=[1,5,0,0,.1];`);
+near(run(`tokenCostParts({model:'Legacy',in:1,out:2,cc:3,cr:4}).cw`),3);
+run(`RAW.prices['Legacy']=[1,5,0,0,.1]; RAW.pricing_history={'Legacy':[['2026-01-01',[2,10,0,0,.2]]]};`);
+near(run(`tokenCostParts({model:'Legacy',date:'2025-12-31',cc:3}).cw`),6);
+near(run(`cacheWriteRate([{model:'Legacy',date:'2025-12-31',cc:3}])`),1e-6);
+near(run(`cachedRequestRate({model:'Legacy',date:'2025-12-31',asst:1})`),.1);
+run(`RAW=haikuPreviousRaw;`);
 run(`RAW={device:{id:'Mac'},devices:[{id:'Mac',name:'Mac'},{id:'PC',name:'PC'}],
  records:[],sessions:[],hourly:[],tools:[],pricing:{'Claude Opus 5.5 (US)':[4.4,22,5.5,8.8,.22]},
  prices:{'Claude Opus 5.5 (fast)':[8,40,10,16,.4]}};
@@ -59,6 +166,23 @@ run(`S.metric='messages';`);assert.equal(run(`deviceDistribution(deviceData)[0].
 run(`S.metric='cost';`);assert.equal(run(`deviceDistribution(deviceData)[0].value`),4);
 run(`S.devs=new Set(['Mac']);`);assert.equal(run(`deviceDistribution(deviceData).length`),1);
 assert.equal(run(`deviceDistribution(deviceData)[0].value`),1);
+// Sidebar selection uses the existing device filter rather than a separate scope.
+run(`S.devs.clear();`);
+assert.equal(run(`sidebarDeviceState().value`),'all');
+assert.equal(run(`selectSidebarDevice('device:PC')`),true);
+assert.equal(run(`deviceDistribution(deviceData).length`),1);
+assert.equal(run(`deviceDistribution(deviceData)[0].value`),4);
+assert.equal(run(`sidebarDeviceState().name`),'PC');
+assert.equal(run(`selectSidebarDevice('device:missing')`),false);
+assert.equal(run(`sidebarDeviceState().value`),'device:PC');
+assert.equal(run(`selectSidebarDevice('all')`),true);
+assert.equal(run(`deviceDistribution(deviceData).length`),2);
+run(`RAW.devices.push({id:'Third',name:'Third'});S.devs=new Set(['Mac','PC']);`);
+assert.equal(run(`sidebarDeviceState().value`),'selected');
+assert.ok(run(`sidebarDeviceState().options`).includes('value="selected" disabled'));
+run(`RAW.devices=[{id:'Mac',name:'Mac'}];S.devs.clear();`);
+assert.equal(run(`sidebarDeviceState().multiple`),false);
+run(`RAW.devices=[{id:'Mac',name:'Mac'},{id:'PC',name:'PC'}];`);
 const syncCode=views.slice(views.indexOf('const POLL_KEY='),views.indexOf('let nativeSettingsTimer;'));
 for(const search of ['', '?nativeApp=1&nativePollSeconds=300']){
   const fixture=vm.createContext({URLSearchParams,location:{search}, document, console});
@@ -108,6 +232,17 @@ assert.match(compactHTML,/93s/);
 assert.match(compactHTML,/tokens and cost are not recorded/);
 assert.match(run(`compactionDetails({source:'claude',compactions:[{timestamp:'<script>',trigger:'unexpected',before:null,after:null,duration_ms:null}]})`),/&lt;script&gt;/);
 assert.match(run(`compactionDetails({source:'codex'})`),/Not recorded in this ledger entry/);
+const timedCodexHTML=run(`compactionDetails({source:'codex',compactions:[{timestamp:'2026-10-12T11:42:38+06:00',trigger:'unknown',before:null,after:null,duration_ms:163391}]})`);
+assert.match(timedCodexHTML,/163s/);
+assert.match(timedCodexHTML,/do not report a manual\/auto trigger or context sizes/);
+assert.match(timedCodexHTML,/uniquely matched completion/);
+assert.doesNotMatch(timedCodexHTML,/does not record type, context sizes or duration/);
+assert.match(timedCodexHTML,/without a recorded trigger/);
+assert.match(timedCodexHTML,/>Trigger</);
+assert.match(timedCodexHTML,/>Not recorded</);
+assert.doesNotMatch(timedCodexHTML,/Unknown|\bunknown\b|— → —/);
+assert.match(run(`compactionDetails({source:'codex',compactions:[{timestamp:'2026-10-12T11:42:38+06:00',trigger:'unknown',before:null,after:null,duration_ms:null}]})`),/missing or cannot be matched uniquely\."\>Unavailable<\/td>/);
+assert.match(run(`compactionDetails({source:'codex',compactions:[{timestamp:'2026-10-12T11:42:38+06:00',trigger:'unknown',before:null,after:null,duration_ms:0}]})`),/>0s<\/td>/);
 assert.equal(run(`compactionDetails({source:'copilot'})`),'');
 run(`S.tools=new Set(['codex']);var codexCompactSession={...compactSession,source:'codex',compactions:[
   {id:'response:fixture',date:'2026-10-10',timestamp:'2026-10-10T13:09:08+06:00',trigger:'unknown',before:null,after:null,duration_ms:null}]};
@@ -115,11 +250,11 @@ run(`S.tools=new Set(['codex']);var codexCompactSession={...compactSession,sourc
 assert.equal(run(`slice({from:'2026-10-10',to:'2026-10-10'}).sessions[0].compaction_count`),1);
 assert.equal(run(`slice({from:'2026-10-10',to:'2026-10-10'}).sessions[0].cost`),0);
 const codexHTML=run(`compactionDetails(slice({from:'2026-10-10',to:'2026-10-10'}).sessions[0])`);
-assert.match(codexHTML,/1 unknown/);
-assert.match(codexHTML,/Unknown/);
+assert.match(codexHTML,/1 without a recorded trigger/);
+assert.match(codexHTML,/Not recorded/);
 assert.match(codexHTML,/already included in session totals/);
 assert.doesNotMatch(codexHTML,/tokens and cost are not recorded/);
-assert.match(codexHTML,/— → —/);
+assert.doesNotMatch(codexHTML,/— → —/);
 run(`S.models=new Set(['M']);`);
 assert.equal(run(`slice({from:'2026-10-10',to:'2026-10-10'}).sessions.length`),0);
 assert.equal(run(`slice({from:'2026-10-09',to:'2026-10-09'}).sessions[0].in`),100);
@@ -132,6 +267,97 @@ assert.equal(run(`slice({from:'2026-10-10',to:'2026-10-10'}).sessions.length`),0
 run(`S.projs.clear();S.tools=new Set(['claude']);`);
 console.log('Frontend regression checks passed: pricing, precision, scope, model contributions, Optimize, device distribution, shared refresh and compaction metadata.');
 (async()=>{
+  const accountNode={innerHTML:''}, accountCard={hidden:true}; let accountCalls=[], resolveAccountOld;
+  const fixtureDay=run('dkey(new Date())');
+  const accountFixture=vm.createContext({Date,Number,Set,console,
+    dkey:date=>`${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`,
+    RAW:{device:{id:'local'},sessions:[{source:'codex',days:{[fixtureDay]:[1]}}]},S:{devs:new Set()},
+    esc:value=>String(value??'').replaceAll('<','&lt;'),toolLabel:value=>value,
+    document:{getElementById:id=>id==='accountLimitsCard'?accountCard:accountNode},askConfirm:async()=>false,
+    fetch:async(url,options)=>{accountCalls.push({url,options});return {ok:true,json:async()=>({entries:[]})}}});
+  vm.runInContext(views.slice(views.indexOf('let ACCOUNTS='),views.indexOf('function viewOverview(')),accountFixture);
+  await vm.runInContext('loadAccounts()',accountFixture);
+  await vm.runInContext('refreshAccount("codex")',accountFixture);
+  assert.equal(accountCalls.length,1,'Declined consent ran a live lookup');
+  assert.equal(accountCalls[0].options,undefined,'Local read unexpectedly posted a live lookup');
+  accountFixture.askConfirm=async()=>true;
+  accountFixture.fetch=async(url,options)=>{
+    accountCalls.push({url,options});
+    if(!options) return await new Promise(resolve=>{resolveAccountOld=resolve});
+    return {ok:true,json:async()=>({entries:[{source:'codex',profile:'new-account',snapshots:[],identity:{auth:'apiKey'}}]})};
+  };
+  const oldAccountLoad=vm.runInContext('loadAccounts()',accountFixture);
+  await vm.runInContext('refreshAccount("codex")',accountFixture);
+  resolveAccountOld({ok:true,json:async()=>({entries:[{source:'codex',profile:'old-account',snapshots:[]}]})});
+  await oldAccountLoad;
+  assert.equal(vm.runInContext('ACCOUNTS.entries[0].profile',accountFixture),'new-account','Late GET undid a newer account lookup');
+  assert.equal(JSON.parse(accountCalls.at(-1).options.body).confirmed,true);
+  assert.equal(accountCalls.at(-1).options.headers['Content-Type'],'application/json');
+  accountFixture.fetch=async()=>({ok:false});
+  await vm.runInContext('loadAccounts()',accountFixture);
+  assert.equal(vm.runInContext('ACCOUNTS.entries[0].profile',accountFixture),'new-account','Failed read dropped last successful account');
+  assert.match(accountNode.innerHTML,/stale/i);
+  // A failed opt-in lookup may have discarded a switched account on the server.
+  // Re-read only local observations instead of indefinitely displaying its identity.
+  accountCalls=[];
+  accountFixture.fetch=async(url,options)=>{
+    accountCalls.push({url,options});
+    return options?{ok:false,json:async()=>({error:'Account changed during lookup'})}
+      :{ok:true,json:async()=>({entries:[{source:'codex',profile:'current-profile',identity:null,snapshots:[]}]})};
+  };
+  await vm.runInContext('refreshAccount("codex")',accountFixture);
+  assert.equal(accountCalls.length,2,'Failed lookup did not reconcile local account state');
+  assert.equal(accountCalls[1].options,undefined,'Failure triggered another provider lookup');
+  assert.doesNotMatch(accountNode.innerHTML,/new-account/,'Switched account remained visible after failure');
+  assert.match(accountNode.innerHTML,/Account changed during lookup/);
+  accountFixture.fetch=async(url,options)=>options
+    ?{ok:false,json:async()=>({error:'Provider unavailable'})}
+    :{ok:true,json:async()=>({entries:[{source:'codex',profile:'same-account',identity:{auth:'chatgpt',email:'verified@example.invalid'},snapshots:[]}]})};
+  await vm.runInContext('refreshAccount("codex")',accountFixture);
+  assert.match(accountNode.innerHTML,/verified@example.invalid/,'Verified same-account failure discarded local state');
+  assert.match(accountNode.innerHTML,/stale/i);
+  accountFixture.fetch=async()=>{throw new Error('Dashboard unreachable')};
+  await vm.runInContext('refreshAccount("codex")',accountFixture);
+  assert.doesNotMatch(accountNode.innerHTML,/verified@example.invalid/,'Unverified identity remained visible after failed reconciliation');
+  assert.equal(vm.runInContext('accountBusy',accountFixture),false,'Failure left refresh disabled');
+  assert.match(accountNode.innerHTML,/data-account-refresh="codex"/,'Failed reconciliation removed the retry control');
+  vm.runInContext('S.devs.add("remote");renderAccountLimits()',accountFixture);
+  assert.equal(accountCard.hidden,true);assert.equal(accountNode.innerHTML,'');
+  vm.runInContext('S.devs.clear();RAW.sessions=[];renderAccountLimits()',accountFixture);
+  assert.equal(accountCard.hidden,true,'No sessions today must hide the entire card');
+  vm.runInContext(`RAW.sessions=[{source:'claude',days:{[dkey(new Date())]:[1]}}];renderAccountLimits()`,accountFixture);
+  assert.equal(accountCard.hidden,false);
+  assert.match(accountNode.innerHTML,/data-account-refresh="claude"/);
+  assert.doesNotMatch(accountNode.innerHTML,/data-account-refresh="codex"/,'Unused tools must not have refresh controls');
+  console.log('Account quota consent, privacy, stale values and superseded requests passed.');
+  // A completed check must leave a way to check again without reloading.
+  const versionNode={innerHTML:''}, updateRequests=[];
+  let updateResult={behind:0,changes:[]};
+  const updating=vm.createContext({RAW:{version:{git:true,commit:'fixture'}},esc:value=>String(value),
+    document:{getElementById:()=>versionNode,addEventListener(){}},
+    fetch:async(url,options)=>{updateRequests.push({url,options});return {ok:true,json:async()=>updateResult}}});
+  vm.runInContext(views.slice(views.indexOf('let UPD ='),views.indexOf('/* ---------------- STORAGE')),updating);
+  await vm.runInContext("updateAction('check')",updating);
+  assert.match(versionNode.innerHTML,/Up to date/);
+  assert.match(versionNode.innerHTML,/data-upd="check">Check for updates/);
+  await vm.runInContext("updateAction('check')",updating);
+  assert.equal(updateRequests.length,2,'Second update check did not issue a new request');
+  for(const request of updateRequests){
+    assert.equal(request.url,'/api/update');
+    assert.equal(request.options.headers['Content-Type'],'application/json');
+    assert.equal(JSON.parse(request.options.body).action,'check');
+  }
+  updateResult={behind:1,changes:['fixture update']};
+  await vm.runInContext("updateAction('check')",updating);
+  assert.match(versionNode.innerHTML,/data-upd="apply"/);
+  assert.doesNotMatch(versionNode.innerHTML,/Up to date/);
+  vm.runInContext("UPD={busy:'Checking…'};renderVersion()",updating);
+  assert.doesNotMatch(versionNode.innerHTML,/data-upd=/,'Busy check allows duplicate clicks');
+  vm.runInContext("UPD={error:'Offline'};renderVersion()",updating);
+  assert.match(versionNode.innerHTML,/data-upd="check">Retry/);
+  vm.runInContext("RAW.version.git=false;renderVersion()",updating);
+  assert.doesNotMatch(versionNode.innerHTML,/data-upd=/,'Packaged build offers unsupported git update');
+  console.log('Update checks remain repeatable after an up-to-date result.');
   let tick={seconds:15,revision:'first'}, loads=0, requested;
   const clock=vm.createContext({URLSearchParams,location:{search:''},document,console,S:{live:true},
     load:async()=>{loads++;return true},fetch:async(url,options)=>{requested=options; if(options){tick={seconds:JSON.parse(options.body).seconds,revision:'native-setting'};}return {ok:true,json:async()=>tick}}});
@@ -168,7 +394,7 @@ console.log('Frontend regression checks passed: pricing, precision, scope, model
   const loading=vm.createContext({console,Date,Set,S:{live:true,devs:new Set()},RAW:null,
     document:{getElementById:id=>loadNodes[id],documentElement:{dataset:{}}},
     fetch:async()=>{pending++;if(pending===1)return await new Promise(resolve=>{resolveOld=resolve});return {ok:true,json:async()=>payload(200)}},
-    devices:()=>[],renderVersion(){},fmtNum:value=>value,renderAll(){rendered++}});
+    devices:()=>[],renderVersion(){},loadAccounts(){},fmtNum:value=>value,renderAll(){rendered++}});
   vm.runInContext(views.slice(views.indexOf('let loadSequence='),views.indexOf('async function loadStorage()')),loading);
   const oldLoad=vm.runInContext('load()',loading);
   await vm.runInContext('load()',loading);

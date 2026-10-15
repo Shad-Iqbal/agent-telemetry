@@ -10,7 +10,7 @@ import tempfile
 import native
 
 ROOT = Path(__file__).resolve().parent
-BACKEND_FILES = ("dashboard.py", "parser.py", "native.py", "index.html", "chart.umd.min.js",
+BACKEND_FILES = ("dashboard.py", "parser.py", "native.py", "session_names.py", "accounts.py", "index.html", "chart.umd.min.js",
                  "manifest.json", "sw.js", "LICENSE")
 WINDOWS_FILES = ("tray.py", "monitor.py", "win32.py", "popover.py", "presentation.py")
 WINDOWS_ASSETS = ("AgentTelemetry.ico", "TrayIcon.ico")

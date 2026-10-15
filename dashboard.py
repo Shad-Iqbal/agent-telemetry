@@ -14,17 +14,19 @@ an interactive dashboard.
 Stdlib only. First run parses everything (one large Codex log makes that take a
 moment); results are cached, and subsequent refreshes are incremental & instant.
 """
-import os, re, sys, json, time, glob, threading, argparse, shutil, mimetypes, platform, subprocess
+import os, re, sys, json, time, glob, threading, argparse, shutil, mimetypes, platform, subprocess, copy
 import gzip, hmac, io, ipaddress, secrets, socket, uuid, signal, urllib.parse, urllib.request, urllib.error
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import parser as P
 import native as N
+import session_names as SN
+import accounts as A
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = HERE
 CACHE_PATH = os.path.join(DATA_DIR, ".usage_cache.json")
-CACHE_VERSION = 55
+CACHE_VERSION = 57
 
 
 def _configure_data_dir(path):
@@ -40,7 +42,7 @@ def _configure_data_dir(path):
 def _peer_cache_ok(version):
     # v1.7.0 mirrors lack optional attribution/precision fields, but the reader
     # still supports their rows just as it supports archived local entries.
-    return type(version) is int and version in (52, 53, 54, CACHE_VERSION)
+    return type(version) is int and version in (52, 53, 54, 55, 56, CACHE_VERSION)
 
 # ---------------------------------------------------------------------------
 # In-memory store of per-file aggregates, refreshed on a background interval.
@@ -76,6 +78,22 @@ def notify_refresh():
         _sync_manual += 1
 
 
+def _windows_os_label():
+    release = platform.release()
+    label = f"Windows {release}".strip()
+    if release != "10":
+        return label
+    # Older Python releases call Windows 11 "10". Its first client build is
+    # 22000; Server shares the 10.0 version/build family, so exclude it explicitly.
+    try:
+        if sys.getwindowsversion().product_type != 1:
+            return label
+        major, minor, build = map(int, platform.win32_ver()[1].split(".")[:3])
+    except (AttributeError, OSError, TypeError, ValueError):
+        return label
+    return "Windows 11" if (major, minor) == (10, 0) and build >= 22000 else label
+
+
 def _device():
     """The name this machine goes by in its own OS (System Settings > Sharing on a Mac),
     falling back to the bare hostname, plus a short OS label."""
@@ -90,7 +108,7 @@ def _device():
         osl = f"macOS {ver}" if ver else "macOS"
     elif os.name == "nt":
         name = os.environ.get("COMPUTERNAME", "")
-        osl = f"Windows {platform.release()}".strip()
+        osl = _windows_os_label()
     else:
         for path, key in (("/etc/machine-info", "PRETTY_HOSTNAME="), ("/etc/os-release", "PRETTY_NAME=")):
             try:
@@ -254,13 +272,13 @@ def load_cache():
     if data.get("version") == CACHE_VERSION:
         _state["files"] = files
         return
-    if data.get("version") in (53, 54):
-        # Only optional compaction metadata changed. Keep every existing entry
+    if data.get("version") in (53, 54, 55, 56):
+        # Only optional compaction/pricing/private account metadata changed. Keep every entry
         # until its replacement parses successfully; update_file backfills Claude
-        # and Codex logs lacking compactions; other sources stay incremental.
+        # and Codex logs lacking metadata, and Claude Haiku 5.5 pricing detail.
         _state["files"] = files
         _dirty["v"] = True
-        sys.stderr.write("[cache] backfilling compaction metadata; existing ledger retained\n")
+        sys.stderr.write("[cache] backfilling optional metadata; existing ledger retained\n")
         return
     # Version changed, so the shape may have. Live logs are simply re-parsed from
     # disk — but ARCHIVED entries CANNOT be: their source files are gone. Dropping
@@ -362,7 +380,7 @@ def _refresh_locked(verbose=False):
 # ---------------------------------------------------------------------------
 # Merge per-file aggregates → a single dataset payload for the frontend.
 # ---------------------------------------------------------------------------
-def _cost(source, model, inp, out, cr, cc5, cc1, cc_fallback=0, date=None, logged_cost=None, ws=0):
+def _cost(source, model, inp, out, cr, cc5, cc1, cc_fallback=0, date=None, logged_cost=None, ws=0, long_context=None):
     # opencode's SQLite store logs the actual per-message cost; prefer it over a
     # list-price estimate. Callers pass None (not 0.0) when there is no logged
     # figure — the older opencode JSON layout records no cost at all, and
@@ -384,8 +402,12 @@ def _cost(source, model, inp, out, cr, cc5, cc1, cc_fallback=0, date=None, logge
     # page listed none) bills it at the plain input rate, never at $0.
     pcw5 = pcw5 or pin
     pcw1 = pcw1 or pcw5
-    return ((inp * pin + out * pout + cr * pcr
-             + cc5 * pcw5 + cc1 * pcw1) / 1_000_000.0 + ws * P.WEB_SEARCH_USD)
+    cost = (inp * pin + out * pout + cr * pcr + cc5 * pcw5 + cc1 * pcw1) / 1_000_000.0
+    if long_context and any(long_context):
+        high = P.price_of(model, date, long_context=True)
+        base = (pin, pout, pcw5, pcw1, pcr)
+        cost += sum(n * (h - b) for n, h, b in zip(long_context, high, base)) / 1_000_000.0
+    return cost + ws * P.WEB_SEARCH_USD
 
 
 _UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
@@ -469,11 +491,68 @@ def _did_something(s):
     return bool(s.get("asst") or s.get("req") or s.get("in") or s.get("user") or s.get("compactions"))
 
 
+def build_account_payload():
+    # Copy only private metadata under the parser lock, then release it before
+    # waiting on a possibly slow opt-in CLI lookup. Usage refresh stays available.
+    with _refresh_lock:
+        aggregates = [{"source": a.get("source"), "path": a.get("path", ""),
+                       "account_metadata": copy.deepcopy(a.get("account_metadata") or {})}
+                      for a in _state["files"].values()]
+        device = _local_id()
+    return A.build_accounts(aggregates, device)
+
+
 def build_payload():
     # Parsers append to nested record dictionaries in place. Hold the same lock
     # as refresh so a response is consistent and iteration cannot race an append.
     with _refresh_lock:
         return _build_payload_locked()
+
+
+def set_session_name(body):
+    """Prepare a concrete warning, then perform one confirmed original-tool rename."""
+    device, source, session_id = (body.get(k) for k in ("device", "source", "id"))
+    if any(not isinstance(v, str) or not v or len(v) > 512 for v in (device, source, session_id)):
+        raise ValueError("Expected device, source and session id.")
+    if device != _local_id():
+        raise ValueError("Rename this session on its source device.")
+    with _refresh_lock:
+        discovered = {(s, os.path.realpath(p)) for s, p, _ in P.discover()}
+        aggregate = None
+        for candidate in _state["files"].values():
+            if candidate["source"] != source: continue
+            if (source, os.path.realpath(candidate.get("path", ""))) not in discovered: continue
+            session = next((s for s in candidate.get("sessions", []) if SN.identity(candidate, s) == session_id), None)
+            if session is not None and os.path.isfile(candidate.get("path", "")):
+                aggregate = candidate; break
+        if aggregate is None:
+            raise ValueError("The original session log is unavailable. Its telemetry is preserved.")
+        if session.get("subagent") and source == "claude":
+            raise ValueError("Rename the parent Claude session in the original tool.")
+        path = aggregate["path"]
+        original = session.get("title") or session.get("project") or session_id
+        if body.get("action") == "preview":
+            return SN.prepare(device, source, path, session_id, body.get("name"), original)
+        if body.get("action") != "rename":
+            raise ValueError("Review the original-tool rename warning before saving.")
+        result = SN.commit(body.get("ticket"), device, source, path, session_id, body.get("confirmed"))
+        # Parse the metadata through the existing source parser. No cache rebuild,
+        # archived-history deletion or modifications to billed usage are involved.
+        try:
+            updated = P.update_file(aggregate, source, path, aggregate.get("editor"), {})
+            if source == "codex":
+                P._finalize_session(updated, source, path)
+            for key, value in list(_state["files"].items()):
+                if value is aggregate: _state["files"][key] = updated
+            _dirty["v"] = True
+            _gen["v"] += 1
+            if save_cache(): _dirty["v"] = False
+        except Exception as error:
+            sys.stderr.write(f"[session-name:{source}] dashboard refresh pending: {type(error).__name__}: {error}\n")
+            result["warning"] = "The tool's name was saved; the dashboard will retry its metadata refresh."
+        result["title"] = result["name"]
+    notify_refresh()
+    return result
 
 
 def client_snapshot():
@@ -526,13 +605,21 @@ def build_today_summary():
 def _sum_usage(target, row):
     for field in _zero():
         target[field] = target.get(field, 0) + row.get(field, 0)
+    for field in P._LONG_FIELDS + ("asst",):
+        key = "lc_" + field
+        if key in row:
+            target[key] = target.get(key, 0) + row[key]
 
 
 def _priced_usage(source, model, date, row, logged):
     out = {k: row.get(k, 0) for k in _zero()}
     out["cost"] = (0.0 if model == "(user)" else _cost(
         source, model, out["in"], out["out"], out["cr"], out["cc5"], out["cc1"],
-        out["cc"], date, logged_cost=row.get("cost", 0) if logged else None, ws=out["ws"]))
+        out["cc"], date, logged_cost=row.get("cost", 0) if logged else None, ws=out["ws"],
+        long_context=P._long_values(row)))
+    for field in P._LONG_FIELDS + ("asst",):
+        key = "lc_" + field
+        if key in row: out[key] = row[key]
     return out
 
 
@@ -638,15 +725,16 @@ def _build_payload_locked():
                 e[f] += v.get(f, 0)
             e["tok"] += v.get("in", 0) + v.get("out", 0) + v.get("cr", 0) + v.get("cc5", 0) + v.get("cc1", 0)
             e["cost"] += _cost(source, model, v.get("in", 0), v.get("out", 0), v.get("cr", 0),
-                               v.get("cc5", 0), v.get("cc1", 0), 0, date, ws=v.get("ws", 0))
+                               v.get("cc5", 0), v.get("cc1", 0), 0, date, ws=v.get("ws", 0),
+                               long_context=P._long_values(v))
             if v.get("ein") or v.get("eout"):
                 e["edit_cost"] += _cost(source, model, v.get("ein", 0), v.get("eout", 0),
                                         v.get("ecr", 0), v.get("ecc5", 0), v.get("ecc1", 0), 0,
-                                        date, ws=v.get("ews", 0))
+                                        date, ws=v.get("ews", 0), long_context=P._long_values(v, "e"))
             if v.get("rin") or v.get("rout"):
                 e["retry_cost"] += _cost(source, model, v.get("rin", 0), v.get("rout", 0),
                                          v.get("rcr", 0), v.get("rcc5", 0), v.get("rcc1", 0), 0,
-                                         date, ws=v.get("rws", 0))
+                                         date, ws=v.get("rws", 0), long_context=P._long_values(v, "r"))
         if not agg.get("subagent") and not remote:
             for server, e in (agg.get("mcp_offered") or {}).items():
                 mcp_inv.setdefault(server, set()).update(e.get("tools") or ())
@@ -687,10 +775,17 @@ def _build_payload_locked():
             e = skills.setdefault((date, name, device), {"tok": 0, "asst": 0, "cost": 0.0})
             e["tok"] += v.get("tok", 0)
             e["asst"] += v.get("asst", 0)
-            # price the skill's own tokens at this file's dominant model
+            # Retain the older dominant-model approximation for other models;
+            # Haiku's request-tier contributions carry their own model/rates.
+            haiku = v.get("haiku_usage", {})
+            remaining = {f: max(0, v.get(f, 0) - sum(h.get(f, 0) for h in haiku.values()))
+                         for f in ("in", "out", "cr")}
+            remaining["cc"] = max(0, v.get("cc", 0) - sum(h.get("cc5", 0) + h.get("cc1", 0) for h in haiku.values()))
             e["cost"] += _cost(source, agg.get("state", {}).get("dom_model") or "Unknown",
-                               v.get("in", 0), v.get("out", 0), v.get("cr", 0),
-                               v.get("cc", 0), 0, 0, date)
+                               remaining["in"], remaining["out"], remaining["cr"], remaining["cc"], 0, 0, date)
+            for model, h in haiku.items():
+                e["cost"] += _cost(source, model, h.get("in", 0), h.get("out", 0), h.get("cr", 0),
+                    h.get("cc5", 0), h.get("cc1", 0), 0, date, long_context=P._long_values(h))
         for ck, v in agg.get("ctx", {}).items():
             date, _, b = ck.partition("\t")
             if not b:
@@ -747,6 +842,15 @@ def _build_payload_locked():
             s2["archived"] = bool(agg.get("archived"))
             s2["subagent"] = bool(session.get("subagent"))
             s2["device"] = device
+            if not remote and source in ("codex", "claude"):
+                s2["account_metadata"] = A.session_metadata(agg)
+            available, reason = SN.availability(source, agg.get("path", ""), remote)
+            s2["rename_id"] = SN.identity(agg, session)
+            if not s2["rename_id"]:
+                available, reason = False, "The full native session identity is unavailable."
+            if source == "claude" and session.get("subagent"):
+                available, reason = False, "Rename the parent Claude session in the original tool."
+            s2["rename_available"], s2["rename_reason"] = available, reason
             s2["cost"] = (sum(d["cost"] for d in days.values()) if days else
                           _priced_usage(source, session["model"],
                                         (session.get("end") or session.get("start") or "")[:10],
@@ -836,9 +940,16 @@ def _build_payload_locked():
                     **{m: P.price_of(m) for m in model_meta}}.items()},
         "pricing_history": {m: [[d, list(P.price_of(m, d))] for d, _ in _model_history(m)]
                             for m in set(P.PRICE_HISTORY) | set(model_meta)},
+        "pricing_long_context": {m: list(P.price_of(m, long_context=True))
+            for m in set(P.LONG_CONTEXT_PRICING) | set(model_meta)
+            if P.price_of(m, long_context=True) != P.price_of(m)},
         "pricing_note": ("Anthropic costs use current list pricing (Fable 5 $10/$50, Opus 5.5 "
                          "$4/$20, Opus 5 & 4.x $5/$25, Sonnet 5 & 5.5 $2/$10, Sonnet 4.x "
-                         "$3/$15, Haiku $1/$5 per Mtok) with cache write billed at 1.25x (5-min) "
+                         "$3/$15, Haiku 4.5 $1/$5 per Mtok). Haiku 5.5 uses $0.10/$0.50 "
+                         "up to 100K prompt tokens and $0.50/$2.50 above 100K, including cache "
+                         "reads/writes in each request's threshold; available Claude logs retain "
+                         "that split, while older archives/peers and other tools without request "
+                         "detail use the short-prompt rate. Cache write is billed at 1.25x (5-min) "
                          "/ 2x (1-hour) input and cache read at 0.1x (0.05x on Opus 5.5, 0.025x on Fable 5.1); OpenAI/"
                          "Codex/Copilot/Cursor prices are estimates. Codex GPT-5.4/5.5/5.6/6 use "
                          "verified OpenAI list rates (e.g. GPT-6 Sol $2/$10, cached $0.20; GPT-6.1 Sol cached $0.10), each "
@@ -2056,6 +2167,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, json.dumps(N.status()))
         elif route == "/api/sync":
             self._send(200, json.dumps(refresh_sync()))
+        elif route == "/api/accounts":
+            self._send(200, json.dumps(build_account_payload()))
         elif route == "/api/summary":
             try:
                 self._send(200, client_snapshot()[1])
@@ -2138,7 +2251,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         route = self.path.split("?")[0]
-        if route in ("/api/settings", "/api/cache", "/api/update", "/api/devices", "/api/refresh", "/api/native", "/api/shutdown", "/api/sync"):
+        if route in ("/api/settings", "/api/cache", "/api/update", "/api/devices", "/api/refresh", "/api/native", "/api/shutdown", "/api/sync", "/api/session-name", "/api/accounts"):
             if not self._csrf_ok():
                 self._send(403, json.dumps({"error": "cross-site request refused"}))
                 return
@@ -2152,7 +2265,12 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(400, json.dumps({"error": "invalid JSON body"}))
                 return
             try:
-                if route == "/api/native":
+                if route == "/api/accounts":
+                    A.refresh_account(body.get("source"), body.get("confirmed"))
+                    result = build_account_payload()
+                elif route == "/api/session-name":
+                    result = set_session_name(body)
+                elif route == "/api/native":
                     result = N.action(body.get("enabled"))
                 elif route == "/api/sync":
                     N.set_refresh_interval(body.get("seconds"))

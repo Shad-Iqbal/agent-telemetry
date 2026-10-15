@@ -50,8 +50,10 @@
       </a>
       <button class="icon-btn side-toggle" id="sideToggle" title="Collapse sidebar ([)" aria-label="Collapse sidebar" aria-expanded="true"><svg class="ic"><use href="#i-sidebar"/></svg></button>
       <div class="device" id="device" title="This machine">
-        <svg class="ic"><use href="#i-device"/></svg>
+        <svg class="ic" aria-hidden="true"><use href="#i-device"/></svg>
         <div class="device-txt"><div class="device-name" id="devName">This computer</div><div class="device-os" id="devOs">local</div></div>
+        <svg class="ic device-chevron" aria-hidden="true" hidden><use href="#i-chev"/></svg>
+        <select id="deviceSelect" class="device-picker" aria-label="Filter dashboard by device" hidden></select>
       </div>
     </div>
 
@@ -252,6 +254,11 @@
             <div class="chartbox" style="height:230px"><canvas id="dailyCost"></canvas></div>
             <div class="tv-table" id="tv-dailyCost" hidden></div>
           </div>
+          <div class="card col-12" id="accountLimitsCard" hidden>
+            <div class="card-h"><div><h3>Subscription limits remaining</h3>
+              <p class="card-sub">Account-wide limits · tools used today on this device</p></div></div>
+            <div id="accountLimits" aria-live="polite"></div>
+          </div>
         </div>
       </section>
 
@@ -417,6 +424,19 @@
 <div class="scrim" id="scrim"></div>
 <aside class="drawer" id="drawer" aria-label="Detail"><button class="x" id="drawerX" aria-label="Close">×</button><div id="drawerBody"></div></aside>
 <div id="tip" role="tooltip"></div>
+<dialog class="modal" id="sessionNameDialog" aria-labelledby="sessionNameHeading" aria-describedby="sessionNameHelp">
+  <form class="modal-in" id="sessionNameForm">
+    <h2 class="modal-h" id="sessionNameHeading">Rename session</h2>
+    <p class="modal-body" id="sessionNameHelp">Renaming changes the original tool’s saved session name. You’ll review a warning before it is saved.</p>
+    <label class="session-name-label" for="sessionNameInput">Session name</label>
+    <input class="session-name-input" id="sessionNameInput" name="name" maxlength="90" required autocomplete="off">
+    <p class="session-name-error" id="sessionNameError" role="alert"></p>
+    <div class="modal-actions">
+      <button class="btn" type="button" id="sessionNameCancel">Cancel</button>
+      <button class="btn primary" type="submit" id="sessionNameSave">Save</button>
+    </div>
+  </form>
+</dialog>
 
 <script>
 /* surface any uncaught error on the root element so headless checks (and the

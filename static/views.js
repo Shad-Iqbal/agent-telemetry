@@ -121,7 +121,7 @@ function multiPanel(panelId, items, set, isTools){
   const on = k => isTools ? set.has(k) : (set.size===0 || set.has(k));
   p.innerHTML = items.map(it=>`<div class="dd-item" data-k="${esc(it.key)}">
       <input type="checkbox" ${on(it.key)?"checked":""} tabindex="-1" aria-label="${esc(it.label)}">
-      ${it.color?`<span class="sw" style="background:${it.color}"></span>`:""}
+      ${it.source?toolIcon(it.source,true):it.color?`<span class="sw" style="background:${it.color}"></span>`:""}
       <span class="t">${esc(it.label)}</span>
       <span class="v">${it.value||""}</span><span class="only" data-only="1">only</span>
     </div>`).join("") || `<div class="dd-item dim">nothing in this range</div>`;
@@ -144,7 +144,7 @@ function buildFilterPanels(){
     tokByDev[dv]=(tokByDev[dv]||0)+t;
   }
   multiPanel("toolsPanel",
-    ORDER.filter(s=>seen.has(s)).map(s=>({key:s,label:SRC[s].label,color:srcColor(s),value:fmtTok(tokBySrc[s]||0)})),
+    ORDER.filter(s=>seen.has(s)).map(s=>({key:s,source:s,label:SRC[s].label,color:srcColor(s),value:fmtTok(tokBySrc[s]||0)})),
     S.tools, true);
   multiPanel("provPanel",
     PROVIDERS.filter(p=>tokByProv[p]).map(p=>({key:p,label:p,color:provColor(p),value:fmtTok(tokByProv[p])})), S.provs);
@@ -166,8 +166,8 @@ function buildFilterPanels(){
   // the tools phrase: "all tools", "Claude Code", "Claude Code & Codex", "3 tools";
   // any other filter shows as a count beside it
   const picked = ORDER.filter(x => S.tools.has(x) && seen.has(x)), all = ORDER.filter(x => seen.has(x));
-  document.getElementById("qTools").textContent = picked.length===all.length ? "all tools"
-    : !picked.length ? "no tools" : picked.length<=2 ? picked.map(x=>SRC[x].label).join(" & ")
+  document.getElementById("qTools").innerHTML = picked.length===all.length ? "all tools"
+    : !picked.length ? "no tools" : picked.length<=2 ? picked.map(toolLabel).join(" &amp; ")
     : `${picked.length} tools`;
   // "... from all tools on all devices over ..." — only said when there is a choice
   const devPicked = devices().filter(v=>!S.devs.size || S.devs.has(v.id));
@@ -190,7 +190,7 @@ function renderPills(){
   if(S.exactOnly) out.push(["exact","Exact tokens only"]);
   if(S.search) out.push(["search",`“${S.search}”`]);
   document.getElementById("pills").innerHTML = out.map(([k,l])=>
-      `<span class="pill">${esc(l)}<button data-pill="${esc(k)}" title="Remove" aria-label="Remove ${esc(l)}">×</button></span>`).join("")
+      `<span class="pill">${k==="tools"?[...S.tools].map(toolLabel).join(", "):esc(l)}<button data-pill="${esc(k)}" title="Remove" aria-label="Remove ${esc(l)}">×</button></span>`).join("")
     + (out.length>1 ? `<span class="pill reset"><button data-pill="__all" style="color:inherit;font-size:11.5px;padding:0">Clear all</button></span>` : "");
 }
 function resetFilters(){
@@ -199,9 +199,47 @@ function resetFilters(){
   document.querySelectorAll(".search-in").forEach(x=>x.value="");
 }
 
+/* The sidebar and header share S.devs, including URL persistence. A native select
+   handles keyboard interaction and stays usable in the collapsed sidebar. */
+function sidebarDeviceState(){
+  const all=devices(), local=RAW.device||{};
+  const picked=all.filter(d=>S.devs.has(d.id));
+  const unfiltered=!S.devs.size || picked.length===all.length;
+  const one=!unfiltered && picked.length===1 ? picked[0] : null;
+  const multiple=all.length>1;
+  return {
+    multiple,
+    name:!multiple ? local.name||'This computer' : unfiltered ? 'All devices' : one ? one.name : `${picked.length} devices`,
+    detail:!multiple ? local.os||'' : unfiltered ? `${all.length} devices available` : one ? (one.local?'This device':one.error?'Sync unavailable':'Synced device') : `${picked.length} of ${all.length} devices`,
+    value:unfiltered?'all':one?'device:'+one.id:'selected',
+    options:(unfiltered||one?'':'<option value="selected" disabled>Selected devices</option>')+
+      '<option value="all">All devices</option>'+all.map(d=>
+        `<option value="${esc('device:'+d.id)}">${esc(d.name)}${d.local?' (this device)':''}</option>`).join(''),
+    title:all.length ? all.map(d=>`${d.name}${d.local?' · this device':''}${d.synced?' · synced '+ago(d.synced):''}${d.error?' · '+d.error:''}`).join('\n') : [local.name,local.host,local.os].filter(Boolean).join(' · '),
+  };
+}
+function renderSidebarDevices(){
+  const state=sidebarDeviceState(), card=document.getElementById('device'), picker=document.getElementById('deviceSelect');
+  document.getElementById('devName').textContent=state.name;
+  document.getElementById('devOs').textContent=state.detail;
+  card.classList.toggle('selectable',state.multiple);
+  card.title=state.title;
+  card.querySelector('.device-chevron').toggleAttribute('hidden',!state.multiple);
+  picker.hidden=!state.multiple;
+  // Keep an open native picker intact during ordinary background refreshes.
+  if(picker.dataset.options!==state.options){picker.innerHTML=state.options;picker.dataset.options=state.options;}
+  if(picker.value!==state.value) picker.value=state.value;
+}
+function selectSidebarDevice(value){
+  if(value==='all'){S.devs.clear();return true;}
+  const device=devices().find(d=>'device:'+d.id===value);
+  if(!device) return false;
+  S.devs.clear();S.devs.add(device.id);return true;
+}
+
 /* ---------------- shared bits ---------------- */
 function srcBadge(s){
-  return `<span class="badge"><span class="dot" style="background:${srcColor(s)}"></span>${esc((SRC[s]||{label:s}).label)}</span>`;
+  return `<span class="badge">${toolLabel(s)}</span>`;
 }
 function domSource(srcMap){
   let best=null,bv=-1; for(const k in srcMap) if(srcMap[k]>bv){bv=srcMap[k];best=k;}
@@ -233,6 +271,23 @@ function priceOf(m, date){
     if(date <= until) return p;
   return (RAW.pricing && RAW.pricing[m]) || (RAW.prices && RAW.prices[m]) || [0,0,0,0,0];
 }
+function longPriceOf(m,date){ return (RAW.pricing_long_context||{})[m] || priceOf(m,date); }
+function tokenCostParts(r,current=false){
+  const p=(current && RAW.prices && RAW.prices[r.model]) || priceOf(r.model,r.date), high=longPriceOf(r.model,r.date);
+  const cw5=(r.cc5||r.cc1)?(r.cc5||0):(r.cc||0);
+  const cost=(f,n,i,rate)=>n*rate+(r['lc_'+f]||0)*(high[i]-rate);
+  return {in:cost('in',r.in||0,0,p[0]),out:cost('out',r.out||0,1,p[1]),
+    cr:cost('cr',r.cr||0,4,p[4]),
+    cw:cost('cc5',cw5,2,p[2]||p[0])+cost('cc1',r.cc1||0,3,p[3]||p[2]||p[0])};
+}
+function cacheSavings(r){
+  const p=priceOf(r.model,r.date),high=longPriceOf(r.model,r.date);
+  return ((r.cr||0)*(p[0]-p[4])+(r.lc_cr||0)*((high[0]-high[4])-(p[0]-p[4])))/1e6;
+}
+function cachedRequestRate(r){
+  const p=(RAW.prices && RAW.prices[r.model]) || priceOf(r.model,r.date),high=longPriceOf(r.model,r.date),calls=r.asst||r.req||0;
+  return calls ? p[4]+(high[4]-p[4])*(r.lc_asst||0)/calls : p[4];
+}
 /* Per-day series for the metric, plus the same for the previous period (for tiles). */
 function dailySeries(recs, days, f){
   const m = {}; for(const r of recs) m[r.date] = (m[r.date]||0) + f(r);
@@ -263,7 +318,6 @@ function renderDeviceDistribution(d){
     options:{indexAxis:"y",scales:axes({x:{ticks:{callback:v=>tickOf()(v)}},y:{grid:{display:false}}}),
       plugins:{tooltip:{callbacks:{label:c=>" "+fmt(c.parsed.x)+" · "+fmtPct(total?c.parsed.x/total:0)}}}}});
 }
-
 function activityMonthWindows(count, through){
   const end=through ? new Date(through) : new Date();
   end.setHours(0,0,0,0);
@@ -307,6 +361,133 @@ function renderMonthlyRhythmCard(){
   renderMonthlyRhythm(rows,row=>{ S.preset="custom"; S.from=row.from; S.to=row.to; renderAll(); });
 }
 
+let ACCOUNTS=null, accountSequence=0, accountBusy=false, accountFetchError="";
+function sessionAccountDetails(s){
+  if(s.source!=="codex" && s.source!=="claude") return "";
+  const m=s.account_metadata||{};
+  const fields=s.source==="codex"
+    ? [["Thread creator account",m.creator_account_id],["Thread creator user",m.creator_user_id]]
+    : [["Account IDs observed in records",(m.recorded_account_ids||[]).join(" · ")]];
+  return fields.map(([label,value])=>`<div class="kv"><span class="k">${label}</span><span class="v">${esc(value||"Not recorded")}</span></div>`).join("")
+    + '<p class="hint">Historical metadata is incomplete. Creator or observed account IDs do not establish auth mode, plan or the account billing every request.</p>';
+}
+function quotaWindowHTML(w,s,now=Date.now()/1000){
+  const pct=Number.isFinite(w.remaining_percent)?w.remaining_percent:null;
+  const expired=Number.isFinite(w.resets_at)&&now>=w.resets_at;
+  const stale=accountFetchError||w.stale||s.stale||now-s.observed_at>300||now<s.observed_at;
+  const state=expired?"Reset passed · refresh required":stale?"Stale snapshot":pct===null?"Unavailable":"Last reported";
+  const reset=Number.isFinite(w.resets_at)?new Date(w.resets_at*1000).toLocaleString():"Reset time unavailable";
+  const left=pct===null?"Unavailable":`${Math.round(pct*10)/10}% left`;
+  const label=`${w.label}: ${left} · ${state}`;
+  return `<div class="quota-window"><div class="quota-line"><strong>${esc(w.label)}</strong><span>${esc(left)}</span></div>
+    ${pct===null?'':`<progress max="100" value="${pct}" aria-label="${esc(label)}"></progress>`}
+    <div class="quota-line hint"><span>${esc(state)}</span><span>${esc(reset)}</span></div></div>`;
+}
+function accountEntryHTML(e){
+  const id=e.identity;
+  const stale=e.identity_stale||accountFetchError||(e.observed_at&&Date.now()/1000-e.observed_at>300);
+  const authNames={chatgpt:"ChatGPT subscription",apiKey:"API key","claude.ai":"Claude subscription"};
+  const details=id?[authNames[id.auth]||id.auth,id.plan&&id.plan[0].toUpperCase()+id.plan.slice(1),id.email,
+    id.provider&&id.provider!=="firstParty"?id.provider:null,id.organization_id?`Org ${id.organization_id}`:null].filter(Boolean):[];
+  const snapshots=(e.snapshots||[]).map(s=>({...s,windows:(s.windows||[]).filter(w=>Number.isFinite(w.remaining_percent))})).filter(s=>s.windows.length);
+  const unbound=snapshots.some(s=>s.origin!=="Codex account API");
+  const empty=e.source==="codex"?(id&&id.auth!=="chatgpt"?"Subscription limits unavailable for this sign-in.":"Refresh to check your remaining limits.")
+    :"Connect Claude's status line to show remaining limits.";
+  return `<section class="quota-account"><div class="quota-line"><h4>${toolLabel(e.source)}${e.profile_label?` · ${esc(e.profile_label)}`:""}</h4>
+    ${e.can_refresh===false?'':`<button class="btn" data-account-refresh="${esc(e.source)}" ${accountBusy?'disabled':''}>Refresh account${e.source==="codex"?' & limits':''}</button>`}</div>
+    ${details.length?`<p class="hint">${esc(details.join(" · "))}${stale?' · Account details stale':''}</p>`:""}
+    ${e.error?`<p class="warnbar">${esc(e.error)}</p>`:""}
+    ${snapshots.map(s=>`<div class="quota-snapshot" title="${esc('Updated '+new Date(s.observed_at*1000).toLocaleString())}">
+      ${snapshots.length>1?`<p class="hint">${esc(s.limit_name||s.limit_id||"Subscription")}</p>`:""}
+      ${s.windows.map(w=>quotaWindowHTML(w,s)).join("")}</div>`).join("")}
+    ${unbound?'<p class="hint">Account unverified · locally recorded limits</p>':""}
+    ${!snapshots.length?`<p class="hint">${esc(empty)}</p>`:""}
+    ${e.source==="claude"&&!snapshots.length?'<details class="quota-help"><summary>How to show Claude limits</summary><p class="hint">Set up the optional local status-line capture described in README → Subscription limits and account details. Your existing status line can be preserved.</p></details>':""}
+    ${e.profile_label?`<details class="quota-help"><summary>Profile</summary><p class="hint quota-profile">${esc(e.profile)}</p></details>`:""}</section>`;
+}
+function activeQuotaSources(now=new Date()){
+  if(!RAW||!RAW.device||S.devs.size&&!S.devs.has(RAW.device.id)) return [];
+  const today=dkey(now), active=new Set();
+  for(const s of RAW.sessions||[]){
+    if(s.device&&s.device!==RAW.device.id) continue;
+    if(s.days&&Object.hasOwn(s.days,today)||(s.compactions||[]).some(c=>c.date===today)
+      ||[s.start,s.end].some(t=>t&&dkey(new Date(t))===today)) active.add(s.source);
+  }
+  return ["codex","claude"].filter(source=>active.has(source)&&(!S.tools||S.tools.has(source)));
+}
+function quotaEntries(source){
+  const groups=new Map(), normalize=profile=>{
+    const path=(profile||"").replaceAll("\\","/").replace(/\/$/,"");
+    return /^[a-z]:\//i.test(path)?path.toLowerCase():path;
+  };
+  for(const e of ACCOUNTS&&ACCOUNTS.entries||[]){
+    if(e.source!==source||e.device&&e.device!==RAW.device.id) continue;
+    const local=(e.snapshots||[]).some(s=>s.origin==="Local Codex log"), key=normalize(e.profile);
+    const group=groups.get(key)||{source,profile:e.profile,snapshots:[],can_refresh:false};
+    const snapshots=group.snapshots;
+    if(!local) Object.assign(group,e,{can_refresh:true});
+    group.snapshots=[...snapshots,...(e.snapshots||[])];groups.set(key,group);
+  }
+  const entries=[];
+  for(const group of groups.values()){
+    const buckets=new Map();
+    for(const s of group.snapshots){
+      if(!(s.windows||[]).some(w=>Number.isFinite(w.remaining_percent))) continue;
+      // A current account lookup supersedes unbound history, including API-key sign-ins.
+      if(source==="codex"&&group.identity&&s.origin==="Local Codex log") continue;
+      const key=s.limit_id||s.limit_name||"subscription", previous=buckets.get(key);
+      if(!previous||s.observed_at>previous.observed_at) buckets.set(key,s);
+    }
+    group.snapshots=[...buckets.values()];
+    if(group.can_refresh||group.snapshots.length) entries.push(group);
+  }
+  if(!entries.length) entries.push({source,snapshots:[],can_refresh:true});
+  if(entries.length>1) entries.forEach((e,i)=>{e.profile_label=`Profile ${i+1}`;});
+  return entries;
+}
+function renderAccountLimits(){
+  const target=document.getElementById("accountLimits"); if(!target) return;
+  const sources=activeQuotaSources(), card=document.getElementById("accountLimitsCard");
+  if(card) card.hidden=!sources.length;
+  if(!sources.length){target.innerHTML="";return;}
+  target.innerHTML=(accountFetchError?`<p class="warnbar">${esc(accountFetchError)} Previous figures are stale.</p>`:"")
+    +sources.flatMap(quotaEntries).map(accountEntryHTML).join("");
+}
+async function loadAccounts(){
+  if(accountBusy) return;
+  const sequence=++accountSequence;
+  try{
+    const r=await fetch("/api/accounts");if(!r.ok) throw new Error("Cannot read local account observations.");
+    const payload=await r.json();if(sequence!==accountSequence) return;
+    ACCOUNTS=payload;accountFetchError="";
+  }catch(e){if(sequence!==accountSequence)return;accountFetchError=e.message||"Account observations unavailable.";}
+  renderAccountLimits();
+}
+async function refreshAccount(source){
+  if(accountBusy) return;
+  const ok=await askConfirm({title:"Read account details"+(source==="codex"?" and limits":""),
+    body:`<p>Run ${source==="codex"?'Codex’s read-only account API':'Claude Code’s auth status'} for the CLI profile available to this dashboard.</p><p>This may contact the provider using the CLI’s existing sign-in. It starts no conversation or model turn. Other apps and running sessions may use different credentials. Account details stay on this device.</p>`,ok:"Read once"});
+  if(!ok||accountBusy) return;
+  accountBusy=true;const sequence=++accountSequence;renderAccountLimits();
+  try{
+    const r=await fetch("/api/accounts",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({source,confirmed:true})});
+    const result=await r.json();if(!r.ok)throw new Error(result.error||"Account lookup failed.");
+    if(sequence===accountSequence){ACCOUNTS=result;accountFetchError="";}
+  }catch(e){
+    if(sequence===accountSequence){
+      accountFetchError=e.message||"Account lookup failed.";
+      // A switched account is discarded by the backend even when POST fails.
+      // Reconcile its local state without running another provider lookup.
+      ACCOUNTS=null;
+      try{
+        const r=await fetch("/api/accounts");if(!r.ok)throw new Error("Local account state unavailable.");
+        const payload=await r.json();if(sequence===accountSequence)ACCOUNTS=payload;
+      }catch(_){/* Unverified previous identities and live limits stay hidden. */}
+    }
+  }
+  finally{accountBusy=false;renderAccountLimits();}
+}
+
 function viewOverview(d){
   const pd = hasPrev() ? slice(prevRange()) : null;
   const days = dateList(d.r), val = metricOf(), fmt = fmtOf();
@@ -328,7 +509,7 @@ function viewOverview(d){
       {l:"Daily average", v: fmt(activeDays ? cur/activeDays : 0), title:"per active day"},
       {l:"Active days", v: `${fmtNum(activeDays)} <span class="dim" style="font-size:12px;font-weight:500">of ${fmtNum(days.length)}</span>`},
       {l:"Previous period", v: pd ? fmt(prev) : "—"},
-      {l:"Top tool", v: top ? `${esc(SRC[top].label)} <span class="dim" style="font-size:12px;font-weight:500">${fmtPct(bySrc[top]/(cur||1))}</span>` : "—"},
+      {l:"Top tool", v: top ? `${toolLabel(top)} <span class="dim" style="font-size:12px;font-weight:500">${fmtPct(bySrc[top]/(cur||1))}</span>` : "—"},
     ],
   });
 
@@ -336,9 +517,9 @@ function viewOverview(d){
   const srcs = ORDER.filter(s=>S.tools.has(s) && d.recs.some(r=>r.source===s));
   document.getElementById("dailyTitle").textContent = metricTitle() + " per day, by tool";
   const ds = srcs.filter(s=>!isMuted("dailyChart",SRC[s].label)).map(s=>
-    stackDS(SRC[s].label, dailySeries(d.recs.filter(r=>r.source===s), days, val).map(v=>+v.toFixed(4)), srcColor(s)));
+    stackDS(SRC[s].label, dailySeries(d.recs.filter(r=>r.source===s), days, val).map(v=>+v.toFixed(4)), srcColor(s),s));
   document.getElementById("dailyLegend").innerHTML =
-    legendHTML("dailyChart", srcs.map(s=>({label:SRC[s].label,color:srcColor(s)})));
+    legendHTML("dailyChart", srcs.map(s=>({source:s,label:SRC[s].label,color:srcColor(s)})));
   mk("dailyChart",{type:"bar", $fmt:fmt, $stacked:true,
     data:{labels:days.map(shortDay),datasets:ds},
     options:{interaction:{mode:"index",intersect:false},
@@ -368,7 +549,7 @@ function viewOverview(d){
   document.getElementById("toolShareSub").textContent = "share of " + metricNoun();
   const sBy = {}; for(const x of d.sessions) sBy[x.source]=(sBy[x.source]||0)+1;
   const uBy = {}; for(const r of d.recs) uBy[r.source]=(uBy[r.source]||0)+(r.user||0);
-  barList("toolShare", bySrcOrder(bySrc).map(s=>({label:SRC[s].label, value:bySrc[s], color:srcColor(s),
+  barList("toolShare", bySrcOrder(bySrc).map(s=>({source:s,label:SRC[s].label, value:bySrc[s], color:srcColor(s),
       sub:`${fmtNum(sBy[s]||0)} session${sBy[s]===1?"":"s"} · ${fmtNum(uBy[s]||0)} prompts`}))
     .sort((a,b)=>b.value-a.value), {fmt});
 
@@ -459,16 +640,17 @@ function renderTokenMix(d){
   for(const r of d.recs){ const a=agg[r.source]||(agg[r.source]={in:0,cr:0,cc:0,out:0});
     a.in+=r.in||0; a.cr+=r.cr||0; a.cc+=r.cc||0; a.out+=r.out||0; }
   stackMeters("tokenMix", ORDER.filter(s=>agg[s] && (agg[s].in+agg[s].cr+agg[s].cc+agg[s].out)>0)
-    .map(s=>({label:SRC[s].label, color:srcColor(s), parts:agg[s]})), TOKEN_KINDS(), fmtTok);
+    .map(s=>({source:s,label:SRC[s].label, color:srcColor(s), parts:agg[s]})), TOKEN_KINDS(), fmtTok);
 }
 
 /* ---------------- COST ---------------- */
 function viewCost(d){
+  renderAccountLimits();
   const pd = hasPrev() ? slice(prevRange()) : null;
   const t = totals(d.recs), pt = pd ? totals(pd.recs) : null;
   const days = dateList(d.r), active = Math.max(1, t.days.size);
   let saved=0;
-  for(const r of d.recs){ const p=priceOf(r.model, r.date); saved += (r.cr||0)*(p[0]-p[4])/1e6; }
+  for(const r of d.recs) saved += cacheSavings(r);
   document.getElementById("costHero").innerHTML = heroHTML({
     label:"Est. spend at API list prices",
     value: fmtUSD2(t.cost),
@@ -486,7 +668,7 @@ function viewCost(d){
   const ds = srcs.filter(s=>!isMuted("cumChart",SRC[s].label)).map(s=>{
     let run=0;
     return areaDS(SRC[s].label, dailySeries(d.recs.filter(r=>r.source===s), days, r=>r.cost||0)
-      .map(v=>+(run+=v).toFixed(2)), srcColor(s));
+      .map(v=>+(run+=v).toFixed(2)), srcColor(s),undefined,s);
   });
   if(pd){
     let run=0; const prevData = dailySeries(pd.recs, dateList(prevRange()), r=>r.cost||0)
@@ -495,7 +677,7 @@ function viewCost(d){
       borderDash:[5,4], borderWidth:1.5, pointRadius:soloPoint(prevData), fill:false, tension:.25, stack:"prev"});
   }
   document.getElementById("cumLegend").innerHTML =
-    legendHTML("cumChart", srcs.map(s=>({label:SRC[s].label,color:srcColor(s)})));
+    legendHTML("cumChart", srcs.map(s=>({source:s,label:SRC[s].label,color:srcColor(s)})));
   mk("cumChart",{type:"line", $fmt:fmtUSD2, data:{labels:days.map(shortDay),datasets:ds},
     options:{interaction:{mode:"index",intersect:false},
       scales:axes({y:{stacked:true,min:0,ticks:{callback:v=>fmtUSDk(v)}}}),
@@ -535,9 +717,7 @@ function viewCost(d){
     if(!r.cost) continue;
     const p = priceOf(r.model, r.date);
     if(!p[0] && !p[1]) continue;
-    const cw5 = (r.cc5||r.cc1) ? (r.cc5||0) : (r.cc||0);
-    const parts = {in:(r.in||0)*p[0], out:(r.out||0)*p[1], cr:(r.cr||0)*p[4],
-      cw:cw5*(p[2]||p[0])+(r.cc1||0)*(p[3]||p[2]||p[0])};
+    const parts = tokenCostParts(r);
     const sum = parts.in+parts.out+parts.cr+parts.cw;
     if(!sum) continue;
     const scale = r.cost/(sum/1e6);        // match the record's real cost (logged-cost sources, multipliers)
@@ -579,10 +759,10 @@ function viewCost(d){
 
   // daily spend stacked
   document.getElementById("dailyCostLegend").innerHTML =
-    legendHTML("dailyCost", srcs.map(s=>({label:SRC[s].label,color:srcColor(s)})));
+    legendHTML("dailyCost", srcs.map(s=>({source:s,label:SRC[s].label,color:srcColor(s)})));
   mk("dailyCost",{type:"bar", $fmt:fmtUSD2, $stacked:true, data:{labels:days.map(shortDay),
       datasets:srcs.filter(s=>!isMuted("dailyCost",SRC[s].label)).map(s=>
-        stackDS(SRC[s].label, dailySeries(d.recs.filter(r=>r.source===s), days, r=>r.cost||0).map(v=>+v.toFixed(3)), srcColor(s)))},
+        stackDS(SRC[s].label, dailySeries(d.recs.filter(r=>r.source===s), days, r=>r.cost||0).map(v=>+v.toFixed(3)), srcColor(s),s))},
     options:{interaction:{mode:"index",intersect:false},
       scales:axes({x:{stacked:true},y:{stacked:true,ticks:{callback:v=>fmtUSDk(v)}}}),
       plugins:{tooltip:{callbacks:{label:c=>" "+c.dataset.label+": "+fmtUSD2(c.parsed.y),
@@ -617,7 +797,7 @@ function viewModels(d){
       <div class="prov-v">${fmt(prov[p])}</div>
       <div class="bar-track"><div class="bar-fill" style="width:${(prov[p]/grand*100).toFixed(1)}%;background:${provColor(p)}"></div></div>
       <div class="prov-s">${models.length} model${models.length>1?"s":""} · top ${esc(models[0][0])}</div>
-      <div class="prov-s" style="margin-top:3px">ran in ${tools.map(([s])=>toolDot(s)+" "+esc(SRC[s].label)).join(" · ")}</div>
+      <div class="prov-s" style="margin-top:3px">ran in ${tools.map(([s])=>toolLabel(s)).join(" · ")}</div>
     </div>`;
   }).join("") || `<div class="card"><div class="empty">Nothing in range.</div></div>`;
 
@@ -683,7 +863,7 @@ function viewModels(d){
 
   // provider x tool matrix
   const srcs = ORDER.filter(s=>S.tools.has(s) && recs.some(r=>r.source===s));
-  let h = `<thead><tr><th class="nosort">Provider</th>${srcs.map(s=>`<th class="r nosort">${esc(SRC[s].label)}</th>`).join("")}<th class="r nosort">Total</th></tr></thead><tbody>`;
+  let h = `<thead><tr><th class="nosort">Provider</th>${srcs.map(s=>`<th class="r nosort">${toolLabel(s)}</th>`).join("")}<th class="r nosort">Total</th></tr></thead><tbody>`;
   for(const p of provs){
     h += `<tr><td><span class="sw" style="background:${provColor(p)};margin-right:8px"></span>${esc(p)}</td>` +
       srcs.map(s=>`<td class="r">${(provTools[p]||{})[s]?fmt(provTools[p][s]):'<span class="dim">—</span>'}</td>`).join("") +
@@ -747,7 +927,7 @@ function renderActivity(d){
 
   const bySrc = Object.values(actSum(rows, x=>x.source)).filter(x=>x.edits);
   barList("osList", ORDER.map(k=>bySrc.find(x=>x.key===k)).filter(Boolean).map(x=>({
-      label:SRC[x.key].label, value:x.oneshot/x.edits, color:`var(${SRC[x.key].v})`,
+      source:x.key, label:SRC[x.key].label, value:x.oneshot/x.edits, color:`var(${SRC[x.key].v})`,
       sub:`${fmtNum(x.oneshot)} of ${fmtNum(x.edits)} editing prompts`})),
     {fmt:fmtPct, share:false, empty:"No edits in range."});
   const edits = all ? all.edits : 0;
@@ -824,7 +1004,7 @@ function viewTools(d){
     const srcs = ORDER.filter(x => srcTot[x]);
     const grand = ides.reduce((a,i)=>a+ideTot[i],0) || 1;
     document.getElementById("ideMatrix").innerHTML = ides.length ? `<table><thead><tr><th class="nosort">IDE / surface</th>${
-      srcs.map(x=>`<th class="r nosort">${esc(SRC[x].label)}</th>`).join("")}<th class="r nosort">Total</th><th class="r nosort">Share</th></tr></thead><tbody>` +
+      srcs.map(x=>`<th class="r nosort">${toolLabel(x)}</th>`).join("")}<th class="r nosort">Total</th><th class="r nosort">Share</th></tr></thead><tbody>` +
       ides.map(i=>`<tr><td>${esc(i)}</td>` + srcs.map(x=>`<td class="r">${byIde[i][x] ? fmt(byIde[i][x]) : '<span class="dim">—</span>'}</td>`).join("")
         + `<td class="r"><b>${fmt(ideTot[i])}</b></td><td class="r dim">${fmtPct(ideTot[i]/grand)}</td></tr>`).join("") + "</tbody></table>"
       : `<div class="empty">Nothing in range.</div>`;
@@ -918,7 +1098,66 @@ function sessionRows(d){
     when:sessionWhen(s),
     cache:((s.in||0)+(s.cr||0)+(s.cc||0))?(s.cr||0)/((s.in||0)+(s.cr||0)+(s.cc||0)):0,
     name:s.title||s.project||s.id,
-  })).filter(s=>!q || (s.name+" "+(s.project||"")+" "+(s.model||"")+" "+(s.branch||"")).toLowerCase().includes(q));
+  })).filter(s=>!q || (s.name+" "+(s.original_title||"")+" "+(s.project||"")+" "+(s.model||"")+" "+(s.branch||"")).toLowerCase().includes(q));
+}
+function sessionIdentity(s){ return JSON.stringify([s.device||RAW.device.id,s.source,s.rename_id||s.id]); }
+function renameButton(s,text=false){
+  return `<button type="button" class="${text?'btn':'session-rename'}" data-rename="${esc(sessionIdentity(s))}" ${s.rename_available===false?'disabled':''} title="${esc(s.rename_reason||'Rename session')}" aria-label="Rename session ${esc(s.title||s.project||s.id)}">${text?'Rename':
+    '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="m10.5 2.5 3 3-7.5 7.5-4 1 1-4zM9 4l3 3"/></svg>'}</button>`;
+}
+let sessionRenameTarget=null, sessionRenameSaving=false;
+function openSessionRename(identity){
+  if(sessionRenameSaving) return;
+  const s=RAW.sessions.find(x=>sessionIdentity(x)===identity); if(!s) return;
+  sessionRenameTarget={identity,device:s.device||RAW.device.id,source:s.source,id:s.rename_id||s.id};
+  const input=document.getElementById('sessionNameInput');
+  input.value=s.title||s.project||s.id;
+  document.getElementById('sessionNameError').textContent='';
+  document.getElementById('sessionNameDialog').showModal();
+  input.focus(); input.select();
+}
+async function saveSessionName(name){
+  if(!sessionRenameTarget || sessionRenameSaving) return;
+  const target=sessionRenameTarget, dialog=document.getElementById('sessionNameDialog');
+  const buttons=[...dialog.querySelectorAll('button')], input=document.getElementById('sessionNameInput');
+  sessionRenameSaving=true; buttons.forEach(b=>b.disabled=true); input.disabled=true;
+  document.getElementById('sessionNameSave').textContent='Preparing…';
+  document.getElementById('sessionNameError').textContent='';
+  try{
+    const response=await fetch('/api/session-name',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({device:target.device,source:target.source,id:target.id,name,action:'preview'})});
+    const preview=await response.json();
+    if(!response.ok) throw Error(preview.error||'Could not prepare the rename.');
+    dialog.close();
+    if(!await askConfirm({title:'Rename in '+(SRC[target.source]||{label:target.source}).label+'?',ok:'Rename in tool',
+      body:`<p>This changes the name in the <b>original coding tool</b>, not only AgentTelemetry.</p>
+        <p><b>${esc(preview.current_name)}</b> → <b>${esc(preview.name)}</b></p>
+        <div class="modal-note">Close this session in its original tool before continuing. The tool may need a reload. Only title metadata is changed; token, cost and event records are preserved.</div>
+        <p>A backup of the previous title metadata is saved first.</p><p>Target: <code>${esc(preview.target)}</code></p>`})){
+      sessionRenameTarget=target; dialog.showModal(); input.focus(); return;
+    }
+    document.getElementById('sessionNameSave').textContent='Saving…';
+    const saved=await fetch('/api/session-name',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({device:target.device,source:target.source,id:target.id,action:'rename',ticket:preview.ticket,confirmed:true})});
+    const result=await saved.json();
+    if(!saved.ok) throw Error(result.error||'Could not save the session name.');
+    for(const s of RAW.sessions) if(sessionIdentity(s)===target.identity){
+      s.title=result.title;
+    }
+    sessionRenameTarget=null; dialog.close(); renderAll();
+    const drawer=document.getElementById('drawerBody');
+    if(drawer && [...drawer.querySelectorAll('[data-rename]')].some(b=>b.dataset.rename===target.identity))
+      drawer.querySelector('h2').textContent=result.title;
+    const trigger=[...document.querySelectorAll('[data-rename]')].find(b=>b.dataset.rename===target.identity);
+    if(trigger) trigger.focus();
+  }catch(error){
+    sessionRenameTarget=target;
+    if(!dialog.open) dialog.showModal();
+    document.getElementById('sessionNameError').textContent=error.message||'Could not confirm the save. Please retry.';
+  }finally{
+    sessionRenameSaving=false;buttons.forEach(b=>b.disabled=false);input.disabled=false;
+    document.getElementById('sessionNameSave').textContent='Save';
+  }
 }
 let SESS_CACHE=[];
 function viewSessions(d){
@@ -936,7 +1175,7 @@ function viewSessions(d){
       <td class="name" title="${esc(s.title||"")}">${
         s.clipped?`<span class="dim" style="margin-right:5px" title="Figures reflect the selected range and model filters.">◔</span>`:""}${
         s.subagent?`<span class="sub-badge" title="A subagent transcript — work its parent delegated.">sub</span>`:""}${esc(s.name)}${
-        s.compaction_count?` <span class="compaction-badge" title="Completed compactions in the selected date range; model filters do not apply.">${fmtNum(s.compaction_count)} compaction${s.compaction_count===1?"":"s"}</span>`:""}</td>
+        s.compaction_count?` <span class="compaction-badge" title="Completed compactions in the selected date range; model filters do not apply.">${fmtNum(s.compaction_count)} compaction${s.compaction_count===1?"":"s"}</span>`:""}${renameButton(s)}</td>
       <td class="dim">${esc(s.project||"—")}</td>
       <td>${esc(s.model)}${s.nmodels>1?` <span class="dim" title="${esc((s.models||[]).join(" · "))}">+${s.nmodels-1}</span>`:""}</td>
       <td class="r">${fmtTok(s.tok)}</td><td class="r"><b>${fmtUSD(s.cost)}</b></td>
@@ -960,7 +1199,7 @@ function openSession(i){
   openDrawer(`
     <div class="eyebrow">Session</div>
     <h2>${esc(s.title||s.project||s.id)}</h2>
-    <div style="margin-bottom:16px;display:flex;gap:8px;align-items:center">${srcBadge(s.source)} <span class="dim" style="font-size:12px">${esc(s.id)}</span></div>
+    <div style="margin-bottom:16px;display:flex;gap:8px;align-items:center">${srcBadge(s.source)} <span class="dim" style="font-size:12px">${esc(s.id)}</span>${renameButton(s,true)}</div>
     ${row("Device",multiDevice()?esc(deviceName(s.device||RAW.device.id)):null)}
     ${row("Project",esc(s.project||"—"))}
     ${row("Model",esc((s.models||[s.model]).join(" · ")))}
@@ -968,6 +1207,7 @@ function openSession(i){
     ${row("Entrypoint",s.entry?esc(s.entry):null)}
     ${row("Daily detail",s.detail_limited?"Limited in this older ledger entry":null)}
     ${row("Tool version",s.cliver?esc(s.cliver):null)}
+    ${sessionAccountDetails(s)}
     ${s.clipped?`<div class="warnbar">Figures below reflect the selected range and model filters.${s.range_clipped?` This session spans ${s.span} days in total.`:""}</div>`:""}
     ${row("Started",s.start?s.start.slice(0,19).replace("T"," "):"—")}
     ${row("Last activity",s.end?s.end.slice(0,19).replace("T"," "):"—")}
@@ -1003,19 +1243,19 @@ function compactionDetails(s){
   const counts={manual:0,auto:0,unknown:0};
   for(const e of events) counts[e.trigger==="manual"||e.trigger==="auto"?e.trigger:"unknown"]++;
   const types=[counts.manual?`${counts.manual} manual`:"",counts.auto?`${counts.auto} auto`:"",
-    counts.unknown?`${counts.unknown} unknown`:""].filter(Boolean).join(" · ");
-  const value=n=>Number.isFinite(n)?fmtTok(n):"—";
-  const duration=n=>Number.isFinite(n)?`${Math.round(n/1000)}s`:"—";
+    counts.unknown?`${counts.unknown} without a recorded trigger`:""].filter(Boolean).join(" · ");
+  const value=n=>Number.isFinite(n)?fmtTok(n):"Not recorded";
+  const duration=n=>Number.isFinite(n)?`${Math.round(n/1000)}s`:"Unavailable";
   const note=s.source==="codex"
-    ? "Codex does not record type, context sizes or duration. Request usage, when logged, is already included in session totals; these events add no tokens or cost."
+    ? "These Codex records do not report a manual/auto trigger or context sizes. Duration is available only when a uniquely matched completion records both timing fields. Request usage, when logged, is already included in session totals; these events add no tokens or cost."
     : "Context before → after. Compaction request tokens and cost are not recorded; context reduction is not billed usage.";
   return `<section class="compaction-details"><h3>Compactions · ${fmtNum(events.length)}</h3>
     <p class="hint">${types?esc(types)+" · ":""}Selected date range. Events belong to this session; model filters do not apply.</p>
-    ${events.length?`<div class="compaction-table"><table aria-label="Completed compactions in selected date range"><thead><tr><th class="nosort">When</th><th class="nosort">Type</th><th class="nosort">Context</th><th class="nosort">Duration</th></tr></thead><tbody>${events.map(e=>`<tr>
+    ${events.length?`<div class="compaction-table"><table aria-label="Completed compactions in selected date range"><thead><tr><th class="nosort">When</th><th class="nosort">Trigger</th><th class="nosort">Context</th><th class="nosort">Duration</th></tr></thead><tbody>${events.map(e=>`<tr>
       <td title="${esc(e.timestamp||"")}">${esc((e.timestamp||"").slice(0,16).replace("T"," "))}</td>
-      <td>${e.trigger==="manual"?"Manual":e.trigger==="auto"?"Auto":"Unknown"}</td>
-      <td title="Before: ${Number.isFinite(e.before)?fmtNum(e.before):"unknown"}; after: ${Number.isFinite(e.after)?fmtNum(e.after):"unknown"}">${value(e.before)} → ${value(e.after)}</td>
-      <td>${duration(e.duration_ms)}</td></tr>`).join("")}</tbody></table></div>
+      <td>${e.trigger==="manual"?"Manual":e.trigger==="auto"?"Auto":"Not recorded"}</td>
+      <td title="Before: ${Number.isFinite(e.before)?fmtNum(e.before):"Not recorded"}; after: ${Number.isFinite(e.after)?fmtNum(e.after):"Not recorded"}">${Number.isFinite(e.before)||Number.isFinite(e.after)?`${value(e.before)} → ${value(e.after)}`:"Not recorded"}</td>
+      <td${Number.isFinite(e.duration_ms)?"":' title="Recorded timing is missing or cannot be matched uniquely."'}>${duration(e.duration_ms)}</td></tr>`).join("")}</tbody></table></div>
     <p class="hint">${note}</p>`:""}</section>`;
 }
 
@@ -1037,7 +1277,7 @@ function renderVersion(){
   else if(UPD && UPD.busy) action = `<span class="dim">${esc(UPD.busy)}</span>`;
   else if(UPD && UPD.error) action = `<span class="ver-err" title="${esc(UPD.error)}">${esc(UPD.error)}</span> <button class="link" data-upd="check">Retry</button>`;
   else if(UPD && UPD.behind) action = `<button class="btn sm primary" data-upd="apply" title="${esc(UPD.changes.join("\n"))}">Update · ${UPD.behind} new</button>`;
-  else if(UPD) action = `<span class="dim">Up to date</span>`;
+  else if(UPD) action = `<span class="dim">Up to date · </span><button class="link" data-upd="check">Check for updates</button>`;
   else action = `<button class="link" data-upd="check">Check for updates</button>`;
   el.innerHTML = `<span class="ver" title="${esc(title)}">${esc(versionLabel(v))}</span>${action?`<span class="ver-a">${action}</span>`:""}`;
 }
@@ -1105,28 +1345,28 @@ function viewStorage(){
       commands below reclaim the oldest of them without losing any analytics.</div></div>`:""}`;
 
   document.getElementById("stStats").innerHTML = tilesHTML([
-    {l:"Largest single log", v:biggest?fmtBytes(biggest.bytes):"—", s:biggest?(SRC[biggest.source]||{label:biggest.source}).label+" · "+biggest.project:""},
+    {l:"Largest single log", source:biggest?biggest.source:null, v:biggest?fmtBytes(biggest.bytes):"—", s:biggest?(SRC[biggest.source]||{label:biggest.source}).label+" · "+biggest.project:""},
     {l:"Related, not analysed", v:fmtBytes(extras), s:"see the panel below"},
     {l:"Dashboard cache", v:fmtBytes(st.cache_bytes), s:".usage_cache.json"},
     {l:"Live log files", v:fmtNum(st.files_total||st.files.length), s:"across every tool"},
   ]);
 
   barList("stByTool", st.sources.filter(s=>s.bytes).sort((a,b)=>b.bytes-a.bytes).map(s=>({
-    label:(SRC[s.source]||{label:s.source}).label, value:s.bytes, color:srcColor(s.source)})), {fmt:fmtBytes});
+    source:s.source,label:(SRC[s.source]||{label:s.source}).label, value:s.bytes, color:srcColor(s.source)})), {fmt:fmtBytes});
   const tokBySrc={};
   for(const r of RAW.records) tokBySrc[r.source]=(tokBySrc[r.source]||0)+recTokens(r);
   barList("stEff", st.sources.filter(s=>s.bytes&&tokBySrc[s.source]>1e6).map(s=>({
-    label:(SRC[s.source]||{label:s.source}).label, value:s.bytes/(tokBySrc[s.source]/1e6), color:srcColor(s.source)}))
+    source:s.source,label:(SRC[s.source]||{label:s.source}).label, value:s.bytes/(tokBySrc[s.source]/1e6), color:srcColor(s.source)}))
     .sort((a,b)=>b.value-a.value), {fmt:fmtBytes, share:false, empty:"Needs at least 1M tokens per tool."});
 
   const days=[...new Set(st.growth.map(g=>g.date))].filter(x=>x&&x!=="unknown").sort();
   const srcs=[...new Set(st.growth.map(g=>g.source))].sort((a,b)=>ORDER.indexOf(a)-ORDER.indexOf(b));
   const ds=srcs.filter(s=>!isMuted("stGrowth",(SRC[s]||{label:s}).label)).map(s=>{
     const m={}; for(const g of st.growth) if(g.source===s) m[g.date]=(m[g.date]||0)+g.bytes;
-    let run=0; return areaDS((SRC[s]||{label:s}).label, days.map(x=>(run+=(m[x]||0))), srcColor(s));
+    let run=0; return areaDS((SRC[s]||{label:s}).label, days.map(x=>(run+=(m[x]||0))), srcColor(s),undefined,s);
   });
   document.getElementById("stGrowthLegend").innerHTML=
-    legendHTML("stGrowth", srcs.map(s=>({label:(SRC[s]||{label:s}).label,color:srcColor(s)})));
+    legendHTML("stGrowth", srcs.map(s=>({source:s,label:(SRC[s]||{label:s}).label,color:srcColor(s)})));
   mk("stGrowth",{type:"line", $fmt:fmtBytes, $stacked:true, data:{labels:days.map(shortDay),datasets:ds},
     options:{interaction:{mode:"index",intersect:false},
       scales:axes({y:{stacked:true,min:0,ticks:{callback:v=>fmtBytes(v)}}}),
@@ -1583,7 +1823,7 @@ function findCacheWaste(d){
 /* NB: a global priceOf() already exists above (RAW.pricing, zero-tuple fallback).
    This one is deliberately separate — it returns null for an unpriced model so the
    savings math can skip it rather than quietly costing it at zero. */
-function rateOf(m){ return (RAW.prices && RAW.prices[m]) || null; }
+function rateOf(m){ return (RAW.pricing_long_context||{})[m] || (RAW.prices && RAW.prices[m]) || null; }
 function costAt(m, t){
   const p = rateOf(m); if(!p) return null;
   const [pin,pout,pcw5,pcw1,pcr] = p;
@@ -1926,7 +2166,7 @@ function perTokenCost(d, fn, useReq){
   let n = 0, per = 0;
   for(const r of d.recs){ if(r.model==="(user)" || !fn(r)) continue;
     const calls = useReq ? (r.req||r.asst||0) : (r.asst||0);
-    n += calls; per += calls * ((RAW.prices && RAW.prices[r.model]) || priceOf(r.model, r.date))[4] / 1e6; }
+    n += calls; per += calls * cachedRequestRate(r) / 1e6; }
   return {n, per};           // per = $ for one extra token on every one of those requests
 }
 const famOf = src => src==="codex" ? "codex" : (src==="claude"||src==="claude-desktop") ? "claude" : null;
@@ -1935,10 +2175,8 @@ const famOf = src => src==="codex" ? "codex" : (src==="claude"||src==="claude-de
 function cacheWriteRate(recs){
   let tok = 0, usd = 0;
   for(const r of recs){
-    const p = (RAW.prices && RAW.prices[r.model]) || priceOf(r.model, r.date);
     const c5 = r.cc5||0, c1 = r.cc1||0, flat = (c5||c1) ? 0 : (r.cc||0);
-    const w5 = p[2] || p[0], w1 = p[3] || w5;
-    tok += c5 + c1 + flat; usd += (c5 + flat) * w5 + c1 * w1;
+    tok += c5 + c1 + flat; usd += tokenCostParts(r,true).cw;
   }
   return tok ? usd / tok / 1e6 : 0;
 }
@@ -2144,15 +2382,15 @@ function scopeLabel(f){
   const t = (f.tools||[]).filter(Boolean);
   const present = new Set(SLICE_SOURCES);
   if(t.length && !(t.length >= present.size && [...present].every(x=>t.includes(x)))){
-    const names = t.map(x=>(SRC[x]||{label:x}).label);
+    const names = t.map(toolLabel);
     // "X only" reads right for a single tool; for several it is nonsense ("A only,
     // B only"), so just name them.
     chips.push(names.length === 1 ? names[0] + " only" : names.join(" · "));
   }
   // a setup check reads this machine's files; with other devices in the data, say so
-  if(f.local && multiDevice()) chips.push(deviceName(RAW.device.id) + " only");
+  if(f.local && multiDevice()) chips.push(esc(deviceName(RAW.device.id)) + " only");
   return chips.length ? `<div class="finding-scope">${chips.map(c=>
-    `<span class="scope-chip">${esc(c)}</span>`).join(" ")}</div>` : "";
+    `<span class="scope-chip">${c}</span>`).join(" ")}</div>` : "";
 }
 let SLICE_SOURCES=[];
 
@@ -2205,7 +2443,7 @@ function renderAll(){
   Object.entries(tot).sort((a,b)=>b[1]-a[1]).forEach(([m])=>{
     const p=providerOf(m); (MODEL_RANK[p]=MODEL_RANK[p]||[]).push(m); });
 
-  syncRangeUI(); syncMetricUI(); buildFilterPanels(); renderPills();
+  syncRangeUI(); syncMetricUI(); buildFilterPanels(); renderPills(); renderSidebarDevices();
   filtersToURL();
   document.querySelectorAll(".view").forEach(v=>v.classList.toggle("on", v.id==="v-"+S.view));
   document.querySelectorAll("#tabs button").forEach(b=>b.classList.toggle("on", b.dataset.v===S.view));
@@ -2218,7 +2456,7 @@ function renderAll(){
   try{ nFound = runFinders(d).length; }catch(e){}
   document.getElementById("optCount").textContent = nFound || "";
   const empty = !d.recs.length && !d.sessions.length;
-  if(empty && S.view!=="storage"){
+  if(empty && S.view!=="storage" && !(S.view==="cost"&&activeQuotaSources().length)){
     host.innerHTML = `<div class="grid"><div class="card col-12"><div class="empty">
       No activity for this period and filter combination.</div></div></div>`;
     host.dataset.emptied = "1";
@@ -2259,6 +2497,7 @@ async function load(){
     const payload=await r.json();
     if(sequence!==loadSequence) return false;
     RAW=payload;
+    loadAccounts();
   }catch(e){
     if(sequence!==loadSequence) return false;
     console.error(e);
@@ -2278,13 +2517,6 @@ async function load(){
       + (RAW.openclaw_undecoded ? ` · ${fmtNum(RAW.openclaw_undecoded)} OpenClaw events unread — install zstd` : "");
     if(RAW.cache_error) document.getElementById("coverage").textContent += " · " + RAW.cache_error;
     renderVersion();
-    const dev = RAW.device || {};
-    document.getElementById("devName").textContent = dev.name || "This computer";
-    const others = devices().filter(v=>!v.local);
-    document.getElementById("devOs").textContent = others.length
-      ? `+ ${others.length} other device${others.length>1?"s":""}` : (dev.os || "");
-    document.getElementById("device").title = [dev.name, dev.host, dev.os].filter(Boolean).join(" · ")
-      + others.map(v=>`\n+ ${v.name}${v.synced?" · synced "+ago(v.synced):""}${v.error?" · "+v.error:""}`).join("");
     // a device that was disconnected can't stay selected, or it would filter out everything
     for(const id of [...S.devs]) if(!devices().some(v=>v.id===id)) S.devs.delete(id);
     document.getElementById("pricingNote").textContent=RAW.pricing_note;
@@ -2347,6 +2579,9 @@ wireMulti("modelPanel",()=>S.models,false);
 wireMulti("projPanel",()=>S.projs,false);
 wireMulti("idePanel",()=>S.ides,false);
 wireMulti("devPanel",()=>S.devs,false);
+document.getElementById('deviceSelect').addEventListener('change',e=>{
+  if(selectSidebarDevice(e.target.value)) renderAll();
+});
 document.getElementById("filtersPanel").addEventListener("click",e=>{
   const a=e.target.closest("[data-fall],[data-fnone],[data-fclear]"); if(!a) return;
   e.preventDefault();
@@ -2391,6 +2626,8 @@ document.getElementById("liveBtn").addEventListener("click",e=>{
   const st=document.getElementById("statusText"); st.textContent = st.textContent.replace(/^(Live|Paused)/, S.live?"Live":"Paused");
 });
 document.addEventListener("click",e=>{
+  const accountButton=e.target.closest('[data-account-refresh]');
+  if(accountButton){refreshAccount(accountButton.dataset.accountRefresh);return;}
   const tv=e.target.closest(".tv[data-tv]");
   if(tv){ const id=tv.dataset.tv; if(S.tableView.has(id)) S.tableView.delete(id); else S.tableView.add(id);
     applyTableView(id); return; }
@@ -2407,6 +2644,8 @@ document.addEventListener("click",e=>{
     if(st){ st.dir = st.key===k ? -st.dir : -1; st.key=k; renderAll(); } return; }
   const pr=e.target.closest("[data-proj]");
   if(pr && !pr.closest(".dd-panel")){ S.projs.clear(); S.projs.add(pr.dataset.proj); setView("sessions"); return; }
+  const rename=e.target.closest('[data-rename]');
+  if(rename){ openSessionRename(rename.dataset.rename); return; }
   const sr=e.target.closest("tr[data-sess]");
   if(sr){ openSession(+sr.dataset.sess); return; }
   const mr=e.target.closest("tr[data-model]");
@@ -2415,6 +2654,12 @@ document.addEventListener("click",e=>{
     renderAll(); return; }
 });
 document.getElementById("drawerX").addEventListener("click",closeDrawer);
+document.getElementById('sessionNameForm').addEventListener('submit',e=>{
+  e.preventDefault(); saveSessionName(document.getElementById('sessionNameInput').value.trim());
+});
+document.getElementById('sessionNameCancel').addEventListener('click',()=>document.getElementById('sessionNameDialog').close());
+document.getElementById('sessionNameDialog').addEventListener('cancel',e=>{if(sessionRenameSaving)e.preventDefault();});
+document.getElementById('sessionNameDialog').addEventListener('close',()=>{if(!sessionRenameSaving&&!document.getElementById('sessionNameDialog').open)sessionRenameTarget=null;});
 document.getElementById("scrim").addEventListener("click",closeDrawer);
 addEventListener("scroll",()=>{ document.getElementById("filters").classList.toggle("stuck", scrollY>8); },{passive:true});
 matchMedia("(prefers-color-scheme: dark)").addEventListener("change",()=>{

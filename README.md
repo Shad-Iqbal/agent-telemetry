@@ -7,11 +7,13 @@ vs Google** provider comparison, an activity calendar, and breakdowns by **model
 day, hour, weekday, tool, IDE, project and session** — plus how much **disk** all these logs
 eat, and suggestions for spending less, drawn from your own numbers.
 
-**Your data never leaves your machine** — unless you turn on [Your devices](#your-devices-optional)
-to combine two of your own computers over your local network. No account, no API key, no
+**Your data stays on your machine** — unless you turn on [Your devices](#your-devices-optional)
+to combine two of your own computers over your local network. Optional account lookups
+contact the provider only after you choose **Read once**; account metadata is never shared
+with paired devices. No account, no API key, no
 telemetry, no dependencies — just Python's standard library and a vendored copy of Chart.js.
 
-Covers **Claude Code · Claude Desktop · Codex · GitHub Copilot · Cursor · opencode · Hermes Agent · OpenClaw**.
+Covers **Claude Code · Claude Desktop · Codex · GitHub Copilot · Cursor · OpenCode · Hermes Agent · OpenClaw**.
 
 ## Download the app
 
@@ -68,6 +70,20 @@ Options: `python3 dashboard.py --port 9000` · `--rebuild` (ignore cache, full r
 `--interval 20` (background refresh seconds) · `--data-dir /path/to/state` (store the
 cache and optional device-sharing files outside the checkout). Without `--data-dir`, current
 checkout behavior is unchanged. Or `./run.sh [flags]`.
+
+## Subscription limits and account details
+
+The bottom of Cost shows subscription limits for Codex and Claude Code when they
+have a session today on this device. Codex's locally recorded snapshots show reset
+times. Choose **Refresh account & limits** to read the installed Codex CLI's account,
+auth type, plan and current limits once. Claude's **Refresh account** reads its auth,
+provider and optional plan; percentage meters require the optional local status-line
+capture. Both actions ask before a lookup that may contact the provider.
+
+Missing data stays unavailable. Older snapshots are stale; percentages are never
+estimated from tokens or combined across devices. Session details show recorded
+creator/account IDs with their attribution limits. Account metadata is private to the
+source device. See [setup, research and limitations](docs/account-limits.md).
 
 ## Install the menu bar / system tray app
 
@@ -165,12 +181,12 @@ instead of cloning, delete `.usage_cache.json` first — that file is your perso
 | **Codex** | `~/.codex/sessions/**`, `~/.codex/archived_sessions/**` | exact (in/cached/out/reasoning); subagents are identified and labelled |
 | **GitHub Copilot** | VS Code / Insiders / Cursor `workspaceStorage/*/chatSessions/*.{json,jsonl}` | exact where Copilot recorded them (`promptTokens`/`completionTokens` on finished requests in current builds); estimated from message text for older chats · premium-request multiplier read separately |
 | **Cursor** (native AI) | `Cursor/User/globalStorage/state.vscdb` under App Support / `%APPDATA%` / `~/.config` | partial — model, mode, timestamps, tool calls and AI-line stats are exact; tokens are on only ~2% of messages |
-| **opencode** | `~/.local/share/opencode/opencode.db`, `%LOCALAPPDATA%\opencode\opencode.db`, `~/.opencode/opencode.db` (or `$OPENCODE_DATA_DIR`) | V1/V2 SQLite; exact (in/out/reasoning/cache), prompts and tools; cost is read from opencode's own per-message value |
+| **OpenCode** | `~/.local/share/opencode/opencode.db`, `%LOCALAPPDATA%\opencode\opencode.db`, `~/.opencode/opencode.db` (or `$OPENCODE_DATA_DIR`) | V1/V2 SQLite; exact (in/out/reasoning/cache), prompts and tools; cost is read from OpenCode's own per-message value |
 | **Hermes Agent** | `~/.hermes/state.db` (or `$HERMES_HOME`, `%LOCALAPPDATA%\hermes`) | exact (in/out/cache/reasoning, per model) |
 | **OpenClaw** | `~/.openclaw/agents/<agent>/agent/openclaw-agent.sqlite` (or `$OPENCLAW_STATE_DIR`; also the older `~/.clawdbot`, `~/.moltbot`) and the older per-session `sessions/*.jsonl` | exact (in/out/cache read/cache write/reasoning, per response); its own logged cost is used only for a model with no verified price. Large events are stored zstd-compressed: read with the `zstd` command or Python 3.14+ |
 
 A tool you don't use simply contributes nothing. **Attribution is by tool, not by model** —
-a Claude or GPT model used *inside* Copilot/Cursor/opencode/Hermes/OpenClaw counts under that tool, and the
+a Claude or GPT model used *inside* Copilot/Cursor/OpenCode/Hermes/OpenClaw counts under that tool, and the
 Models table lists each `model × tool` row separately.
 
 ---
@@ -224,13 +240,27 @@ where clicking a row opens that project's sessions.
 tool calls, active time, cache % — search, sort, and click any row for a detail panel.
 Claude and Codex sessions also show completed compactions in the selected date range.
 Claude records manual/auto counts, context before → after, and duration in the detail
-panel. Codex checkpoints provide completion times; type, context sizes and duration
-remain unknown because its logs do not record them. Codex compaction request usage,
+panel. Codex checkpoints provide completion times; missing manual/auto triggers and
+context sizes show **Not recorded**. Newer Codex completion records can supply
+duration when their request/turn/thread identities and timing match exactly one checkpoint.
+Missing or ambiguous timing shows **Unavailable**. Codex compaction request usage,
 when logged, is already included in token/cost totals and is never counted again.
 Compaction-only days remain visible. Events survive log deletion once recorded;
 older ledger entries without event metadata say “Not recorded.” Context sizes are
 separate from billed tokens: missing compaction request usage/cost is not inferred. Events
 belong to the session and are not attributed to a model filter.
+
+Use the pencil beside a session name (or **Rename** in its detail panel) to rename it
+in the **original tool**. A warning shows the old/new names and exact target before
+anything is saved. Close the session in its original tool before confirming, and reload
+that tool if needed. Token, cost, prompt, tool-call and compaction records stay intact.
+Previous title metadata is backed up privately in
+`AgentTelemetryNative/session-title-backups/`, separately from the usage ledger.
+This supports local Claude Code transcripts, Codex through its installed CLI’s
+[official name API](https://learn.chatgpt.com/docs/app-server), and OpenCode’s SQLite
+session stores. Other formats, remote sessions and deleted logs cannot be edited.
+Tool/provider icons are bundled locally, including the OpenAI mark for Codex; no remote
+logo requests occur. Their sources and licenses are in `static/tool-icons/README.md`.
 
 **Optimize** — suggestions derived from your own logs, ranked by what they'd save: sessions
 re-reading a very large context, thinking share, tool-heavy sessions that never delegated,
@@ -284,9 +314,16 @@ dollars**, so cost is always derived. Rates live in `parser.py → PRICING` as
 (recomputed on each request, no re-parse needed).
 
 - **Anthropic** rates are current list prices (Opus 5.5 $4/$20, Opus 5 & 4.x $5/$25, Sonnet 5
-  & 5.5 $2/$10, Sonnet 4.x $3/$15, Haiku $1/$5; cache write 1.25×/2× input for 5-min/1-hour, cache
+  & 5.5 $2/$10, Sonnet 4.x $3/$15, Haiku 4.5 $1/$5; cache write 1.25×/2× input for 5-min/1-hour, cache
   read 0.1× — 0.05× on Opus 5.5). **OpenAI** GPT-5.4/5.5/5.6/6 are verified from OpenAI docs;
   older/other models are estimates.
+- **Haiku 5.5** uses [Anthropic's published rates](https://platform.claude.com/docs/en/about-claude/pricing):
+  $0.10/$0.50 per million input/output tokens up to 100K prompt tokens, $0.50/$2.50
+  above 100K. The threshold includes cached input and applies to each request.
+  Available Claude logs backfill this pricing detail on a normal restart; token and
+  message counts stay unchanged. Older archives/peers and other tools without that
+  detail use the short-prompt rate. Optimize model substitutions conservatively use
+  the higher tier when the target request size is unknown.
 - **Price changes are date-aware.** When a vendor cuts a price (OpenAI's GPT-5.6 cuts of
   2026-07-30 and 2026-08-21), usage from before the change keeps the rate it had then —
   see `parser.py → PRICE_HISTORY`.
@@ -363,7 +400,9 @@ It's **off by default** and works over your **local network** only. Open **⚙ �
 3. To see each one from the other, do both steps on both.
 
 Once connected, a **Devices** filter appears and the header reads "…from all tools **on all
-devices**…". The connected device's usage is fetched every minute, and a copy is kept in
+devices**…". The sidebar device card also becomes a dropdown: choose **All devices** or
+one computer. Both controls share the same filter, which is preserved in the URL.
+The connected device's usage is fetched every minute, and a copy is kept in
 `.peers/` so it still shows while that computer is asleep. Disconnecting deletes the copy.
 
 What sharing sends: session titles (often the start of a prompt), project and branch names,
