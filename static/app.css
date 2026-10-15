@@ -296,12 +296,9 @@ input[type=date]{color-scheme:inherit}
 .hero-main{display:flex;flex-direction:column;gap:6px;min-width:0}
 .hero-main.wide{flex-direction:row;flex-wrap:wrap;align-items:flex-end;gap:10px 40px}
 .hero-label{font-size:12.5px;color:var(--text-2);font-weight:560}
-.hero-value-row{display:flex;align-items:center;gap:16px;min-width:0}
 .hero-value{font-size:44px;font-weight:680;letter-spacing:-.035em;line-height:1.02;white-space:nowrap}
+.hero-value[title]{cursor:help}
 .hero-value .unit{font-size:22px;font-weight:600;color:var(--text-2);letter-spacing:-.01em;margin-left:4px}
-.hero-secondary{border-left:1px solid var(--border-2);padding-left:16px}
-.hero-secondary-label{font-size:12.5px;color:var(--text-3);white-space:nowrap}
-.hero-secondary-value{font-size:20px;font-weight:640;line-height:1.2;margin-top:2px}
 .hero-delta{display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--text-2);min-height:20px}
 .hero-feature{display:flex;align-items:flex-end;justify-content:space-between;gap:20px;min-width:0;margin-top:18px}
 .hero-feature>div:first-child{flex:none}
@@ -610,10 +607,6 @@ code.cmd{display:block;background:var(--surface-2);border:1px solid var(--border
 @media(max-width:520px){
   .brand span{display:none}
   .hero-value{font-size:40px}
-  .hero-value-row{gap:10px}
-  .hero-secondary{padding-left:10px}
-  .hero-secondary-label{font-size:11px}
-  .hero-secondary-value{font-size:17px}
   .hero-feature{gap:10px;margin-top:36px}
   .hero-feature-spark svg{height:46px}
   .hero-facts{gap:14px 12px}

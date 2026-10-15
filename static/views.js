@@ -372,9 +372,8 @@ function overviewCacheDetail(t){
   const value=tokens>=1e9?(tokens/1e9).toFixed(2).replace(/\.?0+$/,"")+"B"
     :tokens>=1e6?Math.round(tokens/1e6)+"M":fmtTok(tokens);
   return {
-    label:"Excluded Cache",
     value,
-    title:"Token total excluding cache reads. Cache reads remain included in estimated spend at their discounted rate.",
+    title:`Tokens excluding cache reads: ${value}. Cache reads are included in the total and remain included in estimated spend at their discounted rate.`,
   };
 }
 
@@ -527,7 +526,7 @@ function viewOverview(d){
   document.getElementById("ovHero").innerHTML = heroHTML({
     label: metricTitle() + (S.metric==="cost" ? " at API list prices" : ""),
     value: big,
-    secondary:tokenMetric?overviewCacheDetail(t):null,
+    valueTitle:tokenMetric?overviewCacheDetail(t).title:null,
     delta: pd ? deltaHTML(cur, prev, S.metric==="cost") : "",
     note: pd ? `vs the ${prevLabel()}` : "",
     feature:tokenMetric?overviewSpendSummary(t,days,d.recs):null,

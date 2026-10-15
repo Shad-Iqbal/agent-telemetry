@@ -174,8 +174,7 @@ function tilesHTML(items){
 }
 function heroHTML(o){
   return `<div class="hero-label">${esc(o.label)}</div>
-    <div class="hero-value-row"><div class="hero-value">${o.value}</div>${
-      o.secondary?`<div class="hero-secondary" title="${esc(o.secondary.title||"")}"><div class="hero-secondary-label">${esc(o.secondary.label)}</div><div class="hero-secondary-value">${o.secondary.value}</div></div>`:""}</div>
+    <div class="hero-value"${o.valueTitle?` title="${esc(o.valueTitle)}"`:""}>${o.value}</div>
     <div class="hero-delta">${o.delta||""}${o.note?`<span>${esc(o.note)}</span>`:""}</div>
     ${o.feature?`<div class="hero-feature" title="${esc(o.feature.title||"")}">
       <div><div class="hero-feature-label">${esc(o.feature.label)}</div><div class="hero-feature-value">${o.feature.value}</div></div>
