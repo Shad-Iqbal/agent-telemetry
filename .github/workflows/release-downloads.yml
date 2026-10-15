@@ -34,7 +34,10 @@ jobs:
           python packaging/windows/installer/build.py --source application --output artifacts --tag $env:RELEASE_TAG --compiler $compiler
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $installer = (Get-ChildItem artifacts/*.exe).FullName
-          python packaging/tests/run_windows_installer.py $installer
+          $expectedVersion = $env:RELEASE_TAG.Substring(1)
+          $expectedCommit = (git -C application rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python packaging/tests/run_windows_installer.py $installer --expected-version $expectedVersion --expected-commit $expectedCommit
           exit $LASTEXITCODE
       - uses: actions/upload-artifact@v4
         with:
