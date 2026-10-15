@@ -10,13 +10,12 @@ final class MenuBarPopoverController: NSObject, ObservableObject, NSPopoverDeleg
     private var backend: BackendController?
     private var settings: AppSettings?
     private var subscriptions = Set<AnyCancellable>()
-    // Reuse CFBundleIconFile from the installed app, keeping its full-color mark.
-    // Copy before sizing so the application/Dock icon is never mutated.
+    // Load the bundle resource directly so a stale Launch Services icon cache
+    // cannot substitute a different glyph. Copy before sizing the status item.
     private lazy var applicationStatusIcon: NSImage = {
-        let image = NSApplication.shared.applicationIconImage.copy() as! NSImage
+        let image = AgentTelemetryAppIcon.image.copy() as! NSImage
         image.size = NSSize(width: 18, height: 18)
         image.isTemplate = false
-        image.accessibilityDescription = "AgentTelemetry"
         return image
     }()
 

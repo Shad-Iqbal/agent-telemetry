@@ -121,7 +121,7 @@ struct StatusMenu: View {
 
     private var header: some View {
         HStack(spacing: 9) {
-            Image(nsImage: NSApplication.shared.applicationIconImage)
+            Image(nsImage: AgentTelemetryAppIcon.image)
                 .resizable()
                 .interpolation(.high)
                 .frame(width: 28, height: 28)
