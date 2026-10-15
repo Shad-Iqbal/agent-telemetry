@@ -10,6 +10,15 @@ final class MenuBarPopoverController: NSObject, ObservableObject, NSPopoverDeleg
     private var backend: BackendController?
     private var settings: AppSettings?
     private var subscriptions = Set<AnyCancellable>()
+    // Reuse CFBundleIconFile from the installed app, keeping its full-color mark.
+    // Copy before sizing so the application/Dock icon is never mutated.
+    private lazy var applicationStatusIcon: NSImage = {
+        let image = NSApplication.shared.applicationIconImage.copy() as! NSImage
+        image.size = NSSize(width: 18, height: 18)
+        image.isTemplate = false
+        image.accessibilityDescription = "AgentTelemetry"
+        return image
+    }()
 
     func install(
         backend: BackendController,
@@ -101,9 +110,11 @@ final class MenuBarPopoverController: NSObject, ObservableObject, NSPopoverDeleg
         let summary = summary ?? backend.summary
         let status = status ?? backend.status
         button.title = ""
-        button.toolTip = summary.date.isEmpty
+        let figures = summary.date.isEmpty
             ? "AgentTelemetry; today's summary is not available"
             : "AgentTelemetry; \(summary.tokens) tokens today; estimated spend \(summary.spend) dollars"
+        button.toolTip = figures + "; " + status.title
+        button.setAccessibilityLabel("AgentTelemetry; " + status.title)
 
         if display == .numbers {
             button.image = menuBarNumbersImage(for: summary)
@@ -111,24 +122,7 @@ final class MenuBarPopoverController: NSObject, ObservableObject, NSPopoverDeleg
             return
         }
 
-        let symbol: String
-        switch status {
-        case .starting, .stopping:
-            symbol = "ellipsis.circle"
-        case .needsAttention:
-            symbol = "exclamationmark.triangle.fill"
-        case .stopped:
-            symbol = "chart.bar.fill"
-        case .running, .connectedToExisting:
-            symbol = "chart.bar.fill"
-        }
-        let configuration = NSImage.SymbolConfiguration(pointSize: 15, weight: .medium)
-        button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: "AgentTelemetry")?
-            .withSymbolConfiguration(configuration)
-        button.image?.size = NSSize(width: 15, height: 15)
-        button.image?.isTemplate = true
-        // Leave the template untinted so macOS chooses a contrasting
-        // foreground for the current menu bar appearance.
+        button.image = applicationStatusIcon
         button.contentTintColor = nil
     }
 

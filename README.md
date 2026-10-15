@@ -108,9 +108,10 @@ Both native popovers put a monitoring switch above today's token/spend cards, wi
 expandable **Details & settings**, a dashboard button and always-visible refresh/quit
 controls. Windows follows the system light/dark or high-contrast theme, scales to the
 tray's monitor, and scrolls settings on smaller displays. Tab/Space/Enter operate the
-native controls; Escape or clicking elsewhere closes the panel. Its default chart icon
-and optional numeric icon are accompanied by a text tooltip. Windows uses Segoe UI
-and opens the full dashboard in your browser; macOS uses its system font and embeds it.
+native controls; Escape or clicking elsewhere closes the panel. Icon mode uses the
+AgentTelemetry app icon; the numeric display remains available. Both have a text tooltip.
+Windows uses Segoe UI and opens the full dashboard in your browser; macOS uses its
+system font and embeds it.
 
 Both clients reuse a dashboard already running on port 7878 and stop only a backend they
 started. A web/native app using a custom dashboard port is not supported by the native

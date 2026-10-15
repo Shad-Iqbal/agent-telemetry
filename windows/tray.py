@@ -47,8 +47,8 @@ class Tray:
         self.icon_key = None
         self.callback = WNDPROC(self.window_proc)  # keep callback alive
         self.instance = get_module(None)
-        # A real, DPI-sized chart glyph, never the generic Python/application icon.
-        self.base_icon = load_image(None, str(ROOT / "windows" / "assets" / "TrayIcon.ico"),
+        # Reuse the installed app/shortcut mark, with its DPI-sized representations.
+        self.base_icon = load_image(None, str(ROOT / "windows" / "assets" / "AgentTelemetry.ico"),
                                     1, 32, 32, 0x10)
         if not self.base_icon:
             raise C.WinError(C.get_last_error())

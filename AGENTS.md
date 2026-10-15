@@ -52,6 +52,9 @@ no third-party GUI dependency. Linux stays on the existing browser workflow.
   `windows/monitor.py` owns testable backend attachment, ownership, stale summaries and import.
 - `macos/AgentTelemetryMac` owns SwiftUI/AppKit UI, app-owned Python and WKWebView.
   `NativeControl.swift` handles the same heartbeat/control-file protocol as Windows.
+  Icon display reuses the installed app's full-color icon (copied before resizing on
+  macOS, `AgentTelemetry.ico` on Windows), including both popover headers.
+  Keep the optional numeric display and monitoring status tooltip/accessibility labels.
 - Web Settings uses `GET/POST /api/native` to launch/quit the installed client. Its
   running status requires a live matching heartbeat. A pending/failed launch is not running.
   Both clients attach to port 7878. Closing a client never terminates an attached backend.

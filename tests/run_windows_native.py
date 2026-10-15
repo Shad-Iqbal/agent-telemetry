@@ -111,6 +111,49 @@ def pump():
         time.sleep(.005)
 
 
+def icon_fixture(icon, background, scale, destination=None):
+    """Render the actual loaded notification icon via DrawIconEx, off desktop."""
+    width, height = int(96 * scale), int(48 * scale)
+    dc = w.get_dc(None)
+    memory = w.compatible_dc(dc)
+    image = w.bitmap(dc, width, height)
+    old = w.select_object(memory, image)
+    brush = w.solid_brush(background)
+    try:
+        rect = W.RECT(0, 0, width, height)
+        assert w.fill_rect(memory, C.byref(rect), brush)
+        for x, size in ((8, 16), (36, 20), (64, 24)):
+            assert w.draw_icon(memory, int(x * scale), int((48 - size) / 2 * scale), icon,
+                               int(size * scale), int(size * scale), 0, None, 3)
+        w.select_object(memory, old)
+        info = BITMAPINFO()
+        info.size, info.width, info.height, info.planes, info.bits = 40, width, -height, 1, 32
+        raw = C.create_string_buffer(width * height * 4)
+        assert w.api(w.G, "GetDIBits", C.c_int, W.HDC, W.HBITMAP, W.UINT, W.UINT,
+                     C.c_void_p, C.POINTER(BITMAPINFO), W.UINT)(dc, image, 0, height, raw, C.byref(info), 0) == height
+        pixels = raw.raw
+        assert len({pixels[i:i+3] for i in range(0, len(pixels), 4)}) > 100
+        if destination:
+            rows = bytearray()
+            for y in range(height):
+                rows.append(0)
+                for x in range(width):
+                    i = (y * width + x) * 4
+                    rows.extend((pixels[i + 2], pixels[i + 1], pixels[i]))
+            def chunk(kind, data):
+                return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xffffffff)
+            destination.write_bytes(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+                + chunk(b"IDAT", zlib.compress(bytes(rows))) + chunk(b"IEND", b""))
+        # The unused GDI alpha byte is unspecified for a device-dependent bitmap.
+        return b"".join(pixels[i:i+3] for i in range(0, len(pixels), 4))
+    finally:
+        w.select_object(memory, old)
+        w.delete_object(brush)
+        w.delete_object(image)
+        w.delete_dc(memory)
+        w.release_dc(None, dc)
+
+
 def click(panel, identifier):
     w.send(panel.controls[identifier], 0xf5, 0, 0)  # BM_CLICK, actual native button routing.
     assert panel.error is None, panel.error
@@ -126,6 +169,18 @@ def main():
         app = FixtureTray()
         panel = app.popover
         try:
+            expected_icon = w.load_image(None, str(ROOT / "windows/assets/AgentTelemetry.ico"), 1, 32, 32, 0x10)
+            assert expected_icon
+            try:
+                for dark in (False, True):
+                    background = palette(dark)["bg"]
+                    for scale in (1, 1.5, 2):
+                        pixels = icon_fixture(app.base_icon, background, scale, options.screenshots / (
+                            "tray-icon-%s-%s.png" % ("dark" if dark else "light", int(scale * 100))))
+                        assert pixels == icon_fixture(expected_icon, background, scale), "Tray icon differs from the app mark"
+            finally:
+                w.destroy_icon(expected_icon)
+            print("PASS actual tray icon matches the application mark in both themes at 100/150/200%")
             app.monitor.request(True)
             app.monitor.summary = {"date": datetime.date.today().isoformat(), "tokens": 15094633, "spend": 2.59}
             app.monitor._state("Monitoring on", False)

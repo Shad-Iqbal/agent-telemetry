@@ -11,12 +11,17 @@ struct MacNativeRegression {
     static func main() async throws {
         _ = NSApplication.shared
         let port = Int(CommandLine.arguments[1])!
+        // Supply the packaged app's real icon to this unbundled test executable.
+        let appIcon = NSImage(contentsOfFile: CommandLine.arguments[2])!
+        let originalIconSize = appIcon.size
+        NSApplication.shared.applicationIconImage = appIcon
         let defaults = UserDefaults(suiteName: "AgentTelemetryIsolatedNativeTests")!
         defaults.removePersistentDomain(forName: "AgentTelemetryIsolatedNativeTests")
         defer { defaults.removePersistentDomain(forName: "AgentTelemetryIsolatedNativeTests") }
         defaults.set(-1, forKey: "refreshIntervalSeconds")
         let settings = AppSettings(defaults: defaults)
         precondition(settings.refreshIntervalSeconds == 15, "Invalid stored cadence was accepted")
+        settings.menuBarDisplay = .icon
         let backend = BackendController(settings: settings)
         let menu = MenuBarPopoverController()
         menu.install(backend: backend, settings: settings, openDashboard: {}, quit: {})
@@ -25,6 +30,46 @@ struct MacNativeRegression {
         precondition(backend.summary.tokens == 100 && backend.isReady)
         let reflected = Mirror(reflecting: menu).children.first { $0.label == "statusItem" }!.value
         let statusItem = reflected as! NSStatusItem
+        let brandIcon = statusItem.button!.image!
+        precondition(!brandIcon.isTemplate && brandIcon.size == NSSize(width: 18, height: 18))
+        precondition(appIcon.size == originalIconSize, "Resizing the status icon changed the app icon")
+        func raster(_ image: NSImage) -> Data {
+            let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 18, pixelsHigh: 18,
+                bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: bitmap)
+            NSColor.clear.setFill()
+            NSRect(x: 0, y: 0, width: 18, height: 18).fill(using: .copy)
+            image.draw(in: NSRect(x: 0, y: 0, width: 18, height: 18))
+            NSGraphicsContext.restoreGraphicsState()
+            return bitmap.representation(using: .png, properties: [:])!
+        }
+        let expectedIcon = appIcon.copy() as! NSImage
+        expectedIcon.size = NSSize(width: 18, height: 18)
+        if CommandLine.arguments.count > 3 {
+            let output = URL(fileURLWithPath: CommandLine.arguments[3])
+            try raster(brandIcon).write(to: output.appendingPathComponent("mac-status-icon.png"))
+            try raster(expectedIcon).write(to: output.appendingPathComponent("mac-expected-icon.png"))
+        }
+        // AppKit caches a small representation when an NSImage enters a status item.
+        // Its edge filtering can vary slightly from drawing the 1024px master directly.
+        let actualPixels = NSBitmapImageRep(data: raster(brandIcon))!
+        let expectedPixels = NSBitmapImageRep(data: raster(expectedIcon))!
+        var difference = 0.0
+        for y in 0..<18 { for x in 0..<18 {
+            let a = actualPixels.colorAt(x: x, y: y)!.usingColorSpace(.deviceRGB)!
+            let b = expectedPixels.colorAt(x: x, y: y)!.usingColorSpace(.deviceRGB)!
+            difference += abs(a.redComponent - b.redComponent) + abs(a.greenComponent - b.greenComponent)
+                + abs(a.blueComponent - b.blueComponent) + abs(a.alphaComponent - b.alphaComponent)
+        } }
+        precondition(difference / (18 * 18 * 4) < 1.0 / 255, "Menu icon does not match the app mark")
+        settings.menuBarDisplay = .numbers
+        precondition(statusItem.button!.image !== brandIcon, "Numeric display did not replace the icon")
+        settings.menuBarDisplay = .icon
+        precondition(statusItem.button!.image === brandIcon, "Icon display did not restore the app mark")
+        precondition(statusItem.button!.accessibilityLabel()!.contains("AgentTelemetry"))
+        print("PASS real application mark, separate numeric display and unchanged application icon")
         precondition(statusItem.button!.toolTip!.contains("100 tokens"), "First menu summary is stale")
         print("PASS actual status-item subscriber renders the first summary")
 
@@ -56,6 +101,8 @@ struct MacNativeRegression {
         try await Task.sleep(nanoseconds: 700_000_000)
         precondition(backend.summaryStale && backend.isMonitoring && backend.status.message != nil)
         precondition(backend.summary.tokens == 250)
+        precondition(statusItem.button!.image === brandIcon, "Failure replaced the app mark")
+        precondition(statusItem.button!.toolTip!.contains("Needs attention"), "Failure status is missing from the tooltip")
         settings.refreshIntervalSeconds = 15
         backend.refreshIntervalDidChange()
         _ = try await URLSession.shared.data(from: base.appendingPathComponent("recover"))
@@ -63,6 +110,8 @@ struct MacNativeRegression {
         precondition(!backend.summaryStale && backend.isReady && backend.lastSummaryUpdate != nil)
         print("PASS summary failure retains data and retries after a cadence change during an outage")
         backend.stop()
+        precondition(statusItem.button!.image === brandIcon, "Stopping replaced the app mark")
+        precondition(statusItem.button!.toolTip!.contains("Monitoring off"))
         settings.refreshIntervalSeconds = 300
 
         _ = try await URLSession.shared.data(from: base.appendingPathComponent("delay"))
