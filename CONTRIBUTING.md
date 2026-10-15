@@ -124,6 +124,11 @@ python3 -m unittest discover -s tests -v
 
 For frontend accounting and filter changes, also run `node tests/test_frontend.js`.
 Node is a development check only; the dashboard remains stdlib-only.
+For Overview changes, check all four measures, exact-only Copilot subsets, and matching
+activity calendar/monthly counts under dimension filters. The activity views keep their
+historical windows when the selected date range changes. Check Monthly rhythm's table
+toggle across filter updates, keyboard month selection, and header/dropdown layouts at
+320px as well as desktop widths, in both themes. Use mock usage for these UI checks.
 
 For native changes, also run the actual OS checks:
 

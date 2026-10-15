@@ -2,7 +2,8 @@
 const fs=require('fs'), path=require('path'), vm=require('vm'), assert=require('assert');
 const root=path.resolve(__dirname,'..');
 const document={addEventListener(){},getElementById(){return null},querySelector(){return null}};
-const context=vm.createContext({document,console,URLSearchParams,Set,Date,location:{search:'',hash:''}});
+const context=vm.createContext({document,console,URLSearchParams,Set,Date,location:{search:'',hash:''},
+  getComputedStyle:()=>({getPropertyValue:()=>"#000"})});
 vm.runInContext(fs.readFileSync(path.join(root,'static/core.js'),'utf8'),context);
 vm.runInContext(fs.readFileSync(path.join(root,'static/charts.js'),'utf8'),context);
 const views=fs.readFileSync(path.join(root,'static/views.js'),'utf8');
@@ -22,6 +23,114 @@ assert.match(run(`sessionAccountDetails({source:'codex',account_metadata:{creato
 assert.match(run(`sessionAccountDetails({source:'claude'})`),/Not recorded/);
 assert.doesNotMatch(run(`sessionAccountDetails({source:'claude',account_metadata:{recorded_account_ids:['<img src=x onerror=alert(1)>']}})`),/<img src=x/);
 assert.doesNotMatch(run(`accountEntryHTML({source:'codex',profile:'<img src=x onerror=alert(1)>',identity:{auth:'apiKey',email:'<img src=x>',plan:null},snapshots:[]})`),/<img src=x/);
+{
+  const spend=run(`overviewSpendSummary({cost:209.49},['2026-10-14','2026-10-15'],
+    [{date:'2026-10-14',cost:100},{date:'2026-10-15',cost:109.49}])`);
+  assert.equal(spend.label,'Est. spend');
+  assert.equal(spend.value,'$209','Overview spend must use complete priced record costs with the design’s whole-dollar formatting');
+  assert.match(spend.title,/cache reads are included/);
+  assert.match(spend.spark,/<svg/,'The spend row should retain its wide trend sparkline');
+  const cache=run(`overviewCacheDetail({tok:1190000000,cr:1137000000})`);
+  assert.equal(cache.value,'53M','Excluded-cache tokens must be total tokens minus cached reads, rounded to whole millions');
+  assert.match(cache.title,/Tokens excluding cache reads: 53M\./);
+  assert.equal(run(`overviewCacheDetail({tok:1190000000,cr:52700000}).value`),'1.14B');
+  assert.match(cache.title,/remain included in estimated spend/);
+  assert.equal(run(`overviewCacheDetail({tok:100,cr:120}).value`),'0','Malformed overcount must not produce negative excluded tokens');
+  const hero=run(`heroHTML({label:'Tokens',value:'1.19B',
+    valueTooltip:{id:'ovTokenTooltip',text:overviewCacheDetail({tok:1190000000,cr:1137000000}).title},
+    feature:{label:'Est. spend',value:'$209',title:'API estimate',spark:'<svg></svg>'},
+    facts:[{l:'Daily average',v:'27.6M'}]})`);
+  assert.match(hero,/<div class="hero-value" tabindex="0" aria-describedby="ovTokenTooltip">1.19B<\/div>/);
+  assert.match(hero,/id="ovTokenTooltip" role="tooltip">Tokens excluding cache reads: 53M\./);
+  assert.doesNotMatch(hero,/>53M<|Excluded Cache|hero-secondary/,'Cache-excluded count must appear only in the hover tooltip');
+  assert.doesNotMatch(hero,/<div class="hero-value"[^>]*title=/,'Use the visible tooltip instead of a delayed browser title');
+  assert.match(run(`heroHTML({label:'Tokens',value:'1',valueTooltip:{id:'"<id>',text:'"<unsafe>'}})`),/id="&quot;&lt;id&gt;" role="tooltip">&quot;&lt;unsafe&gt;/);
+  assert.ok(hero.indexOf('hero-feature')<hero.indexOf('hero-facts'));
+  assert.match(hero,/hero-feature-spark/);
+}
+{
+  // Render the actual Overview with mock DOM/usage, without Chart.js or a real ledger.
+  const nodes=new Map();
+  const node=id=>{
+    if(!nodes.has(id)) nodes.set(id,{tagName:'DIV',innerHTML:'',style:{},attributes:{},
+      classList:{toggle(){}},setAttribute(k,v){this.attributes[k]=v},
+      querySelector:()=>({addEventListener(){}})});
+    return nodes.get(id);
+  };
+  const overview=vm.createContext({console,Date,Set,URLSearchParams,location:{search:'',hash:''},
+    document:{addEventListener(){},getElementById:node,
+      querySelector:selector=>selector==='.tv[data-tv="monthlyRhythm"]'?node('monthToggle'):null},
+    getComputedStyle:()=>({getPropertyValue:()=>"#000"})});
+  for(const file of ['static/core.js','static/charts.js'])
+    vm.runInContext(fs.readFileSync(path.join(root,file),'utf8'),overview);
+  vm.runInContext(views.slice(0,views.indexOf('document.getElementById("tabs").addEventListener')),overview);
+  const check=code=>vm.runInContext(code,overview);
+  check(`var calendarDays;
+    mk=()=>{}; renderDeviceDistribution=()=>{}; renderHighlights=()=>{};
+    renderHeat=()=>{}; renderTokenMix=()=>{};
+    renderCalendar=days=>{calendarDays=days};
+    var windows=activityMonthWindows(12), today=windows[11].to;
+    var tomorrow=new Date(today+'T00:00:00');tomorrow.setDate(tomorrow.getDate()+1);
+    var exactRow={date:today,source:'copilot',device:'Mac',model:'M',project:'P',ide:'VS Code',
+      in:900000,out:100000,cost:10,asst:9,user:8,active:600,
+      exact:{in:1000,out:200,cost:.25,asst:1,user:1,active:60}};
+    RAW={device:{id:'Mac'},devices:[],sessions:[],hourly:[],model_vendor:{M:'OpenAI'},
+      records:[exactRow,{...exactRow,exact:null},
+        {...exactRow,date:windows[0].from,source:'codex',in:300,out:100,exact:null},
+        {...exactRow,date:'2000-01-01'},
+        {...exactRow,date:dkey(tomorrow)}]};
+    S.preset='custom'; S.from=today; S.to=today; S.exactOnly=true;
+    S.tools=new Set(['copilot','codex']);
+    var originalRecords=JSON.stringify(RAW.records);
+    viewOverview(slice());`);
+  assert.equal(check('totals(slice().recs).tok'),1200,'Hero must use the exact Copilot subset');
+  assert.equal(check('monthlyRhythmRows()[11].value'),1200,'Monthly bars must exclude estimated and future usage');
+  assert.equal(check('monthlyRhythmRows()[0].value'),400,'The fixed month window must retain older exact tool usage');
+  assert.equal(check('monthlyRhythmRows().reduce((n,r)=>n+r.value,0)'),1600,'Monthly history must exclude dates before its 12-month window');
+  assert.equal(check('calendarDays[today]'),1200,'Activity calendar and hero must use the same precision');
+  assert.equal(check('JSON.stringify(RAW.records)===originalRecords'),true,'Rendering must not mutate telemetry');
+  for(const [filter,value] of [['tools','claude'],['models','Missing'],['provs','Anthropic'],
+      ['projs','Missing'],['ides','Missing'],['devs','PC']]){
+    check(`var savedFilter=S.${filter}; S.${filter}=new Set([${JSON.stringify(value)}]); viewOverview(slice());`);
+    assert.equal(check('monthlyRhythmRows().reduce((n,r)=>n+r.value,0)'),0,filter+' must filter monthly activity');
+    assert.equal(check('Object.keys(calendarDays).length'),0,filter+' must filter the calendar');
+    check(`S.${filter}=savedFilter;`);
+  }
+  check(`S.exactOnly=false;viewOverview(slice());`);
+  assert.equal(check('monthlyRhythmRows()[11].value'),2000000,'Normal mode must retain estimated contributions');
+  assert.equal(check('calendarDays[today]'),2000000);
+  for(const metric of ['tokens','cost','messages','time']){
+    check(`S.metric=${JSON.stringify(metric)};S.exactOnly=true;viewOverview(slice());`);
+    const hero=node('ovHero').innerHTML, tiles=node('kpis').innerHTML;
+    assert.equal(hero.includes('role="tooltip"'),metric==='tokens','Only token mode needs the cache tooltip');
+    assert.match(hero+tiles,/Est\. spend/,metric+' must retain an estimated spend summary');
+    assert.equal((tiles.match(/Est\. spend/g)||[]).length,['messages','time'].includes(metric)?1:0,
+      metric+' must not duplicate spend already shown in the hero');
+    if(['messages','time'].includes(metric)) assert.match(tiles,/>\$0\.25</,'Spend must use exact filtered costs');
+  }
+  assert.match(check('chartTable("monthlyRhythm")'),/>1,200</,'Monthly table must show full token counts');
+  assert.equal((check('chartTable("monthlyRhythm")').match(/<tr>/g)||[]).length,13,'All 12 months need a table row');
+  check(`S.tableView.add('monthlyRhythm');applyTableView('monthlyRhythm');`);
+  assert.equal(node('tv-monthlyRhythm').hidden,false);
+  assert.equal(node('monthlyRhythm').style.display,'none');
+  assert.equal(node('monthlyRhythmCard').style.display,undefined,'Table toggle must keep the card and its controls visible');
+  assert.equal(node('monthToggle').attributes['aria-pressed'],'true');
+  check(`S.tools=new Set(['claude']);viewOverview(slice());`);
+  assert.match(node('monthlyRhythm').innerHTML,/No activity/);
+  assert.doesNotMatch(node('tv-monthlyRhythm').innerHTML,/>1,200</,'Open table must refresh when filters change');
+  assert.equal((node('tv-monthlyRhythm').innerHTML.match(/>0<\/td>/g)||[]).length,12,'Empty filters must retain zero-valued months');
+  assert.equal(node('tv-monthlyRhythm').hidden,false,'Re-render must preserve the table choice');
+  check(`S.tableView.delete('monthlyRhythm');applyTableView('monthlyRhythm');`);
+  assert.equal(node('tv-monthlyRhythm').hidden,true);
+  assert.equal(node('monthlyRhythm').style.display,'');
+  // Existing canvas twins must continue hiding only their chart container.
+  node('dailyChart').tagName='CANVAS';node('dailyChart').parentElement=node('dailyBox');
+  check(`charts.dailyChart={data:{labels:['Day'],datasets:[{label:'Tokens',data:[42]}]}};
+    S.tableView.add('dailyChart');applyTableView('dailyChart');`);
+  assert.equal(node('dailyBox').style.display,'none');
+  assert.match(node('tv-dailyChart').innerHTML,/>42</);
+  console.log('Overview retains spend across metrics and applies precision/dimension filters to monthly and daily activity; SVG and canvas table twins remain usable.');
+}
 const shell=fs.readFileSync(path.join(root,'index.html'),'utf8');
 const overviewShell=shell.slice(shell.indexOf('id="v-overview"'),shell.indexOf('id="v-cost"'));
 const costShell=shell.slice(shell.indexOf('id="v-cost"'),shell.indexOf('id="v-models"'));
@@ -118,6 +227,12 @@ run(`RAW={device:{id:'Mac'},devices:[{id:'Mac',name:'Mac'},{id:'PC',name:'PC'}],
  records:[],sessions:[],hourly:[],tools:[],pricing:{'Claude Opus 5.5 (US)':[4.4,22,5.5,8.8,.22]},
  prices:{'Claude Opus 5.5 (fast)':[8,40,10,16,.4]}};
  S.tools=new Set(['copilot','codex','claude']);`);
+const monthWindows=JSON.parse(run(`JSON.stringify(activityMonthWindows(3,new Date(2026,9,11)).map(x=>({from:x.from,to:x.to,label:x.label,current:x.current})))`));
+assert.deepEqual(monthWindows,[
+  {from:'2026-08-01',to:'2026-08-31',label:'Aug',current:false},
+  {from:'2026-09-01',to:'2026-09-30',label:'Sep',current:false},
+  {from:'2026-10-01',to:'2026-10-11',label:'Oct',current:true},
+]);
 assert.equal(run(`priceOf('Claude Opus 5.5 (US)','2026-10-02')[0]`),4.4);
 assert.equal(run(`priceOf('Claude Opus 5.5 (fast)')[0]`),8);
 run(`RAW.pricing_history={'Claude Opus 5.5 (US)':[['2026-09-01',[5.5,27.5,6.875,11,.55]]]};`);

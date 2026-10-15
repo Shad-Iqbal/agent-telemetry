@@ -85,17 +85,25 @@
   <div class="main">
     <header class="page-head" id="filters">
       <h1 id="pageTitle">Overview</h1>
-      <!-- The controls read as a sentence: what is measured, for which tools, over
-           which period. Each bold phrase opens its menu; ‹ › step the period. -->
+      <!-- The current window stays on the left; the filter sentence stays on the
+           right. Each bold phrase opens its menu; ‹ › step the period. -->
       <div class="q" id="query" role="group" aria-label="What this page shows">
-        <div class="dd q-dd" id="ddMetric">
-          <button class="q-word" data-dd="toggle" id="qMetric" aria-haspopup="true">Tokens</button>
-          <div class="dd-panel q-panel" id="metricPanel"></div>
+        <div class="q-date">
+          <span class="q-dates" id="rangeText">&nbsp;</span>
+          <span class="q-step">
+            <button class="q-arrow" id="stepBack" title="Previous period (,)" aria-label="Previous period"><svg class="ic sm"><use href="#i-chev"/></svg></button>
+            <button class="q-arrow fwd" id="stepFwd" title="Next period (.)" aria-label="Next period"><svg class="ic sm"><use href="#i-chev"/></svg></button>
+          </span>
         </div>
-        <span class="q-t">from</span>
-        <div class="dd q-dd" id="ddFilters">
-          <button class="q-word" data-dd="toggle" id="filtersBtn" aria-haspopup="true"><span id="qTools">all tools</span><span id="qDev"></span><span class="q-count" id="filterCount"></span></button>
-          <div class="dd-panel filters-panel" id="filtersPanel">
+        <div class="q-controls">
+          <div class="dd q-dd" id="ddMetric">
+            <button class="q-word" data-dd="toggle" id="qMetric" aria-haspopup="true"><span id="qMetricLabel">Tokens</span><svg class="ic q-chevron" aria-hidden="true"><use href="#i-chev"/></svg></button>
+            <div class="dd-panel q-panel" id="metricPanel"></div>
+          </div>
+          <span class="q-t">from</span>
+          <div class="dd q-dd" id="ddFilters">
+            <button class="q-word" data-dd="toggle" id="filtersBtn" aria-haspopup="true"><span id="qTools">all tools</span><span id="qDev"></span><span class="q-count" id="filterCount"></span><svg class="ic q-chevron" aria-hidden="true"><use href="#i-chev"/></svg></button>
+            <div class="dd-panel filters-panel" id="filtersPanel">
               <div class="fp-grid">
                 <section class="fp-sec"><div class="fp-h"><span>Tools</span><span><a href="#" data-fall="tools">all</a> · <a href="#" data-fnone="tools">none</a></span></div><div class="fp-list" id="toolsPanel"></div></section>
                 <section class="fp-sec" id="devSec" hidden><div class="fp-h"><span>Devices</span><a href="#" data-fclear="devs">clear</a></div><div class="fp-list" id="devPanel"></div></section>
@@ -108,18 +116,14 @@
                   <div class="fp-note">Hides tools whose token counts are estimates.</div></section>
               </div>
               <div class="fp-foot"><button class="btn" id="filtersReset">Reset all filters</button></div>
+            </div>
+          </div>
+          <span class="q-t" id="qOver">over</span>
+          <div class="dd q-dd" id="ddRange">
+            <button class="q-word" data-dd="toggle" id="rangeMore" aria-haspopup="true"><span id="rangeLabel">the last 30 days</span><svg class="ic q-chevron" aria-hidden="true"><use href="#i-chev"/></svg></button>
+            <div class="dd-panel q-panel" id="rangePanel"></div>
           </div>
         </div>
-        <span class="q-t" id="qOver">over</span>
-        <div class="dd q-dd" id="ddRange">
-          <button class="q-word" data-dd="toggle" id="rangeMore" aria-haspopup="true"><span id="rangeLabel">the last 30 days</span></button>
-          <div class="dd-panel q-panel" id="rangePanel"></div>
-        </div>
-        <span class="q-step">
-          <button class="q-arrow" id="stepBack" title="Previous period (,)" aria-label="Previous period"><svg class="ic sm"><use href="#i-chev"/></svg></button>
-          <button class="q-arrow fwd" id="stepFwd" title="Next period (.)" aria-label="Next period"><svg class="ic sm"><use href="#i-chev"/></svg></button>
-        </span>
-        <span class="q-dates" id="rangeText">&nbsp;</span>
       </div>
       <div class="pills" id="pills"></div>
     </header>
@@ -179,12 +183,21 @@
             <div class="card-h"><div><h3>Token mix</h3><p class="card-sub">what each tool's tokens were spent on</p></div></div>
             <div id="tokenMix"></div>
           </div>
-          <div class="card col-12">
+          <div class="card col-8" id="activityCalendarCard">
             <div class="card-h">
               <div><h3>Activity</h3><p class="card-sub" id="calHint">last 12 months · click a day to zoom in</p></div>
               <div class="scale-legend">Less<span class="cell" style="background:var(--seq-0)"></span><span class="cell" style="background:var(--seq-2)"></span><span class="cell" style="background:var(--seq-4)"></span><span class="cell" style="background:var(--seq-6)"></span>More</div>
             </div>
             <div class="cal-wrap" id="calWrap"></div>
+          </div>
+          <div class="card col-4" id="monthlyRhythmCard">
+            <div class="card-h">
+              <div><h3>Monthly rhythm</h3><p class="card-sub">tokens by month · click a month to zoom in</p></div>
+              <div class="card-a"><button class="tv" data-tv="monthlyRhythm" title="Show as table" aria-label="Toggle monthly rhythm table view" aria-pressed="false" aria-controls="tv-monthlyRhythm"><svg class="ic"><use href="#i-table"/></svg></button></div>
+            </div>
+            <div class="rhythm-summary" id="monthlyRhythmSummary"></div>
+            <div class="monthly-rhythm" id="monthlyRhythm"></div>
+            <div class="tv-table" id="tv-monthlyRhythm" hidden></div>
           </div>
         </div>
       </section>
@@ -406,10 +419,9 @@
         </div>
       </section>
 
-    </main>
-
     <details class="note" id="pricingBox"><summary>How these numbers are computed, and what to distrust</summary>
       <div id="pricingNote"></div></details>
+    </main>
   </div>
 </div>
 

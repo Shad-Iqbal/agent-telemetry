@@ -244,11 +244,15 @@ function filtersToURL(){
   }
 }
 
+/* Shared precision and dimension filters; omit r for fixed-window activity views. */
+function filteredRecords(r){
+  return RAW.records.map(x => S.exactOnly && x.source==="copilot"
+      ? (x.exact ? Object.assign({}, x, x.exact) : null) : x).filter(Boolean).filter(x => passSrc(x.source) && passModel(x.model)
+      && passProj(x.project) && passIde(x.ide) && passDev(x.device) && (!r || (x.date>=r.from && x.date<=r.to)));
+}
 function slice(r){
   r = r || range();
-  const recs = RAW.records.map(x => S.exactOnly && x.source==="copilot"
-      ? (x.exact ? Object.assign({}, x, x.exact) : null) : x).filter(Boolean).filter(x => passSrc(x.source) && passModel(x.model)
-      && passProj(x.project) && passIde(x.ide) && passDev(x.device) && x.date>=r.from && x.date<=r.to);
+  const recs = filteredRecords(r);
   const hourly = RAW.hourly.filter(x => passSrc(x.source) && passDev(x.device) && x.date>=r.from && x.date<=r.to);
   const sessions = RAW.sessions
     .filter(x => passSrc(x.source) && passProj(x.project) && sessionMatchesModel(x)
@@ -379,7 +383,7 @@ function deltaHTML(cur, prev, invert){
   const d=(cur-prev)/Math.abs(prev);
   if(Math.abs(d)<0.005) return `<span class="delta flat">no change</span>`;
   const up=d>0, good = invert ? !up : up;
-  const pct = Math.abs(d)>=10 ? Math.round(Math.abs(d))+"×" : Math.abs(d*100).toFixed(0)+"%";
+  const pct = Math.abs(d)>=1000 ? Math.round(Math.abs(d)/1000)+"k×" : Math.abs(d)>=10 ? Math.round(Math.abs(d))+"×" : Math.abs(d*100).toFixed(0)+"%";
   return `<span class="delta ${good?"up":"down"}">${up?"▲":"▼"} ${pct}</span>`;
 }
 
@@ -413,15 +417,27 @@ function cycleTheme(){
 }
 
 /* ---------- dropdown plumbing ---------- */
+/* Dropdowns normally open from their trigger's left edge. When that would run past
+   the viewport, flip them against the trigger's right edge instead. This keeps the
+   query sentence natural while letting its right-most controls remain usable. */
+function placeDD(dd){
+  const panel=dd.querySelector(".dd-panel");
+  if(!panel) return;
+  dd.classList.remove("flip-x");
+  if(panel.getBoundingClientRect().right > innerWidth-16) dd.classList.add("flip-x");
+}
 function closeDD(except){
-  document.querySelectorAll(".dd.open").forEach(d=>{ if(d!==except) d.classList.remove("open"); });
+  document.querySelectorAll(".dd.open").forEach(d=>{
+    if(d!==except){ d.classList.remove("open"); d.classList.remove("flip-x"); }
+  });
 }
 document.addEventListener("click", e=>{
   const tog = e.target.closest("[data-dd=toggle]");
   if(tog){ const dd=tog.closest(".dd"); const open=dd.classList.contains("open");
-    closeDD(); if(!open) dd.classList.add("open"); e.stopPropagation(); return; }
+    closeDD(); if(!open){ dd.classList.add("open"); placeDD(dd); } e.stopPropagation(); return; }
   if(!e.target.closest(".dd-panel")) closeDD();
 });
+if(typeof window!=="undefined") window.addEventListener("resize",()=>document.querySelectorAll(".dd.open").forEach(placeDD));
 document.addEventListener("keydown", e=>{
   // an open dialog owns the keyboard: Esc closes it alone, not the drawer behind it
   if(document.querySelector("dialog.modal[open]")) return;

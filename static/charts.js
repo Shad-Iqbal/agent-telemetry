@@ -5,6 +5,7 @@
    carry a 2px surface gap, and identity is never colour-alone.
    ========================================================================== */
 const charts = {};
+const chartTables = {}; // Data for SVG charts using the same table toggle as Chart.js.
 const toolPointStyles = {};
 function toolPointStyle(source){
   if(!SRC[source] || typeof Image==='undefined') return 'circle';
@@ -106,7 +107,7 @@ function areaDS(label, data, color, fill, source){
 
 /* ---------- table twin: every chart can be read without the chart ---------- */
 function chartTable(id){
-  const c = charts[id]; if(!c) return "";
+  const c = charts[id] || chartTables[id]; if(!c) return "";
   const fmt = c.$fmt || fmtNum, labels = c.data.labels || [], ds = c.data.datasets || [];
   const total = c.$stacked && ds.length > 1;
   let h = `<table><thead><tr><th class="nosort">${esc(c.$xLabel||"Day")}</th>${
@@ -125,9 +126,10 @@ function chartTable(id){
 function applyTableView(id){
   const tv = document.getElementById("tv-"+id); if(!tv) return;
   const on = S.tableView.has(id);
-  const canvas = document.getElementById(id), box = canvas && canvas.parentElement;
+  const el = document.getElementById(id), box = el && (el.tagName==="CANVAS" ? el.parentElement : el);
   const btn = document.querySelector(`.tv[data-tv="${id}"]`);
-  if(btn){ btn.classList.toggle("on", on); btn.title = on ? "Show as chart" : "Show as table"; }
+  if(btn){ btn.classList.toggle("on", on); btn.title = on ? "Show as chart" : "Show as table";
+    btn.setAttribute("aria-pressed",String(on)); }
   tv.hidden = !on;
   if(box) box.style.display = on ? "none" : "";
   tv.innerHTML = on ? chartTable(id) : "";
@@ -171,12 +173,27 @@ function tilesHTML(items){
     </div>`).join("");
 }
 function heroHTML(o){
+  const tooltip=o.valueTooltip;
+  const value=`<div class="hero-value"${tooltip?` tabindex="0" aria-describedby="${esc(tooltip.id)}"`:""}>${o.value}</div>`;
   return `<div class="hero-label">${esc(o.label)}</div>
-    <div class="hero-value">${o.value}</div>
+    ${tooltip?`<div class="hero-value-tooltip">${value}<div class="hero-tooltip" id="${esc(tooltip.id)}" role="tooltip">${esc(tooltip.text)}</div></div>`:value}
     <div class="hero-delta">${o.delta||""}${o.note?`<span>${esc(o.note)}</span>`:""}</div>
+    ${o.feature?`<div class="hero-feature" title="${esc(o.feature.title||"")}">
+      <div><div class="hero-feature-label">${esc(o.feature.label)}</div><div class="hero-feature-value">${o.feature.value}</div></div>
+      ${o.feature.spark?`<div class="hero-feature-spark">${o.feature.spark}</div>`:""}</div>`:""}
     ${o.facts && o.facts.length ? `<div class="hero-facts">${o.facts.map(f=>
       `<div title="${esc(f.title||"")}"><div class="f-l">${esc(f.l)}</div><div class="f-v">${f.v}</div></div>`).join("")}</div>` : ""}`;
 }
+// Keep the tooltip open while hovered/focused, and let Escape dismiss it until re-entry.
+for(const event of ["pointerover","focusin"]){
+  document.addEventListener(event,e=>{
+    const wrap=e.target.closest(".hero-value-tooltip");
+    if(wrap&&!wrap.contains(e.relatedTarget)) wrap.classList.remove("dismissed");
+  });
+}
+document.addEventListener("keydown",e=>{
+  if(e.key==="Escape") document.querySelectorAll(".hero-value-tooltip").forEach(el=>el.classList.add("dismissed"));
+});
 /* Part-to-whole per row, normalised to 100% — the 2px gaps separate segments. */
 function stackMeters(el, rows, kinds, fmt){
   if(typeof el === "string") el = document.getElementById(el);
@@ -202,9 +219,11 @@ function renderCalendar(byDay, maxV, onClick){
   start.setDate(start.getDate()-((start.getDay()+6)%7));      // back to Monday
   const weeks=[]; let cur=new Date(start);
   while(cur<=end){ const wk=[]; for(let i=0;i<7;i++){ wk.push(new Date(cur)); cur.setDate(cur.getDate()+1); } weeks.push(wk); }
-  // fill the card's width: cells grow with it, and it scrolls only when too narrow
-  const mT=18, mL=28, gap=3;
-  const step=Math.max(15, Math.min(21, Math.floor(((wrap.clientWidth||800)-mL-8)/weeks.length)));
+  // The calendar shares a row with Monthly rhythm on desktop. At compact desktop
+  // widths it keeps all 12 months visible instead of becoming a cropped scroller.
+  const mT=18, mL=28;
+  const step=Math.max(6, Math.min(21, Math.floor(((wrap.clientWidth||800)-mL-8)/weeks.length)));
+  const gap=step<12?2:3, compact=step<12;
   const cell=step-gap;
   const ramp = seqRamp();
   const bucket = v => { if(!v) return ramp[0];
@@ -215,7 +234,7 @@ function renderCalendar(byDay, maxV, onClick){
   let lastM=-1;
   weeks.forEach((wk,wi)=>{ const m=wk[0].getMonth();
     if(m!==lastM){ lastM=m;
-      s+=`<text x="${mL+wi*step}" y="10" fill="${cssv("--text-3")}" font-size="10.5">${MONTHS[m]}</text>`; }});
+      s+=`<text x="${mL+wi*step}" y="10" fill="${cssv("--text-3")}" font-size="10.5">${compact?MONTHS[m][0]:MONTHS[m]}</text>`; }});
   [["Mon",0],["Wed",2],["Fri",4]].forEach(([l,r])=>{
     s+=`<text x="0" y="${mT+r*step+10}" fill="${cssv("--text-3")}" font-size="10">${l}</text>`; });
   weeks.forEach((wk,wi)=>wk.forEach((d,di)=>{
@@ -237,7 +256,50 @@ function renderCalendar(byDay, maxV, onClick){
   svg.addEventListener("click",e=>{ const r=e.target.closest("rect"); if(r&&onClick) onClick(r.dataset.day); });
 }
 
+/* ---------- compact month bars paired with the activity calendar ---------- */
+function renderMonthlyRhythm(points, onClick){
+  const wrap=document.getElementById("monthlyRhythm"); if(!wrap) return;
+  chartTables.monthlyRhythm={data:{labels:points.map(p=>p.title),
+    datasets:[{label:"Tokens",data:points.map(p=>p.value)}]},$fmt:fmtNum,$xLabel:"Month"};
+  applyTableView("monthlyRhythm");
+  if(!points.some(p=>p.value)){ wrap.innerHTML=`<div class="empty">No activity in the last 12 months.</div>`; return; }
+  const W=360, H=116, mT=6, mL=2, mR=2, mB=20, base=H-mB;
+  const plotH=base-mT, max=Math.max(...points.map(p=>p.value||0),1);
+  const step=(W-mL-mR)/points.length, barW=Math.max(3,step-5);
+  let s=`<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="monthly token activity; click a month to filter the dashboard">`;
+  s+=`<line class="month-axis" x1="${mL}" y1="${base}" x2="${W-mR}" y2="${base}"/>`;
+  points.forEach((p,i)=>{
+    const h=p.value ? Math.max(3,p.value/max*plotH) : 2;
+    const x=mL+i*step+(step-barW)/2, y=base-h;
+    const state=`${p.current?" current":""}${p.selected?" selected":""}`;
+    s+=`<rect class="month-bar${state}" x="${x.toFixed(2)}" y="${y.toFixed(2)}" width="${barW.toFixed(2)}" height="${h.toFixed(2)}" rx="2"
+      data-index="${i}" role="button" tabindex="0" aria-label="${esc(p.title)}: ${fmtTok(p.value)} tokens. Filter to this month."/>
+      <text class="month-label" x="${(x+barW/2).toFixed(2)}" y="${H-5}" text-anchor="middle">${esc(p.label)}</text>`;
+  });
+  s+="</svg>";
+  wrap.innerHTML=s;
+  const svg=wrap.querySelector("svg");
+  const pointFor=target=>{ const bar=target.closest(".month-bar"); return bar&&points[+bar.dataset.index]; };
+  const activate=target=>{ const point=pointFor(target); if(point&&onClick) onClick(point); };
+  svg.addEventListener("mousemove",e=>{
+    const point=pointFor(e.target); if(!point) return hideTip();
+    showTip(`<div class="t">${esc(point.title)}</div><div class="r"><span class="k">tokens</span><span class="v">${fmtTok(point.value)}</span></div>`,e.clientX,e.clientY);
+  });
+  svg.addEventListener("mouseleave",hideTip);
+  svg.addEventListener("click",e=>activate(e.target));
+  svg.addEventListener("keydown",e=>{
+    if(e.key!=="Enter"&&e.key!==" ") return;
+    if(!pointFor(e.target)) return;
+    e.preventDefault(); activate(e.target);
+  });
+}
+
 /* ---------- hour x weekday heatmap (SVG, sequential blue) ---------- */
+function fmtHour12(hour){
+  const value = Number(hour) % 24;
+  return `${value % 12 || 12} ${value < 12 ? "AM" : "PM"}`;
+}
+
 function renderHeatmap(cells, maxV){
   const gap=2, rowH=22, mL=34, mT=16;
   const ramp=seqRamp();
@@ -246,7 +308,7 @@ function renderHeatmap(cells, maxV){
   const W=760, H=mT+7*rowH+14, cellW=(W-mL)/24;
   let s=`<svg viewBox="0 0 ${W} ${H}" width="100%" preserveAspectRatio="xMinYMin meet" role="img" aria-label="activity by hour and weekday">`;
   for(let h=0;h<24;h+=3)
-    s+=`<text x="${mL+h*cellW}" y="10" fill="${cssv("--text-3")}" font-size="10">${pad2(h)}</text>`;
+    s+=`<text x="${mL+h*cellW}" y="10" fill="${cssv("--text-3")}" font-size="10">${fmtHour12(h)}</text>`;
   for(let d=0;d<7;d++){
     s+=`<text x="0" y="${mT+d*rowH+15}" fill="${cssv("--text-3")}" font-size="10">${DOW[d]}</text>`;
     for(let h=0;h<24;h++){
@@ -260,7 +322,7 @@ function renderHeatmap(cells, maxV){
   const svg=wrap.querySelector("svg");
   svg.addEventListener("mousemove",e=>{
     const r=e.target.closest("rect"); if(!r) return hideTip();
-    showTip(`<div class="t">${DOW[+r.dataset.d]} ${pad2(+r.dataset.h)}:00</div>
+    showTip(`<div class="t">${DOW[+r.dataset.d]} ${fmtHour12(+r.dataset.h)}</div>
       <div class="r"><span class="k">tokens</span><span class="v">${fmtTok(+r.dataset.v)}</span></div>`,
       e.clientX,e.clientY);
   });
