@@ -106,8 +106,8 @@ controls, preserves an existing owned login opt-in, and guards installation/unin
 against a live or closing client; it never deletes the ledger or preferences. Run
 `tests/run_windows_installer.py` on Windows to verify install, packaged Win32 UI, upgrade,
 running-client refusal and uninstall against mock archived data; supply the release
-version and source commit as expected values. CI passes these from the release tag
-checkout so verification stays correct as releases advance. CI uploads artifacts only;
+version, source commit and cache version as expected values. CI reads all three from the
+release tag checkout so verification stays correct as releases advance. CI uploads artifacts only;
 release publication remains explicit. Label these unsigned/unnotarized downloads
 accurately. Keep the existing public tag intact when adding packaging metadata/assets.
 

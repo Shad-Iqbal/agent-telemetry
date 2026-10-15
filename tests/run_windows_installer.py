@@ -21,6 +21,7 @@ def main():
     parser.add_argument("installer", type=Path)
     parser.add_argument("--expected-version", required=True)
     parser.add_argument("--expected-commit", required=True)
+    parser.add_argument("--expected-cache-version", type=int, required=True)
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="AgentTelemetry offline install ") as directory:
         root = Path(directory).resolve()
@@ -51,7 +52,11 @@ def main():
         assert manifest["version"] == args.expected_version
         info = json.loads((app / "BUILD-INFO.json").read_text())
         assert info["commit"] == args.expected_commit
-        subprocess.run([str(python), "-c", "import ctypes, sqlite3, ssl, urllib.request, dashboard; assert dashboard.CACHE_VERSION in (53, 54, 55)"],
+        cache_probe = (
+            "import ctypes, sqlite3, ssl, urllib.request, dashboard; "
+            f"assert dashboard.CACHE_VERSION == {args.expected_cache_version}"
+        )
+        subprocess.run([str(python), "-c", cache_probe],
                        env=environment, check=True, timeout=30)
         subprocess.run([str(python), str(entry), "--self-test"],
                        env=environment, check=True, timeout=30)

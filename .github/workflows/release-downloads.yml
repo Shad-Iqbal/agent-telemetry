@@ -37,7 +37,9 @@ jobs:
           $expectedVersion = $env:RELEASE_TAG.Substring(1)
           $expectedCommit = (git -C application rev-parse HEAD).Trim()
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python packaging/tests/run_windows_installer.py $installer --expected-version $expectedVersion --expected-commit $expectedCommit
+          $expectedCacheVersion = (python -c "import sys; sys.path.insert(0, 'application'); import dashboard; print(dashboard.CACHE_VERSION)").Trim()
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python packaging/tests/run_windows_installer.py $installer --expected-version $expectedVersion --expected-commit $expectedCommit --expected-cache-version $expectedCacheVersion
           exit $LASTEXITCODE
       - uses: actions/upload-artifact@v4
         with:
