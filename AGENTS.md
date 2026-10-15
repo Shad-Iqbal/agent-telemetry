@@ -516,9 +516,27 @@ Use tests/preview_accounts.py for web checks with mock data only.
 - **Copilot** logs real `promptTokens`/`completionTokens` on finished requests in current
   VS Code builds; older chats have none, so their tokens are estimated from message text
   (chars/4). It also logs a premium-request multiplier in `result.details` ("… • 1x") —
-  that's its real billing unit. Not read yet (none exist on this machine): the Copilot CLI's
-  `~/.copilot/session-state/*/events.jsonl`, JetBrains, and `GitHub.copilot-chat/transcripts/`
-  (turns only, no tokens).
+  that's a separate billing unit, never USD. SDK/CLI/Agent Host sessions use
+  `~/.copilot/session-state/*/events.jsonl`. `_copilot_sdk_hosts()` indexes canonical
+  UUID directories at `<editor>/agentSessionData/*/session.db`; join
+  `session_metadata.defaultChatProviderData.sdkSessionId` to the SDK id, then
+  `turns.event_id` to the SDK user event and `turn_usage.turn_id` to `turns.id`.
+  Prefer `_meta.turnTokenTotals` (inclusive of subagents); top-level usage is only
+  the last call, never a whole multi-call turn. Do not add direct/subagent totals
+  or contextAttribution sizes on top. Only main-agent messages count as replies;
+  tool request/execution twins and replayed event IDs count once. Exact-only keeps
+  covered-turn activity separate from missing-turn activity. SDK usage is never
+  estimated from text. Read-only DB snapshots track WAL changes even without an
+  appended SDK event. Preserve recovered numeric-only turn snapshots if the
+  auxiliary DB disappears. Malformed records leave the old aggregate retryable.
+  `assistant.usage` is normally ephemeral; persisted copies are usable. Shutdown
+  totals are cumulative, not additional calls. Multi-day shutdown totals have no
+  per-day attribution and stay supplemental metadata. No SDK attachment/resume,
+  model request, credential read or automatic OTel setting change. Source ids and
+  palette stay `copilot`; unavailable/partial/error sessions carry a tooltip.
+  Cache **58** adds optional SDK coverage metadata and retains all v53–57 entries;
+  peers 52–57 remain readable. Do not rebuild. See docs/copilot-sdk.md.
+  Still not read: JetBrains and `GitHub.copilot-chat/transcripts/` (turns only).
 - **OpenCode**: current versions use one SQLite `opencode.db`; older ones use
   `storage/message/<session>/msg_*.json`. All are read. The DB parser supports both
   `session/message/part` (V1) and `session_v2/session_message` (V2). V2's message role
@@ -801,7 +819,7 @@ local network. Both switches are off until the user turns them on, and each asks
   copy to `.peers/<device id>.json` (0600). While the other machine sleeps, the copy still
   shows, along with the error explaining why it couldn't be reached. An export or saved
   copy with an incompatible `CACHE_VERSION` is refused with "update both". The
-  version-57 reader explicitly accepts versions 52–56, whose missing optional
+  version-58 reader explicitly accepts versions 52–57, whose missing optional
   precision/attribution/compaction/pricing fields retain the older detail limits; other
   versions are refused.
 - `build_payload` adds the copies to its file loop as `peer:<id>:<path>` with

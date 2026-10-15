@@ -1057,6 +1057,36 @@ function sessionRows(d){
   })).filter(s=>!q || (s.name+" "+(s.original_title||"")+" "+(s.project||"")+" "+(s.model||"")+" "+(s.branch||"")).toLowerCase().includes(q));
 }
 function sessionIdentity(s){ return JSON.stringify([s.device||RAW.device.id,s.source,s.rename_id||s.id]); }
+function sdkUsageNote(s){
+  const sdk=s.copilot_sdk; if(!sdk) return "";
+  const notes=[];
+  if(sdk.usage_status==="unavailable") notes.push("Copilot SDK has not saved token usage for this session. Tokens and estimated cost are unavailable, not zero. Recorded prompts, replies and tools are still included.");
+  else if(sdk.usage_status==="partial") notes.push("Copilot SDK usage is partial. Only recorded token counts are included; totals and estimated cost can undercount.");
+  if(sdk.missing_turns) notes.push(`${sdk.missing_turns} session turn${sdk.missing_turns===1?"":"s"} without complete saved usage.`);
+  if((sdk.limitations||[]).includes("undated_usage")) notes.push("Some saved totals span multiple dates and cannot safely be assigned to a day; they are excluded from daily figures.");
+  if((sdk.limitations||[]).includes("hourly_usage")) notes.push("Some totals lack per-call timestamps, so hourly token distribution is incomplete.");
+  if((sdk.limitations||[]).includes("ambiguous_editor")) notes.push("Multiple editors contain this SDK session; editor attribution is unavailable.");
+  if(sdk.errors) notes.push(`${sdk.errors} SDK error${sdk.errors===1?"":"s"} recorded. Failed attempts are not assistant replies.`);
+  if(sdk.aborts) notes.push(`${sdk.aborts} interrupted attempt${sdk.aborts===1?"":"s"} recorded.`);
+  if(notes.length) notes.push("Recording status covers the whole session. Live SDK usage events are ephemeral; saved VS Code turn totals or SDK shutdown summaries can provide usage later.");
+  return notes.join(" ");
+}
+function sdkUsageBadge(s){
+  const note=sdkUsageNote(s);
+  return note?` <span class="warn-ic sdk-usage-warning" tabindex="0" role="img" aria-label="${esc(note)}" title="${esc(note)}">⚠</span>`:"";
+}
+function sdkUsageDetails(s){
+  const sdk=s.copilot_sdk; if(!sdk) return "";
+  const note=sdkUsageNote(s);
+  const sources={vscode_turn_usage:"VS Code saved turn totals",usage_events:"Saved SDK usage events",shutdown:"SDK shutdown totals",message_output:"Saved output tokens only"};
+  const totals=(sdk.limitations||[]).includes("undated_usage") && (sdk.shutdown_totals||[]).length
+    ? `<p class="hint">Additional session-wide SDK totals (no daily attribution): ${sdk.shutdown_totals.map(m=>`${esc(m.model)}: ${fmtNum((m.in||0)+(m.out||0)+(m.cr||0)+(m.cc||0))} tokens`).join("; ")}. These are not added to the selected range.</p>`:"";
+  return `<div class="kv"><span class="k">Usage records</span><span class="v">${esc((sdk.usage_sources||[]).map(x=>sources[x]||"Saved SDK records").join(" · ")||"Not available")}</span></div>
+    ${note?`<div class="warnbar">${esc(note)}</div>`:""}${totals}`;
+}
+function sdkField(s,key,value){
+  return s.copilot_sdk && !(s.copilot_sdk.recorded_fields||[]).includes(key)?"Unavailable":value;
+}
 function renameButton(s,text=false){
   return `<button type="button" class="${text?'btn':'session-rename'}" data-rename="${esc(sessionIdentity(s))}" ${s.rename_available===false?'disabled':''} title="${esc(s.rename_reason||'Rename session')}" aria-label="Rename session ${esc(s.title||s.project||s.id)}">${text?'Rename':
     '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="m10.5 2.5 3 3-7.5 7.5-4 1 1-4zM9 4l3 3"/></svg>'}</button>`;
@@ -1131,11 +1161,11 @@ function viewSessions(d){
       <td class="name" title="${esc(s.title||"")}">${
         s.clipped?`<span class="dim" style="margin-right:5px" title="Figures reflect the selected range and model filters.">◔</span>`:""}${
         s.subagent?`<span class="sub-badge" title="A subagent transcript — work its parent delegated.">sub</span>`:""}${esc(s.name)}${
-        s.compaction_count?` <span class="compaction-badge" title="Completed compactions in the selected date range; model filters do not apply.">${fmtNum(s.compaction_count)} compaction${s.compaction_count===1?"":"s"}</span>`:""}${renameButton(s)}</td>
+        s.compaction_count?` <span class="compaction-badge" title="Completed compactions in the selected date range; model filters do not apply.">${fmtNum(s.compaction_count)} compaction${s.compaction_count===1?"":"s"}</span>`:""}${sdkUsageBadge(s)}${renameButton(s)}</td>
       <td class="dim">${esc(s.project||"—")}</td>
       <td>${esc(s.model)}${s.nmodels>1?` <span class="dim" title="${esc((s.models||[]).join(" · "))}">+${s.nmodels-1}</span>`:""}</td>
-      <td class="r">${fmtTok(s.tok)}</td><td class="r"><b>${fmtUSD(s.cost)}</b></td>
-      <td class="r">${fmtNum(s.user)}</td><td class="r">${fmtNum(s.asst||s.req)}</td>
+      <td class="r">${s.copilot_sdk?.usage_status==="unavailable"?'<span class="dim" title="Token usage was not saved">—</span>':fmtTok(s.tok)}</td><td class="r"><b>${s.copilot_sdk?.usage_status==="unavailable"?'<span class="dim" title="Cost cannot be estimated without token usage">—</span>':fmtUSD(s.cost)}</b></td>
+      <td class="r">${fmtNum(s.user)}</td><td class="r">${fmtNum(s.copilot_sdk?s.asst:(s.asst||s.req))}</td>
       <td class="r">${fmtNum(s.tools)}</td>
       <td class="r">${s.active?fmtDur(s.active):'<span class="dim">—</span>'}</td>
       <td class="r">${s.cache?fmtPct(s.cache):'<span class="dim">—</span>'}</td></tr>`).join("")+"</tbody>";
@@ -1164,23 +1194,26 @@ function openSession(i){
     ${row("Daily detail",s.detail_limited?"Limited in this older ledger entry":null)}
     ${row("Tool version",s.cliver?esc(s.cliver):null)}
     ${sessionAccountDetails(s)}
+    ${sdkUsageDetails(s)}
     ${s.clipped?`<div class="warnbar">Figures below reflect the selected range and model filters.${s.range_clipped?` This session spans ${s.span} days in total.`:""}</div>`:""}
     ${row("Started",s.start?s.start.slice(0,19).replace("T"," "):"—")}
     ${row("Last activity",s.end?s.end.slice(0,19).replace("T"," "):"—")}
-    ${row("Est. cost",fmtUSD2(s.cost))}
-    ${row("Tokens",fmtNum(s.tok))}
-    ${row("· input",fmtNum(s.in))}
-    ${row("· cache read",fmtNum(s.cr))}
-    ${row("· cache write",fmtNum(s.cc))}
-    ${row("· output",fmtNum(s.out))}
+    ${row("Est. cost",s.copilot_sdk?.usage_status==="unavailable"?"Unavailable":fmtUSD2(s.cost))}
+    ${row("Tokens",s.copilot_sdk?.usage_status==="unavailable"?"Unavailable":fmtNum(s.tok))}
+    ${row("· input",sdkField(s,"in",fmtNum(s.in)))}
+    ${row("· cache read",sdkField(s,"cr",fmtNum(s.cr)))}
+    ${row("· cache write",sdkField(s,"cc",fmtNum(s.cc)))}
+    ${row("· output",sdkField(s,"out",fmtNum(s.out)))}
+    ${row("· reasoning (within output)",s.copilot_sdk?sdkField(s,"reason",fmtNum(s.reason||0)):null)}
     ${row("Cache hit rate",s.cache?fmtPct(s.cache):"—")}
     ${row("Your prompts",fmtNum(s.user))}
-    ${row("Assistant replies",fmtNum(s.asst||s.req))}
-    ${row("Model calls",s.asst&&s.req&&s.req!==s.asst?fmtNum(s.req):null)}
+    ${row("Assistant replies",fmtNum(s.copilot_sdk?s.asst:(s.asst||s.req)))}
+    ${row(s.copilot_sdk?"Observed model calls":"Model calls",s.copilot_sdk?(s.req?fmtNum(s.req):"Not recorded"):(s.asst&&s.req&&s.req!==s.asst?fmtNum(s.req):null))}
     ${row("Tool calls",fmtNum(s.tools))}
     ${row("Active time",s.active?fmtDur(s.active):null)}
+    ${row("SDK API time (whole session)",s.copilot_sdk?.totalApiDurationMs!=null?fmtDur(s.copilot_sdk.totalApiDurationMs/1000):null)}
     ${row("Mode",s.mode?esc(s.mode):null)}
-    ${row("Premium requests",s.prem?fmtNum(Math.round(s.prem)):null)}
+    ${row("Premium requests",s.prem?fmtNum(s.copilot_sdk?s.prem:Math.round(s.prem)):null)}
     ${row("Lines added",s.lines_add?fmtNum(s.lines_add):null)}
     ${row("Lines removed",s.lines_del?fmtNum(s.lines_del):null)}
     ${row("Thinking time",s.think_ms?Math.round(s.think_ms/1000)+"s":null)}
@@ -1193,7 +1226,7 @@ function openSession(i){
 }
 
 function compactionDetails(s){
-  if(s.source!=="claude" && s.source!=="claude-desktop" && s.source!=="codex") return "";
+  if(s.source!=="claude" && s.source!=="claude-desktop" && s.source!=="codex" && !s.copilot_sdk) return "";
   if(!Array.isArray(s.compactions)) return '<div class="kv"><span class="k">Compactions</span><span class="v">Not recorded in this ledger entry</span></div>';
   const events=s.compactions;
   const counts={manual:0,auto:0,unknown:0};
@@ -1204,6 +1237,7 @@ function compactionDetails(s){
   const duration=n=>Number.isFinite(n)?`${Math.round(n/1000)}s`:"Unavailable";
   const note=s.source==="codex"
     ? "These Codex records do not report a manual/auto trigger or context sizes. Duration is available only when a uniquely matched completion records both timing fields. Request usage, when logged, is already included in session totals; these events add no tokens or cost."
+    : s.copilot_sdk?"Only successful completed SDK compactions are counted. Missing trigger, context and timing fields are not inferred. Recorded request usage is already included in totals; these events add no usage."
     : "Context before → after. Compaction request tokens and cost are not recorded; context reduction is not billed usage.";
   return `<section class="compaction-details"><h3>Compactions · ${fmtNum(events.length)}</h3>
     <p class="hint">${types?esc(types)+" · ":""}Selected date range. Events belong to this session; model filters do not apply.</p>

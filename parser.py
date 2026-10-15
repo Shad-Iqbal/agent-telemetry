@@ -96,6 +96,7 @@ COPILOT_ROOTS = _editor_roots([
     "Code", "Code - Insiders", "VSCodium", "Cursor", "Puku",
     "Windsurf", "Trae", "Positron",
 ])
+COPILOT_SDK_GLOBS = [os.path.join(HOME, ".copilot", "session-state", "*", "events.jsonl")]
 CURSOR_DBS = [os.path.join(r, "User", "globalStorage", "state.vscdb")
               for r in _editor_roots(["Cursor"])]
 
@@ -292,6 +293,10 @@ PRICING = {
     "Gemini 2.5 Computer Use": (1.25, 10.00, 0, 0, 0),   # the page lists no caching
     "Gemini 2.5 Flash": (0.30, 2.50, 0, 0, 0.03),
     "Gemini 2.5 Flash-Lite": (0.10, 0.40, 0, 0, 0.01),
+    # Cloudflare-hosted GLM 5.3, verified 2026-10-15 against
+    # developers.cloudflare.com/workers-ai/models/glm-5.3/.
+    # API-equivalent estimate; other hosts and subscription billing can differ.
+    "GLM 5.3": (1.40, 4.40, 0, 0, 0.26),
 }
 
 
@@ -2085,6 +2090,463 @@ def parse_copilot_jsonl(agg, lines):
     agg["state"]["copilot_pending"] = pending
 
 
+# Copilot SDK / Agent Host. Usage events are normally ephemeral; VS Code saves
+# whole-turn model totals separately in agentSessionData/<host-id>/session.db.
+# Read only those allowlisted tables, joining explicit SDK and user-event ids.
+_SDK_HOSTS = {"at": 0, "roots": (), "map": {}}
+_SDK_UUID = re.compile(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$")
+
+
+def _sdk_number(value):
+    return value if type(value) in (int, float) and 0 <= value < float("inf") else None
+
+
+def _sdk_stat(path):
+    try:
+        st = os.stat(path)
+        return [st.st_size, st.st_mtime_ns]
+    except FileNotFoundError:
+        return None
+
+
+def _copilot_sdk_hosts():
+    """Index only canonical host databases, never tool-output/peer-chat copies."""
+    roots = tuple(COPILOT_ROOTS)
+    if roots == _SDK_HOSTS["roots"] and time.monotonic() - _SDK_HOSTS["at"] < 5:
+        return _SDK_HOSTS["map"]
+    from contextlib import closing
+    import sqlite3
+    found = {}
+    for root in roots:
+        for db in glob.glob(os.path.join(root, "agentSessionData", "*", "session.db")):
+            if not _SDK_UUID.fullmatch(_leaf(os.path.dirname(db))):
+                continue
+            try:
+                with closing(_open_ro_sqlite(db)) as con:
+                    tables = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+                    if not {"session_metadata", "turns", "turn_usage"} <= tables:
+                        continue
+                    row = con.execute("SELECT value FROM session_metadata WHERE key='defaultChatProviderData'").fetchone()
+                    data = json.loads(row[0]) if row else {}
+                    sid = data.get("sdkSessionId")
+                    if isinstance(sid, str) and sid:
+                        editor = EDITOR_LABEL.get(_leaf(root), _leaf(root))
+                        found.setdefault(sid, []).append((db, editor))
+            except (OSError, sqlite3.Error, ValueError, TypeError) as e:
+                sys.stderr.write(f"[copilot-sdk] {db}: {type(e).__name__}: {e}\n")
+                # A temporarily locked/unreadable index must not erase a known
+                # dependency and silently replace its previously recovered usage.
+                for sid, old in _SDK_HOSTS["map"].items():
+                    for item in old:
+                        if item[0] == db:
+                            found.setdefault(sid, []).append(item)
+    _SDK_HOSTS.update(at=time.monotonic(), roots=roots, map=found)
+    return found
+
+
+def _sdk_model(raw):
+    # Cloudflare/custom endpoint namespaces are not a model's display identity.
+    return _normalize_opencode(raw.split("/")[-1], "") if isinstance(raw, str) else "Unknown"
+
+
+def _sdk_tokens(data):
+    """SDK input includes cached tokens; reasoning is a subset of output."""
+    inp, out = _sdk_number(data.get("inputTokens")), _sdk_number(data.get("outputTokens"))
+    if inp is None or out is None:
+        return None
+    cr = _sdk_number(data.get("cacheReadTokens", data.get("cachedTokens", 0)))
+    cw = _sdk_number(data.get("cacheWriteTokens", 0))
+    reason = _sdk_number(data.get("reasoningTokens", 0))
+    if cr is None or cw is None or reason is None or cr + cw > inp or reason > out:
+        return None
+    if any(n != int(n) for n in (inp, out, cr, cw, reason)):
+        return None
+    return {"in": int(inp - cr - cw), "out": int(out), "cr": int(cr),
+            "cc": int(cw), "cc5": int(cw), "cc1": 0, "reason": int(reason)}
+
+
+def _update_copilot_sdk(previous, path):
+    sid = _leaf(os.path.dirname(path))
+    hosts = _copilot_sdk_hosts().get(sid, [])
+    sig = [_sdk_stat(path)] + [[db, _sdk_stat(db), _sdk_stat(db + "-wal")] for db, _ in hosts]
+    if previous and previous.get("_sig") == sig and previous.get("copilot_sdk", {}).get("version") == 1:
+        return previous
+    lines, offset = _read_new_bytes(path, 0)
+    fresh = _blank_agg("copilot", path)
+    # Full parsing is deliberate: a rewritten/WAL-only usage row can correct a
+    # completed turn without appending an SDK event. Stage everything atomically.
+    fresh["size"], fresh["mtime"] = sig[0][0], os.path.getmtime(path)
+    fresh["offset"] = offset
+    if previous and previous.get("title"):
+        _set_title(fresh, previous["title"], "ai")
+    parse_copilot_sdk(fresh, lines, hosts, previous)
+    fresh["_sig"] = sig
+    _finalize_session(fresh, "copilot", path)
+    fresh["sessions"][0]["id"] = sid[:8]
+    fresh["sessions"][0]["_sid"] = sid
+    fresh["sessions"][0]["reason"] = fresh["totals"]["reason"]
+    fresh["sessions"][0]["copilot_sdk"] = copy.deepcopy(fresh["copilot_sdk"])
+    return fresh
+
+
+def parse_copilot_sdk(agg, lines, hosts=(), previous=None):
+    from contextlib import closing
+    sid = _leaf(os.path.dirname(agg["path"]))
+    events, seen = [], set()
+    for line in lines:
+        if not line.strip():
+            continue
+        e = json.loads(line)  # malformed complete records fail transactionally
+        if not isinstance(e, dict) or not isinstance(e.get("data"), dict):
+            raise ValueError("Invalid Copilot SDK event")
+        eid = e.get("id")
+        if not isinstance(eid, str) or not eid or eid in seen:
+            continue
+        seen.add(eid)
+        events.append(e)
+    info = {"version": 1, "usage_status": "unavailable", "usage_sources": [],
+            "errors": 0, "aborts": 0, "missing_turns": 0, "limitations": [], "recorded_fields": []}
+    agg["copilot_sdk"] = info
+    agg["compactions"] = {}
+    agg["editor"], agg["entry"] = "Copilot SDK", "copilot-agent"
+    segments, message_segments, segment, current_model = {}, {}, None, "Unknown"
+    calls, tool_ids, reply_ids = set(), set(), set()
+    call_segments, active_segment = {}, None
+    usage_events, shutdowns, compaction_start, started = [], [], None, None
+    for e in events:
+        t, d = e.get("type"), e["data"]
+        dt = _from_iso(e.get("timestamp", ""))
+        if dt is None:
+            continue
+        if started and dt < started:
+            continue  # a fork's copied pre-session history is not new usage
+        child = bool(e.get("agentId") or d.get("parentToolCallId"))
+        if t == "session.start":
+            if d.get("sessionId") != sid:
+                raise ValueError("SDK session identity does not match its directory")
+            context = d.get("context") or {}
+            agg["project"] = _leaf(context.get("cwd")) or "(no folder)"
+            agg["cliver"] = d.get("copilotVersion")
+            current_model = _sdk_model(d.get("selectedModel"))
+            started = dt
+            agg["branch"] = context.get("branch")
+        elif t == "session.model_change" and not child:
+            current_model = _sdk_model(d.get("newModel"))
+        elif t == "session.title_changed" and not child:
+            _set_title(agg, d.get("title"), "custom")
+        elif t == "session.context_changed" and not child:
+            agg["project"] = _leaf(d.get("cwd")) or agg["project"]
+            agg["branch"] = d.get("branch") or agg.get("branch")
+        elif t == "user.message" and not child:
+            content = d.get("content")
+            if not isinstance(content, str) or not content.strip():
+                continue
+            if d.get("messageId") and d["messageId"] in message_segments:
+                continue
+            segment = {"id": e["id"], "dt": dt, "model": current_model,
+                       "dates": set(), "calls": set(), "call_events": [], "tool_events": [],
+                       "messages": [], "message_usage": [], "usage": []}
+            segments[e["id"]] = segment
+            if d.get("messageId"): message_segments[d["messageId"]] = segment
+            _set_title(agg, content)
+        elif t == "assistant.message":
+            # A user can queue another prompt while an earlier turn is working.
+            # The originating native message id wins over stream adjacency.
+            target = message_segments.get(d.get("originatingMessageId"), segment)
+            message_id = (e.get("agentId"), d.get("messageId") or e["id"])
+            if message_id in reply_ids:
+                continue
+            reply_ids.add(message_id)
+            model = _sdk_model(d.get("model")) if d.get("model") else (target["model"] if target else current_model)
+            if target:
+                target["dates"].add(_buckets(dt)[0])
+                target.setdefault("moments", []).append(dt)
+                output = _sdk_number(d.get("outputTokens"))
+                if output is not None and output == int(output):
+                    target["message_usage"].append((dt, model, int(output)))
+                call = d.get("apiCallId")
+                if isinstance(call, str) and call and (e.get("agentId"), call) not in calls:
+                    calls.add((e.get("agentId"), call))
+                    target["calls"].add(call)
+                    target["call_events"].append((dt, model))
+                    call_segments[(e.get("agentId"), call)] = target
+                    _rec(agg, _buckets(dt)[0], model)["req"] += 1
+                if not child:
+                    active_segment = target
+                    target["model"] = model
+                    if target is segment: current_model = model
+                    target["messages"].append((dt, model, bool(str(d.get("content") or "").strip())))
+            for tool in d.get("toolRequests") or []:
+                key = tool.get("toolCallId") if isinstance(tool, dict) else None
+                if key and key not in tool_ids:
+                    tool_ids.add(key)
+                    _tool(agg, _buckets(dt)[0], tool.get("name") or tool.get("toolName") or "tool")
+                    _rec(agg, _buckets(dt)[0], model)["tools"] += 1
+                    if target: target["tool_events"].append((dt, model))
+        elif t == "tool.execution_start":
+            key = d.get("toolCallId")
+            if key and key not in tool_ids:
+                tool_ids.add(key)
+                _tool(agg, _buckets(dt)[0], d.get("toolName") or "tool")
+                _rec(agg, _buckets(dt)[0], current_model)["tools"] += 1
+                if segment: segment["tool_events"].append((dt, current_model))
+        elif t == "assistant.usage":
+            if d.get("interactionType") == "conversation-compaction":
+                continue  # the same request is recorded by compaction_complete
+            entry = {"model": _sdk_model(d.get("model")), "data": d, "dt": dt}
+            owner = call_segments.get((e.get("agentId"), d.get("apiCallId")), active_segment or segment)
+            (owner["usage"] if owner else usage_events).append(entry)
+        elif t == "assistant.turn_start" and not child:
+            active_segment = segment
+        elif t == "assistant.turn_end" and not child:
+            active_segment = None
+        elif t == "subagent.started":
+            agg["_spawned"] = agg.get("_spawned", 0) + 1
+        elif t == "session.error":
+            info["errors"] += 1
+        elif t == "abort":
+            info["aborts"] += 1
+        elif t == "session.shutdown" and not child:
+            shutdowns.append((dt, d))
+        elif t == "session.compaction_start" and not child:
+            compaction_start = dt
+        elif t == "session.compaction_complete" and not child:
+            tokens = d.get("compactionTokensUsed")
+            if isinstance(tokens, dict):
+                entry = {"model": _sdk_model(tokens.get("model")), "data": tokens, "dt": dt}
+                (active_segment["usage"] if active_segment else usage_events).append(entry)
+            if d.get("success") is True:
+                before = _sdk_number(d.get("preCompactionTokens"))
+                after = _sdk_number(d.get("postCompactionTokens"))
+                duration = (dt - compaction_start).total_seconds() * 1000 if compaction_start else None
+                agg["compactions"][e["id"]] = {"id": e["id"], "timestamp": dt.isoformat(),
+                    "date": _buckets(dt)[0], "trigger": d.get("trigger") if d.get("trigger") in ("manual", "auto") else "unknown",
+                    "before": before, "after": after, "duration_ms": duration if duration is not None and duration >= 0 else None}
+            compaction_start = None
+
+    # Retain already recovered, numeric-only turn snapshots if the auxiliary
+    # database is later deleted. Never retain its prompts, tool output or config.
+    stored = copy.deepcopy((previous or {}).get("state", {}).get("sdk_host_usage", {}))
+    editors, recovered = set(), {}
+    for db, editor in hosts:
+        if not os.path.exists(db):
+            continue
+        with closing(_open_ro_sqlite(db)) as con:
+            con.execute("BEGIN")  # consistent metadata + usage snapshot, including WAL
+            meta = dict(con.execute("SELECT key,value FROM session_metadata WHERE key IN "
+                "('defaultChatProviderData','customTitle','agentHost.git')"))
+            provider = json.loads(meta.get("defaultChatProviderData", "{}"))
+            if provider.get("sdkSessionId") != sid:
+                continue
+            editors.add(editor)
+            if meta.get("customTitle"):
+                _set_title(agg, meta["customTitle"], "ai")
+            if meta.get("agentHost.git"):
+                agg["branch"] = json.loads(meta["agentHost.git"]).get("branchName") or agg.get("branch")
+            rows = con.execute("SELECT t.event_id,u.usage FROM turn_usage u JOIN turns t ON t.id=u.turn_id")
+            for anchor, raw in rows:
+                if anchor not in segments:
+                    continue
+                usage = json.loads(raw)
+                m = usage.get("_meta") or {}
+                mc = m.get("vscode.modelCall") or {}
+                if mc.get("sdkSessionId") not in (None, sid):
+                    continue
+                totals = m.get("turnTokenTotals")
+                complete = isinstance(totals, list) and bool(totals)
+                # Top-level usage describes only the LAST call, not the whole
+                # turn. It is complete only for an observed single-call turn.
+                if totals is None:
+                    totals = [usage]
+                    complete = len(segments[anchor]["calls"]) == 1
+                if not isinstance(totals, list):
+                    raise ValueError("Invalid SDK turn token totals")
+                clean = []
+                for row in totals:
+                    if not isinstance(row, dict) or _sdk_tokens(row) is None:
+                        raise ValueError("Invalid SDK token counts")
+                    clean.append({k: row[k] for k in ("model", "inputTokens", "outputTokens", "cachedTokens",
+                        "cacheReadTokens", "cacheWriteTokens", "reasoningTokens") if k in row})
+                candidate = {"totals": clean, "complete": complete,
+                             "premium": _sdk_number(m.get("cost"))}
+                def rank(snapshot):
+                    return (snapshot["complete"], sum(row["inputTokens"] + row["outputTokens"] for row in snapshot["totals"]))
+                if anchor not in recovered or rank(candidate) >= rank(recovered[anchor]):
+                    recovered[anchor] = candidate
+    stored.update(recovered)
+    if len(editors) == 1:
+        agg["editor"] = next(iter(editors))
+    elif len(editors) > 1:
+        info["limitations"].append("ambiguous_editor")
+    elif previous and stored:
+        agg["editor"] = previous.get("editor") or agg["editor"]
+        agg["branch"] = agg.get("branch") or previous.get("branch")
+    stored = {k: v for k, v in stored.items() if k in segments}
+    agg["state"]["sdk_host_usage"] = stored
+    known_fields = None
+
+    def add_usage(dt, model, data, hourly=True):
+        nonlocal known_fields
+        tokens = _sdk_tokens(data)
+        if tokens is None:
+            return False
+        date = _buckets(dt)[0]
+        fields = {"in", "out"}
+        if "cacheReadTokens" in data or "cachedTokens" in data: fields.add("cr")
+        if "cacheWriteTokens" in data: fields.add("cc")
+        if "reasoningTokens" in data: fields.add("reason")
+        known_fields = fields if known_fields is None else known_fields & fields
+        r = _rec(agg, date, model)
+        exact = r.setdefault("exact", {})
+        for key, n in tokens.items():
+            r[key] += n
+            exact[key] = exact.get(key, 0) + n
+        premium = _sdk_number(data.get("cost"))
+        if premium is not None:
+            r["prem"] += premium
+            exact["prem"] = exact.get("prem", 0) + premium
+        if hourly:
+            _bump_time(agg, dt, sum(tokens[k] for k in ("in", "out", "cr", "cc")), 0)
+        return True
+
+    timed_activity = []
+    for anchor, seg in segments.items():
+        dt, model = seg["dt"], seg["model"]
+        activity = []
+        user = _rec(agg, _buckets(dt)[0], model)
+        user["user"] += 1
+        _bump_time(agg, dt, 0, 0)
+        activity.append((dt, model, {"user": 1}))
+        timed_activity.append((dt, model, anchor))
+        for ts, mdl, visible in seg["messages"]:
+            if visible:
+                _rec(agg, _buckets(ts)[0], mdl)["asst"] += 1
+                _bump_time(agg, ts, 0, 1)
+                activity.append((ts, mdl, {"asst": 1}))
+                timed_activity.append((ts, mdl, anchor))
+        saved = stored.get(anchor)
+        covered = False
+        if saved and saved["totals"] and len(seg["dates"]) == 1:
+            moments = seg.get("moments") or [dt]
+            same_hour = len({(_buckets(ts)[0], ts.hour) for ts in moments}) == 1
+            if not same_hour: info["limitations"].append("hourly_usage")
+            for row in saved["totals"]:
+                add_usage(moments[-1], _sdk_model(row.get("model")), row, hourly=same_hour)
+            info["usage_sources"].append("vscode_turn_usage")
+            covered = saved["complete"]
+            if not saved["complete"]:
+                info["missing_turns"] += 1
+        elif seg["usage"]:
+            valid = 0
+            for entry in seg["usage"]:
+                valid += bool(add_usage(entry["dt"], entry["model"], entry["data"]))
+            info["usage_sources"].append("usage_events")
+            covered = valid >= max(1, len(seg["calls"]))
+            if not covered: info["missing_turns"] += 1
+        else:
+            info["missing_turns"] += 1
+            for ts, mdl, output in seg["message_usage"]:
+                _rec(agg, _buckets(ts)[0], mdl)["out"] += output
+                _bump_time(agg, ts, output, 0)
+                known_fields = {"out"} if known_fields is None else known_fields & {"out"}
+                info["usage_sources"].append("message_output")
+            if saved:
+                info["limitations"].append("undated_usage")
+        if saved and saved.get("premium") is not None:
+            _rec(agg, _buckets(dt)[0], model)["prem"] += saved["premium"]
+            activity.append((dt, model, {"prem": saved["premium"]}))
+        seg["exact_covered"] = covered
+        if covered:
+            activity += [(ts, mdl, {"req": 1}) for ts, mdl in seg["call_events"]]
+            activity += [(ts, mdl, {"tools": 1}) for ts, mdl in seg["tool_events"]]
+            for ts, mdl, counts in activity:
+                row = _rec(agg, _buckets(ts)[0], mdl)
+                if "exact" in row:
+                    for key, n in counts.items():
+                        row["exact"][key] = row["exact"].get(key, 0) + n
+    for dt, model, anchor in sorted(timed_activity, key=lambda x: x[0]):
+        gap = _active_gap(agg["_active_last"], dt)
+        row = _rec(agg, _buckets(dt)[0], model)
+        row["active"] += gap
+        if segments[anchor]["exact_covered"] and "exact" in row:
+            row["exact"]["active"] = row["exact"].get("active", 0) + gap
+        agg["_active_last"] = dt.isoformat()
+    for entry in usage_events:
+        add_usage(entry["dt"], entry["model"], entry["data"])
+        info["usage_sources"].append("usage_events")
+    # Shutdown snapshots are cumulative: never add them to turn/event usage.
+    # Only a single usage day permits assigning a session total to a daily row.
+    # Multi-day totals remain visible as supplemental metadata, never invented
+    # per-day/per-hour usage.
+    dates = {key.split("\t", 1)[0] for key in agg["records"]}
+    if started:
+        dates.add(_buckets(started)[0])
+    if shutdowns:
+        shut_dt, shut = shutdowns[-1]
+        terminal = not agg.get("last_ts") or shut_dt.isoformat() >= agg["last_ts"]
+        replaced, complete_models, shutdown_fields = set(), set(), []
+        if _sdk_number(shut.get("sessionStartTime")) is not None:
+            origin = _from_ms(shut["sessionStartTime"])
+            if origin: dates.add(_buckets(origin)[0])
+        metrics = shut.get("modelMetrics") or {}
+        info["shutdown_totals"] = []
+        for raw_model, metric in metrics.items():
+            row = metric.get("usage") if isinstance(metric, dict) else None
+            tokens = _sdk_tokens(row) if isinstance(row, dict) else None
+            if tokens is None:
+                continue
+            mdl = _sdk_model(raw_model)
+            info["shutdown_totals"].append(dict(model=mdl, **tokens))
+            if len(dates) == 1 and terminal:
+                r = _rec(agg, next(iter(dates)), mdl)
+                # A smaller stale shutdown cannot retract later recorded turns.
+                if sum(tokens[k] for k in ("in", "out", "cr", "cc")) >= sum(r[k] for k in ("in", "out", "cr", "cc")):
+                    r.update(tokens)
+                    r.setdefault("exact", {}).update(tokens)
+                    fields = {"in", "out"}
+                    if "cacheReadTokens" in row: fields.add("cr")
+                    if "cacheWriteTokens" in row: fields.add("cc")
+                    if "reasoningTokens" in row: fields.add("reason")
+                    replaced.add(mdl)
+                    shutdown_fields.append(fields)
+                    req = metric.get("requests") or {}
+                    n = _sdk_number(req.get("count"))
+                    if n is not None and n == int(n):
+                        if n >= r["req"]: complete_models.add(mdl)
+                        r["req"] = max(r["req"], int(n))
+                    premium = _sdk_number(req.get("cost"))
+                    if premium is not None: r["prem"] = premium
+                    info["usage_sources"].append("shutdown")
+                    info["limitations"].append("hourly_usage")
+        if shutdown_fields:
+            fields = set.intersection(*shutdown_fields)
+            models = {key.split("\t", 1)[1] for key in agg["records"]}
+            known_fields = fields if models <= replaced or known_fields is None else known_fields & fields
+        if len(dates) != 1 and info["shutdown_totals"]:
+            info["limitations"].append("undated_usage")
+        elif (terminal and complete_models and {s["model"] for s in segments.values()} <= complete_models):
+            info["missing_turns"] = 0
+            for row in agg["records"].values():
+                if "exact" in row:
+                    for key in ("asst", "user", "req", "tools", "active", "prem"):
+                        row["exact"][key] = row[key]
+        for key in ("totalPremiumRequests", "totalNanoAiu", "totalApiDurationMs"):
+            value = _sdk_number(shut.get(key))
+            if value is not None: info[key] = value
+    info["usage_sources"] = sorted(set(info["usage_sources"]))
+    info["recorded_fields"] = sorted(known_fields or [])
+    info["limitations"] = sorted(set(info["limitations"]))
+    info["usage_status"] = ("partial" if info["missing_turns"] or "undated_usage" in info["limitations"] else "recorded") if info["usage_sources"] else "unavailable"
+    # Precision filtering retains exact observed activity from covered turns but
+    # cannot turn absent token records into zero-token exact sessions.
+    for row in agg["records"].values():
+        for key in agg["totals"]:
+            if key != "tools": agg["totals"][key] += row.get(key, 0)
+    ranked = sorted(dict.fromkeys(key.split("\t", 1)[1] for key in agg["records"]),
+        key=lambda m: -sum(r["in"] + r["out"] + r["cr"] + r["cc"] for k, r in agg["records"].items() if k.endswith("\t" + m)))
+    agg["state"]["dom_model"] = ranked[0] if ranked else current_model
+
+
 # ===========================================================================
 # GEMINI CLI  (prompts only — no model, no tokens, no responses persisted)
 # ===========================================================================
@@ -3341,6 +3803,9 @@ def discover():
         for d in glob.glob(os.path.join(root, "storage", "message", "*")):
             if os.path.isdir(d):
                 out.append(("opencode", d, "opencode"))
+    for pattern in COPILOT_SDK_GLOBS:
+        for path in glob.glob(pattern):
+            out.append(("copilot", path, "Copilot SDK"))
     for root in COPILOT_ROOTS:
         editor = EDITOR_LABEL.get(os.path.basename(root), os.path.basename(root))
         # older VS Code stores chat sessions as *.json (whole-object); newer builds use
@@ -3369,6 +3834,9 @@ def update_file(agg, source, path, editor_hint, proj_map):
     except OSError:
         return agg
     size, mtime = st.st_size, st.st_mtime
+
+    if source == "copilot" and _leaf(path) == "events.jsonl":
+        return _update_copilot_sdk(agg, path)
 
     if source == "copilot" and path.endswith(".json"):
         # older whole-object format, rewritten on each save → full reparse on change

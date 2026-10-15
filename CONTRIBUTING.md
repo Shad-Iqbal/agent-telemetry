@@ -123,6 +123,13 @@ python3 -m unittest discover -s tests -v
 ```
 
 For frontend accounting and filter changes, also run `node tests/test_frontend.js`.
+
+Copilot SDK changes must cover the event log and VS Code Agent Host's separate
+`turn_usage` database, including WAL-only updates, explicit session/event joins,
+inclusive per-turn model totals, duplicate tool/usage events, missing usage and
+exact-only filtering. Run `python3 -m unittest tests.test_copilot_sdk -v`.
+Use invented fixtures; never attach to or resume a user's session to collect metrics.
+See [SDK coverage and sources](docs/copilot-sdk.md).
 Node is a development check only; the dashboard remains stdlib-only.
 
 For native changes, also run the actual OS checks:

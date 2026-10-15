@@ -179,7 +179,7 @@ instead of cloning, delete `.usage_cache.json` first — that file is your perso
 | **Claude Code** | `~/.claude/projects/**/*.jsonl` | exact (in/out/cache read+write, 5m/1h tiers) |
 | **Claude Desktop** (agent mode) | `Claude/local-agent-mode-sessions/**` under App Support / `%APPDATA%` / `~/.config` | exact |
 | **Codex** | `~/.codex/sessions/**`, `~/.codex/archived_sessions/**` | exact (in/cached/out/reasoning); subagents are identified and labelled |
-| **GitHub Copilot** | VS Code / Insiders / Cursor `workspaceStorage/*/chatSessions/*.{json,jsonl}` | exact where Copilot recorded them (`promptTokens`/`completionTokens` on finished requests in current builds); estimated from message text for older chats · premium-request multiplier read separately |
+| **GitHub Copilot** | VS Code-family `chatSessions/*.{json,jsonl}`; SDK/CLI `~/.copilot/session-state/*/events.jsonl`, enriched from VS Code `agentSessionData/*/session.db` | recorded request/turn tokens where available; SDK shutdown totals where safely dated. SDK gaps show a warning tooltip and unavailable/partial usage; older non-SDK chats retain text estimates. Premium multipliers are separate from estimated dollars. |
 | **Cursor** (native AI) | `Cursor/User/globalStorage/state.vscdb` under App Support / `%APPDATA%` / `~/.config` | partial — model, mode, timestamps, tool calls and AI-line stats are exact; tokens are on only ~2% of messages |
 | **OpenCode** | `~/.local/share/opencode/opencode.db`, `%LOCALAPPDATA%\opencode\opencode.db`, `~/.opencode/opencode.db` (or `$OPENCODE_DATA_DIR`) | V1/V2 SQLite; exact (in/out/reasoning/cache), prompts and tools; cost is read from OpenCode's own per-message value |
 | **Hermes Agent** | `~/.hermes/state.db` (or `$HERMES_HOME`, `%LOCALAPPDATA%\hermes`) | exact (in/out/cache/reasoning, per model) |
@@ -188,6 +188,13 @@ instead of cloning, delete `.usage_cache.json` first — that file is your perso
 A tool you don't use simply contributes nothing. **Attribution is by tool, not by model** —
 a Claude or GPT model used *inside* Copilot/Cursor/OpenCode/Hermes/OpenClaw counts under that tool, and the
 Models table lists each `model × tool` row separately.
+
+Copilot's newer SDK-based agent sessions use a different store from older Copilot Chat.
+AgentTelemetry joins their event history to VS Code's saved per-turn usage using native
+session and event IDs. Custom endpoint models, including Cloudflare GLM 5.3, still count
+as **Copilot**. A warning beside a session explains missing usage, partial coverage,
+errors or interruptions. Missing SDK usage is never guessed from chat length or presented
+as a known zero. See [Copilot SDK data coverage](docs/copilot-sdk.md) for sources and limits.
 
 ---
 

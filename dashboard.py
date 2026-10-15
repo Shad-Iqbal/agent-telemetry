@@ -26,7 +26,7 @@ import accounts as A
 HERE = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = HERE
 CACHE_PATH = os.path.join(DATA_DIR, ".usage_cache.json")
-CACHE_VERSION = 57
+CACHE_VERSION = 58
 
 
 def _configure_data_dir(path):
@@ -42,7 +42,7 @@ def _configure_data_dir(path):
 def _peer_cache_ok(version):
     # v1.7.0 mirrors lack optional attribution/precision fields, but the reader
     # still supports their rows just as it supports archived local entries.
-    return type(version) is int and version in (52, 53, 54, 55, 56, CACHE_VERSION)
+    return type(version) is int and version in (52, 53, 54, 55, 56, 57, CACHE_VERSION)
 
 # ---------------------------------------------------------------------------
 # In-memory store of per-file aggregates, refreshed on a background interval.
@@ -272,8 +272,8 @@ def load_cache():
     if data.get("version") == CACHE_VERSION:
         _state["files"] = files
         return
-    if data.get("version") in (53, 54, 55, 56):
-        # Only optional compaction/pricing/private account metadata changed. Keep every entry
+    if data.get("version") in (53, 54, 55, 56, 57):
+        # Only optional compaction/pricing/account/SDK metadata changed. Keep every entry
         # until its replacement parses successfully; update_file backfills Claude
         # and Codex logs lacking metadata, and Claude Haiku 5.5 pricing detail.
         _state["files"] = files
@@ -964,6 +964,10 @@ def _build_payload_locked():
                          "subscription or API billing and the logs don't record which, so $ is "
                          "shown as API-equivalent value (all such usage is included either way). "
                          "GitHub Copilot uses recorded request token counts when available. "
+                         "Copilot SDK/Agent Host reads saved VS Code per-turn model totals and "
+                         "SDK shutdown summaries; missing usage is shown as unavailable or partial, "
+                         "never estimated from chat length. GLM 5.3 uses Cloudflare Workers AI "
+                         "list rates ($1.40 input/$4.40 output/$0.26 cached input per Mtok). "
                          "Older chats and requests still in progress are estimated from visible "
                          "message text, excluding hidden context (files, system prompts and tool "
                          "outputs), so those estimates can undercount. Request count and the "
@@ -1655,7 +1659,7 @@ def _devices_meta():
 _EXPORT_KEYS = ("source", "path", "mtime", "archived", "project", "title", "branch", "editor",
                 "entry", "cliver", "subagent", "first_ts", "last_ts", "records", "tools",
                 "skills", "ctx", "hourly", "reads", "totals", "sessions", "open_ctx",
-                "opencode_ids", "opencode_messages", "compactions")
+                "opencode_ids", "opencode_messages", "compactions", "copilot_sdk")
 
 
 def _export_agg(agg):
