@@ -37,12 +37,14 @@ assert.doesNotMatch(run(`accountEntryHTML({source:'codex',profile:'<img src=x on
   assert.match(cache.title,/remain included in estimated spend/);
   assert.equal(run(`overviewCacheDetail({tok:100,cr:120}).value`),'0','Malformed overcount must not produce negative excluded tokens');
   const hero=run(`heroHTML({label:'Tokens',value:'1.19B',
-    valueTitle:overviewCacheDetail({tok:1190000000,cr:1137000000}).title,
+    valueTooltip:{id:'ovTokenTooltip',text:overviewCacheDetail({tok:1190000000,cr:1137000000}).title},
     feature:{label:'Est. spend',value:'$209',title:'API estimate',spark:'<svg></svg>'},
     facts:[{l:'Daily average',v:'27.6M'}]})`);
-  assert.match(hero,/<div class="hero-value" title="Tokens excluding cache reads: 53M\./);
+  assert.match(hero,/<div class="hero-value" tabindex="0" aria-describedby="ovTokenTooltip">1.19B<\/div>/);
+  assert.match(hero,/id="ovTokenTooltip" role="tooltip">Tokens excluding cache reads: 53M\./);
   assert.doesNotMatch(hero,/>53M<|Excluded Cache|hero-secondary/,'Cache-excluded count must appear only in the hover tooltip');
-  assert.match(run(`heroHTML({label:'Tokens',value:'1',valueTitle:'"<unsafe>'})`),/title="&quot;&lt;unsafe&gt;"/);
+  assert.doesNotMatch(hero,/<div class="hero-value"[^>]*title=/,'Use the visible tooltip instead of a delayed browser title');
+  assert.match(run(`heroHTML({label:'Tokens',value:'1',valueTooltip:{id:'"<id>',text:'"<unsafe>'}})`),/id="&quot;&lt;id&gt;" role="tooltip">&quot;&lt;unsafe&gt;/);
   assert.ok(hero.indexOf('hero-feature')<hero.indexOf('hero-facts'));
   assert.match(hero,/hero-feature-spark/);
 }
@@ -100,7 +102,7 @@ assert.doesNotMatch(run(`accountEntryHTML({source:'codex',profile:'<img src=x on
   for(const metric of ['tokens','cost','messages','time']){
     check(`S.metric=${JSON.stringify(metric)};S.exactOnly=true;viewOverview(slice());`);
     const hero=node('ovHero').innerHTML, tiles=node('kpis').innerHTML;
-    assert.equal(hero.includes('title="Tokens excluding cache reads:'),metric==='tokens','Only token mode needs the cache tooltip');
+    assert.equal(hero.includes('role="tooltip"'),metric==='tokens','Only token mode needs the cache tooltip');
     assert.match(hero+tiles,/Est\. spend/,metric+' must retain an estimated spend summary');
     assert.equal((tiles.match(/Est\. spend/g)||[]).length,['messages','time'].includes(metric)?1:0,
       metric+' must not duplicate spend already shown in the hero');

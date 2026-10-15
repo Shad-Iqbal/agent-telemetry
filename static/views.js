@@ -526,7 +526,7 @@ function viewOverview(d){
   document.getElementById("ovHero").innerHTML = heroHTML({
     label: metricTitle() + (S.metric==="cost" ? " at API list prices" : ""),
     value: big,
-    valueTitle:tokenMetric?overviewCacheDetail(t).title:null,
+    valueTooltip:tokenMetric?{id:"ovTokenTooltip",text:overviewCacheDetail(t).title}:null,
     delta: pd ? deltaHTML(cur, prev, S.metric==="cost") : "",
     note: pd ? `vs the ${prevLabel()}` : "",
     feature:tokenMetric?overviewSpendSummary(t,days,d.recs):null,

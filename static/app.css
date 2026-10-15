@@ -297,7 +297,14 @@ input[type=date]{color-scheme:inherit}
 .hero-main.wide{flex-direction:row;flex-wrap:wrap;align-items:flex-end;gap:10px 40px}
 .hero-label{font-size:12.5px;color:var(--text-2);font-weight:560}
 .hero-value{font-size:44px;font-weight:680;letter-spacing:-.035em;line-height:1.02;white-space:nowrap}
-.hero-value[title]{cursor:help}
+.hero-value-tooltip{position:relative;align-self:flex-start;max-width:100%}
+.hero-tooltip{display:none;position:absolute;left:0;top:calc(100% + 8px);z-index:60;
+  width:min(280px,calc(100vw - 72px));padding:10px 12px;background:var(--surface);
+  border:1px solid var(--border-2);border-radius:var(--r-sm);box-shadow:var(--shadow-lg);
+  color:var(--text);font-size:12px;line-height:1.5;font-weight:400;letter-spacing:normal;white-space:normal}
+.hero-tooltip::before{content:"";position:absolute;left:0;right:0;top:-9px;height:9px}
+.hero-value-tooltip:not(.dismissed):hover>.hero-tooltip,
+.hero-value-tooltip:not(.dismissed):focus-within>.hero-tooltip{display:block}
 .hero-value .unit{font-size:22px;font-weight:600;color:var(--text-2);letter-spacing:-.01em;margin-left:4px}
 .hero-delta{display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--text-2);min-height:20px}
 .hero-feature{display:flex;align-items:flex-end;justify-content:space-between;gap:20px;min-width:0;margin-top:18px}

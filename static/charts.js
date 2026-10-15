@@ -173,8 +173,10 @@ function tilesHTML(items){
     </div>`).join("");
 }
 function heroHTML(o){
+  const tooltip=o.valueTooltip;
+  const value=`<div class="hero-value"${tooltip?` tabindex="0" aria-describedby="${esc(tooltip.id)}"`:""}>${o.value}</div>`;
   return `<div class="hero-label">${esc(o.label)}</div>
-    <div class="hero-value"${o.valueTitle?` title="${esc(o.valueTitle)}"`:""}>${o.value}</div>
+    ${tooltip?`<div class="hero-value-tooltip">${value}<div class="hero-tooltip" id="${esc(tooltip.id)}" role="tooltip">${esc(tooltip.text)}</div></div>`:value}
     <div class="hero-delta">${o.delta||""}${o.note?`<span>${esc(o.note)}</span>`:""}</div>
     ${o.feature?`<div class="hero-feature" title="${esc(o.feature.title||"")}">
       <div><div class="hero-feature-label">${esc(o.feature.label)}</div><div class="hero-feature-value">${o.feature.value}</div></div>
@@ -182,6 +184,16 @@ function heroHTML(o){
     ${o.facts && o.facts.length ? `<div class="hero-facts">${o.facts.map(f=>
       `<div title="${esc(f.title||"")}"><div class="f-l">${esc(f.l)}</div><div class="f-v">${f.v}</div></div>`).join("")}</div>` : ""}`;
 }
+// Keep the tooltip open while hovered/focused, and let Escape dismiss it until re-entry.
+for(const event of ["pointerover","focusin"]){
+  document.addEventListener(event,e=>{
+    const wrap=e.target.closest(".hero-value-tooltip");
+    if(wrap&&!wrap.contains(e.relatedTarget)) wrap.classList.remove("dismissed");
+  });
+}
+document.addEventListener("keydown",e=>{
+  if(e.key==="Escape") document.querySelectorAll(".hero-value-tooltip").forEach(el=>el.classList.add("dismissed"));
+});
 /* Part-to-whole per row, normalised to 100% — the 2px gaps separate segments. */
 function stackMeters(el, rows, kinds, fmt){
   if(typeof el === "string") el = document.getElementById(el);

@@ -141,7 +141,8 @@ instead.
 "in", "across", or none for "today" / "this month"); ‹ › (`stepPeriod`, keys `,` `.`) move
 the window back or forward by its own length as a custom range, stopping at today. Tokens
 are the default measure — the Overview hero follows it, with estimated spend below and
-tokens excluding cache reads in the total's hover tooltip. Messages/Time keep spend in
+tokens excluding cache reads in the total's hover/focus tooltip (Escape dismisses it).
+Messages/Time keep spend in
 a tile; Cost uses the hero itself. Activity and Monthly rhythm keep their historical windows and
 apply the same precision/dimension selection as `slice()` via `filteredRecords()`.
 Every chart has a table twin (`.tv[data-tv]`, `chartTable()`); SVG chart data lives in
