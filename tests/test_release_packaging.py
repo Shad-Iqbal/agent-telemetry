@@ -54,7 +54,7 @@ class PackagingTests(unittest.TestCase):
                 zipped.writestr("python313._pth", "untrusted search path")
             checksum = hashlib.sha256(archive.read_bytes()).hexdigest()
             with patch.object(BUILD, "PYTHON_SHA256", checksum), patch.object(BUILD.subprocess, "check_output", return_value="release-fixture\n"):
-                BUILD.stage(ROOT, root / "payload", archive, "2.0.0")
+                BUILD.stage(ROOT, root / "payload", archive, "2.1.0")
             payload = root / "payload"
             self.assertEqual((payload / "runtime" / "python313._pth").read_text(), "python313.zip\n.\n..\n")
             self.assertEqual(json.loads((payload / "BUILD-INFO.json").read_text())["commit"], "release-fixture")
@@ -71,7 +71,7 @@ class PackagingTests(unittest.TestCase):
             archive = root / "unverified.zip"
             archive.write_bytes(b"tampered fixture")
             with self.assertRaisesRegex(ValueError, "checksum"):
-                BUILD.stage(ROOT, root / "payload", archive, "2.0.0")
+                BUILD.stage(ROOT, root / "payload", archive, "2.1.0")
             self.assertFalse((root / "payload" / "runtime").exists())
 
     def test_guard_refuses_live_and_closing_clients(self):
