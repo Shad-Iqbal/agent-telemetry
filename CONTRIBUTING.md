@@ -139,7 +139,8 @@ python install.py --no-launch
 
 The Windows self-test reports whether Explorer accepted the icon. The rendering suite
 exercises actual native controls and captures light/dark, 100/150/200% and failure/saving
-fixtures. Inspect those artifacts for clipping and legibility; a handle test alone does
+fixtures, including the loaded tray icon rendered at notification sizes. Inspect those
+artifacts for clipping and legibility; a handle test alone does
 not establish visual quality or prove the user's own Explorer shows the item.
 CI covers all three operating systems.
 Use temporary ledgers/mock servers for automated tests and retain the failure/recovery

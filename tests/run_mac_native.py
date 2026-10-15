@@ -1,5 +1,6 @@
 """Compile actual macOS native sources against an ephemeral mock dashboard."""
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import argparse
 import json
 from pathlib import Path
 import subprocess
@@ -10,6 +11,11 @@ import time
 
 if sys.platform != "darwin":
     raise SystemExit("Native macOS fixtures require macOS")
+arguments = argparse.ArgumentParser()
+arguments.add_argument("--screenshots", type=Path)
+options = arguments.parse_args()
+if options.screenshots:
+    options.screenshots.mkdir(parents=True, exist_ok=True)
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "macos/AgentTelemetryMac/Sources/AgentTelemetryMac"
 state = {"failed": False, "delay": False, "seconds": 15, "revision": 0, "tokens": 100}
@@ -66,6 +72,10 @@ try:
         command += [str(SOURCE / name) for name in names]
         command += [str(ROOT / "tests/MacNativeRegression.swift"), "-o", str(root / "native-tests")]
         subprocess.run(command, check=True)
-        subprocess.run([str(root / "native-tests"), str(server.server_port)], check=True, timeout=30)
+        run = [str(root / "native-tests"), str(server.server_port),
+               str(ROOT / "macos/AgentTelemetryMac/Resources/AppIcon.png")]
+        if options.screenshots:
+            run.append(str(options.screenshots.resolve()))
+        subprocess.run(run, check=True, timeout=30)
 finally:
     server.shutdown()
