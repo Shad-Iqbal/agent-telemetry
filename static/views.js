@@ -334,9 +334,7 @@ function activityMonthWindows(count, through){
 
 function monthlyRhythmRows(){
   const rows=activityMonthWindows(12), values={};
-  for(const r of RAW.records){
-    if(r.date<rows[0].from||r.date>rows[rows.length-1].to) continue;
-    if(!passSrc(r.source)||!passModel(r.model)||!passProj(r.project)||!passIde(r.ide)||!passDev(r.device)) continue;
+  for(const r of filteredRecords({from:rows[0].from,to:rows[rows.length-1].to})){
     const key=r.date.slice(0,7); values[key]=(values[key]||0)+recTokens(r);
   }
   return rows.map(row=>Object.assign(row,{value:values[row.key]||0,
@@ -345,9 +343,9 @@ function monthlyRhythmRows(){
 
 function renderMonthlyRhythmCard(){
   const rows=monthlyRhythmRows(), summary=document.getElementById("monthlyRhythmSummary");
+  renderMonthlyRhythm(rows,row=>{ S.preset="custom"; S.from=row.from; S.to=row.to; renderAll(); });
   if(!rows.some(row=>row.value)){
     summary.innerHTML="";
-    renderMonthlyRhythm([],null);
     return;
   }
   const current=rows[rows.length-1], previous=rows[rows.length-2];
@@ -358,7 +356,6 @@ function renderMonthlyRhythmCard(){
   summary.innerHTML=`<div class="rhythm-primary"><span class="eyebrow">This month</span><div>
       <strong class="rhythm-value">${fmtTok(current.value)}</strong><span class="rhythm-change">${comparison}</span></div></div>
     <div class="rhythm-peak"><span class="eyebrow">Peak month</span><span><b>${fmtTok(peak.value)}</b>${esc(peak.label)}</span></div>`;
-  renderMonthlyRhythm(rows,row=>{ S.preset="custom"; S.from=row.from; S.to=row.to; renderAll(); });
 }
 
 function overviewSpendSummary(t, days, recs){
@@ -556,6 +553,7 @@ function viewOverview(d){
   const tile = (l, curV, prevV, f, fmtV, invert, s) => ({l, v: fmtV(curV),
     d: pd ? deltaHTML(curV, prevV, invert) : "", s, spark: ser(f)});
   const tiles = [];
+  if(S.metric!=="tokens" && S.metric!=="cost") tiles.push(tile("Est. spend", t.cost, pt&&pt.cost, r=>r.cost||0, fmtUSD, true));
   if(S.metric!=="tokens") tiles.push(tile("Tokens", t.tok, pt&&pt.tok, recTokens, fmtTok));
   if(S.metric!=="time"){ const a = d.recs.reduce((x,r)=>x+(r.active||0),0), pa = pd ? pd.recs.reduce((x,r)=>x+(r.active||0),0) : null;
     tiles.push(tile("Active time", a, pa, r=>r.active||0, fmtDur, false)); }
@@ -612,8 +610,7 @@ function viewOverview(d){
   renderTokenMix(d);
 
   const byDay={}; let max=0;
-  for(const r of RAW.records){
-    if(!passSrc(r.source)||!passModel(r.model)||!passProj(r.project)||!passIde(r.ide)||!passDev(r.device)) continue;
+  for(const r of filteredRecords()){
     byDay[r.date]=(byDay[r.date]||0)+recTokens(r); max=Math.max(max,byDay[r.date]);
   }
   renderCalendar(byDay, max, day=>{ S.preset="custom"; S.from=day; S.to=day; renderAll(); });

@@ -191,9 +191,13 @@
             <div class="cal-wrap" id="calWrap"></div>
           </div>
           <div class="card col-4" id="monthlyRhythmCard">
-            <div class="card-h"><div><h3>Monthly rhythm</h3><p class="card-sub">tokens by month · click a month to zoom in</p></div></div>
+            <div class="card-h">
+              <div><h3>Monthly rhythm</h3><p class="card-sub">tokens by month · click a month to zoom in</p></div>
+              <div class="card-a"><button class="tv" data-tv="monthlyRhythm" title="Show as table" aria-label="Toggle monthly rhythm table view" aria-pressed="false" aria-controls="tv-monthlyRhythm"><svg class="ic"><use href="#i-table"/></svg></button></div>
+            </div>
             <div class="rhythm-summary" id="monthlyRhythmSummary"></div>
             <div class="monthly-rhythm" id="monthlyRhythm"></div>
+            <div class="tv-table" id="tv-monthlyRhythm" hidden></div>
           </div>
         </div>
       </section>

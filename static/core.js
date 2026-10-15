@@ -244,11 +244,15 @@ function filtersToURL(){
   }
 }
 
+/* Shared precision and dimension filters; omit r for fixed-window activity views. */
+function filteredRecords(r){
+  return RAW.records.map(x => S.exactOnly && x.source==="copilot"
+      ? (x.exact ? Object.assign({}, x, x.exact) : null) : x).filter(Boolean).filter(x => passSrc(x.source) && passModel(x.model)
+      && passProj(x.project) && passIde(x.ide) && passDev(x.device) && (!r || (x.date>=r.from && x.date<=r.to)));
+}
 function slice(r){
   r = r || range();
-  const recs = RAW.records.map(x => S.exactOnly && x.source==="copilot"
-      ? (x.exact ? Object.assign({}, x, x.exact) : null) : x).filter(Boolean).filter(x => passSrc(x.source) && passModel(x.model)
-      && passProj(x.project) && passIde(x.ide) && passDev(x.device) && x.date>=r.from && x.date<=r.to);
+  const recs = filteredRecords(r);
   const hourly = RAW.hourly.filter(x => passSrc(x.source) && passDev(x.device) && x.date>=r.from && x.date<=r.to);
   const sessions = RAW.sessions
     .filter(x => passSrc(x.source) && passProj(x.project) && sessionMatchesModel(x)

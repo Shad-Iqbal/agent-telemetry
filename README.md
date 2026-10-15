@@ -207,9 +207,13 @@ period just before it, and every chart has a **table view** (the grid icon) so n
 readable only by hovering.
 
 **Overview** — one hero number (the chosen measure, tokens by default) with its change vs
-the previous period · per-day chart stacked by tool · tiles for the rest — spend, tokens,
-active time, prompts, replies, sessions and cache hit rate — each with a sparkline · **tool, model and project mix** (each one's share of the chosen measure) · highlights ·
-**hour × weekday heatmap** · token mix per tool · 12-month activity calendar (click a day).
+the previous period. In Tokens mode, it also shows tokens excluding cache reads and an
+estimated-spend sparkline; Messages and Time keep spend in a tile. The per-day chart is
+stacked by tool, followed by supporting tiles, **tool, model and project mix**, highlights,
+an **hour × weekday heatmap**, and token mix per tool. The 12-month activity calendar and
+**Monthly rhythm** token chart let you click a day or month to select that period.
+Both keep their historical window while honoring tool, provider, model, project, IDE,
+device and exact-token filters; Monthly rhythm also has a table view with full counts.
 With another device connected, **By device** compares each computer's share of the
 selected measure (tokens, messages, estimated cost or active time), with a table view.
 It follows the same date and usage filters as the rest of Overview.

@@ -5,6 +5,7 @@
    carry a 2px surface gap, and identity is never colour-alone.
    ========================================================================== */
 const charts = {};
+const chartTables = {}; // Data for SVG charts using the same table toggle as Chart.js.
 const toolPointStyles = {};
 function toolPointStyle(source){
   if(!SRC[source] || typeof Image==='undefined') return 'circle';
@@ -106,7 +107,7 @@ function areaDS(label, data, color, fill, source){
 
 /* ---------- table twin: every chart can be read without the chart ---------- */
 function chartTable(id){
-  const c = charts[id]; if(!c) return "";
+  const c = charts[id] || chartTables[id]; if(!c) return "";
   const fmt = c.$fmt || fmtNum, labels = c.data.labels || [], ds = c.data.datasets || [];
   const total = c.$stacked && ds.length > 1;
   let h = `<table><thead><tr><th class="nosort">${esc(c.$xLabel||"Day")}</th>${
@@ -125,9 +126,10 @@ function chartTable(id){
 function applyTableView(id){
   const tv = document.getElementById("tv-"+id); if(!tv) return;
   const on = S.tableView.has(id);
-  const canvas = document.getElementById(id), box = canvas && canvas.parentElement;
+  const el = document.getElementById(id), box = el && (el.tagName==="CANVAS" ? el.parentElement : el);
   const btn = document.querySelector(`.tv[data-tv="${id}"]`);
-  if(btn){ btn.classList.toggle("on", on); btn.title = on ? "Show as chart" : "Show as table"; }
+  if(btn){ btn.classList.toggle("on", on); btn.title = on ? "Show as chart" : "Show as table";
+    btn.setAttribute("aria-pressed",String(on)); }
   tv.hidden = !on;
   if(box) box.style.display = on ? "none" : "";
   tv.innerHTML = on ? chartTable(id) : "";
@@ -246,7 +248,10 @@ function renderCalendar(byDay, maxV, onClick){
 /* ---------- compact month bars paired with the activity calendar ---------- */
 function renderMonthlyRhythm(points, onClick){
   const wrap=document.getElementById("monthlyRhythm"); if(!wrap) return;
-  if(!points.length){ wrap.innerHTML=`<div class="empty">No activity in the last 12 months.</div>`; return; }
+  chartTables.monthlyRhythm={data:{labels:points.map(p=>p.title),
+    datasets:[{label:"Tokens",data:points.map(p=>p.value)}]},$fmt:fmtNum,$xLabel:"Month"};
+  applyTableView("monthlyRhythm");
+  if(!points.some(p=>p.value)){ wrap.innerHTML=`<div class="empty">No activity in the last 12 months.</div>`; return; }
   const W=360, H=116, mT=6, mL=2, mR=2, mB=20, base=H-mB;
   const plotH=base-mT, max=Math.max(...points.map(p=>p.value||0),1);
   const step=(W-mL-mR)/points.length, barW=Math.max(3,step-5);
