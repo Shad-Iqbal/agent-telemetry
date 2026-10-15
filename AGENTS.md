@@ -52,6 +52,9 @@ no third-party GUI dependency. Linux stays on the existing browser workflow.
   `windows/monitor.py` owns testable backend attachment, ownership, stale summaries and import.
 - `macos/AgentTelemetryMac` owns SwiftUI/AppKit UI, app-owned Python and WKWebView.
   `NativeControl.swift` handles the same heartbeat/control-file protocol as Windows.
+  Icon display reuses the installed app's full-color icon (copied before resizing on
+  macOS, `AgentTelemetry.ico` on Windows), including both popover headers.
+  Keep the optional numeric display and monitoring status tooltip/accessibility labels.
 - Web Settings uses `GET/POST /api/native` to launch/quit the installed client. Its
   running status requires a live matching heartbeat. A pending/failed launch is not running.
   Both clients attach to port 7878. Closing a client never terminates an attached backend.
@@ -140,7 +143,13 @@ instead.
 `#filtersPanel`, `#rangePanel`); `periodPhrase()` supplies the connecting word ("over",
 "in", "across", or none for "today" / "this month"); ‹ › (`stepPeriod`, keys `,` `.`) move
 the window back or forward by its own length as a custom range, stopping at today. Tokens
-are the default measure — the Overview hero follows it, and cost is one of its tiles. Every chart has a table twin (`.tv[data-tv]`, `chartTable()`), and each view
+are the default measure — the Overview hero follows it, with estimated spend below and
+tokens excluding cache reads in the total's hover/focus tooltip (Escape dismisses it).
+Messages/Time keep spend in
+a tile; Cost uses the hero itself. Activity and Monthly rhythm keep their historical windows and
+apply the same precision/dimension selection as `slice()` via `filteredRecords()`.
+Every chart has a table twin (`.tv[data-tv]`, `chartTable()`); SVG chart data lives in
+`chartTables`, separately from Chart.js instances. Each view
 leads with one hero figure — keep it that way rather than adding a second.
 
 The device name at the top of the sidebar is `DEVICE` in `dashboard.py`: the OS's own name

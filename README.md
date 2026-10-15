@@ -108,9 +108,10 @@ Both native popovers put a monitoring switch above today's token/spend cards, wi
 expandable **Details & settings**, a dashboard button and always-visible refresh/quit
 controls. Windows follows the system light/dark or high-contrast theme, scales to the
 tray's monitor, and scrolls settings on smaller displays. Tab/Space/Enter operate the
-native controls; Escape or clicking elsewhere closes the panel. Its default chart icon
-and optional numeric icon are accompanied by a text tooltip. Windows uses Segoe UI
-and opens the full dashboard in your browser; macOS uses its system font and embeds it.
+native controls; Escape or clicking elsewhere closes the panel. Icon mode uses the
+AgentTelemetry app icon; the numeric display remains available. Both have a text tooltip.
+Windows uses Segoe UI and opens the full dashboard in your browser; macOS uses its
+system font and embeds it.
 
 Both clients reuse a dashboard already running on port 7878 and stop only a backend they
 started. A web/native app using a custom dashboard port is not supported by the native
@@ -214,9 +215,14 @@ period just before it, and every chart has a **table view** (the grid icon) so n
 readable only by hovering.
 
 **Overview** — one hero number (the chosen measure, tokens by default) with its change vs
-the previous period · per-day chart stacked by tool · tiles for the rest — spend, tokens,
-active time, prompts, replies, sessions and cache hit rate — each with a sparkline · **tool, model and project mix** (each one's share of the chosen measure) · highlights ·
-**hour × weekday heatmap** · token mix per tool · 12-month activity calendar (click a day).
+the previous period. In Tokens mode, hover over or keyboard-focus the total for a tooltip
+showing tokens excluding cache reads; Escape dismisses it. An estimated-spend sparkline
+sits below; Messages and Time keep spend in a tile.
+The per-day chart is stacked by tool, followed by supporting tiles, **tool, model and project mix**, highlights,
+an **hour × weekday heatmap**, and token mix per tool. The 12-month activity calendar and
+**Monthly rhythm** token chart let you click a day or month to select that period.
+Both keep their historical window while honoring tool, provider, model, project, IDE,
+device and exact-token filters; Monthly rhythm also has a table view with full counts.
 With another device connected, **By device** compares each computer's share of the
 selected measure (tokens, messages, estimated cost or active time), with a table view.
 It follows the same date and usage filters as the rest of Overview.

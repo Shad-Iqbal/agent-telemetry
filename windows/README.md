@@ -33,7 +33,7 @@ uninstaller remain intact. To update a source installation, Quit AgentTelemetry 
 any owned backend finish saving, then run `python install.py` from the updated checkout. The installer
 replaces only application files; usage history and tray preferences stay in place.
 
-Click either mouse button on the branded chart icon for a native popover matching the
+Click either mouse button on the AgentTelemetry app icon for a native popover matching the
 macOS layout: a monitoring switch, Today token/spend cards, **Details & settings**,
 Open dashboard, Refresh and Quit. Expand settings for icon/numbers display, shared
 15-second/1/5/15-minute or Manual cadence, automatic monitoring, Open at Login and Import.

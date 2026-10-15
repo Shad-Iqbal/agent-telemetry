@@ -121,11 +121,11 @@ struct StatusMenu: View {
 
     private var header: some View {
         HStack(spacing: 9) {
-            Image(systemName: "chart.bar.fill")
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(Color.accentColor)
+            Image(nsImage: NSApplication.shared.applicationIconImage)
+                .resizable()
+                .interpolation(.high)
                 .frame(width: 28, height: 28)
-                .background(Color.accentColor.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
+                .accessibilityHidden(true)
 
             VStack(alignment: .leading, spacing: 3) {
                 Text("AgentTelemetry")

@@ -131,6 +131,11 @@ exact-only filtering. Run `python3 -m unittest tests.test_copilot_sdk -v`.
 Use invented fixtures; never attach to or resume a user's session to collect metrics.
 See [SDK coverage and sources](docs/copilot-sdk.md).
 Node is a development check only; the dashboard remains stdlib-only.
+For Overview changes, check all four measures, exact-only Copilot subsets, and matching
+activity calendar/monthly counts under dimension filters. The activity views keep their
+historical windows when the selected date range changes. Check Monthly rhythm's table
+toggle across filter updates, keyboard month selection, and header/dropdown layouts at
+320px as well as desktop widths, in both themes. Use mock usage for these UI checks.
 
 For native changes, also run the actual OS checks:
 
@@ -146,7 +151,8 @@ python install.py --no-launch
 
 The Windows self-test reports whether Explorer accepted the icon. The rendering suite
 exercises actual native controls and captures light/dark, 100/150/200% and failure/saving
-fixtures. Inspect those artifacts for clipping and legibility; a handle test alone does
+fixtures, including the loaded tray icon rendered at notification sizes. Inspect those
+artifacts for clipping and legibility; a handle test alone does
 not establish visual quality or prove the user's own Explorer shows the item.
 CI covers all three operating systems.
 Use temporary ledgers/mock servers for automated tests and retain the failure/recovery

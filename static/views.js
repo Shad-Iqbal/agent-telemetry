@@ -97,7 +97,7 @@ function syncRangeUI(){
   if(!document.getElementById("ddRange").classList.contains("open")) buildRangePanel();
 }
 function syncMetricUI(){
-  document.getElementById("qMetric").textContent = metricTitle().replace("Est. spend","Cost");
+  document.getElementById("qMetricLabel").textContent = metricTitle().replace("Est. spend","Cost");
   buildMetricPanel();
 }
 /* Move the whole window back or forward by its own length: last 30 days → the 30
@@ -318,6 +318,65 @@ function renderDeviceDistribution(d){
     options:{indexAxis:"y",scales:axes({x:{ticks:{callback:v=>tickOf()(v)}},y:{grid:{display:false}}}),
       plugins:{tooltip:{callbacks:{label:c=>" "+fmt(c.parsed.x)+" · "+fmtPct(total?c.parsed.x/total:0)}}}}});
 }
+function activityMonthWindows(count, through){
+  const end=through ? new Date(through) : new Date();
+  end.setHours(0,0,0,0);
+  const current=new Date(end.getFullYear(),end.getMonth(),1), out=[];
+  for(let i=count-1;i>=0;i--){
+    const start=new Date(current.getFullYear(),current.getMonth()-i,1);
+    const monthEnd=new Date(start.getFullYear(),start.getMonth()+1,0);
+    const finish=monthEnd>end ? end : monthEnd;
+    out.push({key:dkey(start).slice(0,7),from:dkey(start),to:dkey(finish),label:MONTHS[start.getMonth()],
+      title:`${MONTHS[start.getMonth()]} ${start.getFullYear()}`,current:i===0});
+  }
+  return out;
+}
+
+function monthlyRhythmRows(){
+  const rows=activityMonthWindows(12), values={};
+  for(const r of filteredRecords({from:rows[0].from,to:rows[rows.length-1].to})){
+    const key=r.date.slice(0,7); values[key]=(values[key]||0)+recTokens(r);
+  }
+  return rows.map(row=>Object.assign(row,{value:values[row.key]||0,
+    selected:S.preset==="custom"&&S.from===row.from&&S.to===row.to}));
+}
+
+function renderMonthlyRhythmCard(){
+  const rows=monthlyRhythmRows(), summary=document.getElementById("monthlyRhythmSummary");
+  renderMonthlyRhythm(rows,row=>{ S.preset="custom"; S.from=row.from; S.to=row.to; renderAll(); });
+  if(!rows.some(row=>row.value)){
+    summary.innerHTML="";
+    return;
+  }
+  const current=rows[rows.length-1], previous=rows[rows.length-2];
+  const peak=rows.reduce((best,row)=>row.value>best.value?row:best,rows[0]);
+  const comparison=previous.value
+    ? `${deltaHTML(current.value,previous.value)} <span>vs ${esc(previous.label)}</span>`
+    : `<span class="delta flat">${current.value?"new":"—"}</span>`;
+  summary.innerHTML=`<div class="rhythm-primary"><span class="eyebrow">This month</span><div>
+      <strong class="rhythm-value">${fmtTok(current.value)}</strong><span class="rhythm-change">${comparison}</span></div></div>
+    <div class="rhythm-peak"><span class="eyebrow">Peak month</span><span><b>${fmtTok(peak.value)}</b>${esc(peak.label)}</span></div>`;
+}
+
+function overviewSpendSummary(t, days, recs){
+  return {
+    label:"Est. spend",
+    value:fmtUSD(t.cost),
+    title:"API list-price estimate; cache reads are included at the cached-input rate.",
+    spark:sparkline(dailySeries(recs,days,r=>r.cost||0),cssv("--text-3"),260,64).replace("<svg ",'<svg preserveAspectRatio="none" '),
+  };
+}
+
+function overviewCacheDetail(t){
+  const tokens=Math.max(0,t.tok-t.cr);
+  const value=tokens>=1e9?(tokens/1e9).toFixed(2).replace(/\.?0+$/,"")+"B"
+    :tokens>=1e6?Math.round(tokens/1e6)+"M":fmtTok(tokens);
+  return {
+    value,
+    title:`Tokens excluding cache reads: ${value}. Cache reads are included in the total and remain included in estimated spend at their discounted rate.`,
+  };
+}
+
 let ACCOUNTS=null, accountSequence=0, accountBusy=false, accountFetchError="";
 function sessionAccountDetails(s){
   if(s.source!=="codex" && s.source!=="claude") return "";
@@ -454,20 +513,24 @@ function viewOverview(d){
   const bySrc = {}; for(const r of d.recs) bySrc[r.source] = (bySrc[r.source]||0) + val(r);
   const top = topSources(bySrc, 1)[0];
   const activeDays = t.days.size;
+  const facts = [
+    {l:"Daily average", v: fmt(activeDays ? cur/activeDays : 0), title:"per active day"},
+    {l:"Active days", v: `${fmtNum(activeDays)} <span class="dim" style="font-size:12px;font-weight:500">of ${fmtNum(days.length)}</span>`},
+    {l:"Previous period", v: pd ? fmt(prev) : "—"},
+    {l:"Top tool", v: top ? `${toolLabel(top)} <span class="dim" style="font-size:12px;font-weight:500">${fmtPct(bySrc[top]/(cur||1))}</span>` : "—"},
+  ];
+  const tokenMetric=S.metric==="tokens";
 
   // hero — the one number this view leads with, in the measure the user picked
   const big = S.metric==="cost" ? fmtUSD2(cur) : fmtOf()(cur);
   document.getElementById("ovHero").innerHTML = heroHTML({
     label: metricTitle() + (S.metric==="cost" ? " at API list prices" : ""),
     value: big,
+    valueTooltip:tokenMetric?{id:"ovTokenTooltip",text:overviewCacheDetail(t).title}:null,
     delta: pd ? deltaHTML(cur, prev, S.metric==="cost") : "",
     note: pd ? `vs the ${prevLabel()}` : "",
-    facts: [
-      {l:"Daily average", v: fmt(activeDays ? cur/activeDays : 0), title:"per active day"},
-      {l:"Active days", v: `${fmtNum(activeDays)} <span class="dim" style="font-size:12px;font-weight:500">of ${fmtNum(days.length)}</span>`},
-      {l:"Previous period", v: pd ? fmt(prev) : "—"},
-      {l:"Top tool", v: top ? `${toolLabel(top)} <span class="dim" style="font-size:12px;font-weight:500">${fmtPct(bySrc[top]/(cur||1))}</span>` : "—"},
-    ],
+    feature:tokenMetric?overviewSpendSummary(t,days,d.recs):null,
+    facts,
   });
 
   // per-day, stacked by tool
@@ -489,7 +552,7 @@ function viewOverview(d){
   const tile = (l, curV, prevV, f, fmtV, invert, s) => ({l, v: fmtV(curV),
     d: pd ? deltaHTML(curV, prevV, invert) : "", s, spark: ser(f)});
   const tiles = [];
-  if(S.metric!=="cost") tiles.push(tile("Est. spend", t.cost, pt&&pt.cost, r=>r.cost||0, fmtUSD, true));
+  if(S.metric!=="tokens" && S.metric!=="cost") tiles.push(tile("Est. spend", t.cost, pt&&pt.cost, r=>r.cost||0, fmtUSD, true));
   if(S.metric!=="tokens") tiles.push(tile("Tokens", t.tok, pt&&pt.tok, recTokens, fmtTok));
   if(S.metric!=="time"){ const a = d.recs.reduce((x,r)=>x+(r.active||0),0), pa = pd ? pd.recs.reduce((x,r)=>x+(r.active||0),0) : null;
     tiles.push(tile("Active time", a, pa, r=>r.active||0, fmtDur, false)); }
@@ -546,11 +609,11 @@ function viewOverview(d){
   renderTokenMix(d);
 
   const byDay={}; let max=0;
-  for(const r of RAW.records){
-    if(!passSrc(r.source)||!passModel(r.model)||!passProj(r.project)||!passIde(r.ide)||!passDev(r.device)) continue;
+  for(const r of filteredRecords()){
     byDay[r.date]=(byDay[r.date]||0)+recTokens(r); max=Math.max(max,byDay[r.date]);
   }
   renderCalendar(byDay, max, day=>{ S.preset="custom"; S.from=day; S.to=day; renderAll(); });
+  renderMonthlyRhythmCard();
 }
 
 function renderHighlights(d){

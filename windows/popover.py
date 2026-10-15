@@ -50,7 +50,7 @@ class Popover:
         self.scale = 1
         self.dark = None  # OS preference; explicit overrides used only by fixtures.
         self.colors = palette()
-        self.header_icon = w.load_image(None, str(Path(__file__).parent / "assets" / "TrayIcon.ico"), 1, 64, 64, 0x10)
+        self.header_icon = w.load_image(None, str(Path(__file__).parent / "assets" / "AgentTelemetry.ico"), 1, 64, 64, 0x10)
         if not self.header_icon:
             raise C.WinError(C.get_last_error())
         self.fonts = {}
