@@ -25,6 +25,9 @@ class LocalServerInventoryTests(unittest.TestCase):
         self.cwd = os.path.join(self.temp.name, "project")
         os.makedirs(self.cwd)
         self.inventory = local_servers.LocalServerInventory(self.temp.name)
+        system = mock.patch.object(local_servers.platform, "system", return_value="Darwin")
+        system.start()
+        self.addCleanup(system.stop)
         self.capability = mock.patch.object(
             local_servers, "_capability", return_value=(True, "Darwin", "")
         )

@@ -2337,7 +2337,7 @@ class Handler(BaseHTTPRequestHandler):
                     if route == "/api/local-servers/stop":
                         result = inventory.stop(body.get("id"))
                     elif route == "/api/local-servers/configure":
-                        result = inventory.configure(body.get("id"), body.get("command"))
+                        result = inventory.configure(body.get("id"), body.get("command"), body.get("cwd"))
                     elif route == "/api/local-servers/pin":
                         result = inventory.set_pinned(body.get("id"), body.get("pinned"))
                     elif route == "/api/local-servers/start":

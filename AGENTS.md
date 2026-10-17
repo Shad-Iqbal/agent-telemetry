@@ -279,9 +279,14 @@ so that file stops being a cache and becomes the sole record. Two consequences:
 
 ## Local server controls
 
-`local_servers.py` owns macOS listener discovery and the private `.local_servers.json`
-inventory beside `--data-dir`. Windows/Linux return `supported:false`; they must still
-import and run the dashboard and installed clients. Both macOS UI surfaces use the
+`local_servers.py` owns the private `.local_servers.json` inventory beside
+`--data-dir`; `local_servers_windows.py` implements Win32 listener discovery and
+identity-checked control. macOS and Windows support lifecycle actions; Linux
+returns `supported:false`. Windows asks for a working folder (never read foreign
+process memory), starts commands in a job assigned before resuming, and validates
+Stop against ownership and creation time on one held handle. Its immediate Stop
+behavior must be disclosed before confirmation. The Windows tray opens the shared
+web controls; macOS also shows pinned controls inline. Both macOS UI surfaces use the
 Python API; do not reintroduce a separate native scanner/writer when the backend is
 unavailable. Saved commands never belong in the ledger, health, summary or peer exports.
 All endpoints are loopback-only; writes use `_csrf_ok()`. Start/Stop/Restart require

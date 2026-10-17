@@ -17,10 +17,11 @@ class WindowsPayloadTests(unittest.TestCase):
             install.copy_windows_payload(payload)
 
             self.assertTrue((payload / "local_servers.py").is_file())
+            self.assertTrue((payload / "local_servers_windows.py").is_file())
             source = (
                 "import sys; from pathlib import Path; "
                 f"sys.path.insert(0, {str(payload)!r}); "
-                "import dashboard, local_servers; "
+                "import dashboard, local_servers, local_servers_windows; "
                 "assert Path(dashboard.__file__).resolve().parent == Path(sys.path[0]).resolve(); "
                 "assert Path(local_servers.__file__).resolve().parent == Path(sys.path[0]).resolve()"
             )

@@ -75,7 +75,7 @@ class LocalServerHTTPTests(unittest.TestCase):
 
     def test_action_arguments_and_restart_target_identity(self):
         rows = [
-            ("configure", {"id": "server-a", "command": "npm run dev"}, "configure", ("server-a", "npm run dev")),
+            ("configure", {"id": "server-a", "command": "npm run dev"}, "configure", ("server-a", "npm run dev", None)),
             ("pin", {"id": "server-a", "pinned": True}, "set_pinned", ("server-a", True)),
             ("stop", {"id": "server-a", "confirmed": True}, "stop", ("server-a",)),
             ("start", {"profileId": "profile-a", "confirmed": True}, "start", ("profile-a",)),

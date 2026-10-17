@@ -10,6 +10,7 @@ let LOCAL_SERVER_CONFIG_ID=null;
 let LOCAL_SERVER_BUSY_ID=null;
 let LOCAL_SERVER_CONFIRM_SEQUENCE=0;
 let LOCAL_SERVER_COMMAND_DRAFT={};
+let LOCAL_SERVER_FOLDER_DRAFT={};
 
 /* ---------------- measure (one switch for every view) ---------------- */
 function metricOf(kind){
@@ -2519,7 +2520,9 @@ function localServerTime(value){
 function renderLocalServers(){
   const root=document.getElementById("localServersRoot"); if(!root) return;
   const activeInput=document.activeElement;
-  const focusedCommand=activeInput&&activeInput.dataset&&activeInput.dataset.localServerCommand;
+  const focusedCommand=activeInput&&activeInput.dataset&&(activeInput.dataset.localServerCommand||activeInput.dataset.localServerFolder);
+  const focusedField=activeInput?.name;
+  const windows=LOCAL_SERVERS.platform==="Windows";
   const selection=focusedCommand&&typeof activeInput.selectionStart==="number"?[activeInput.selectionStart,activeInput.selectionEnd]:null;
   const all=LOCAL_SERVERS.servers||[];
   const q=LOCAL_SERVER_SEARCH.trim().toLowerCase();
@@ -2538,7 +2541,7 @@ function renderLocalServers(){
     const port=Number(s.port)||"?";
     const pid=Number(s.pid);
     const pidLabel=Number.isFinite(pid)&&pid>0?` · PID ${pid}`:"";
-    const address=s.host&&s.host!=="*"?s.host+":"+port:"localhost:"+port;
+    const address=s.host&&s.host!=="*"?(s.host.includes(":")?"["+s.host+"]":s.host)+":"+port:"localhost:"+port;
     const detail=project?`${address} · ${process}`:address;
     const busy=LOCAL_SERVER_BUSY_ID===s.id;
     const blocked=Boolean(LOCAL_SERVER_BUSY_ID)||LOCAL_SERVERS.loading||LOCAL_SERVERS.stale||LOCAL_SERVERS.unavailable||typeof s.id!=="string"||!s.id;
@@ -2546,7 +2549,7 @@ function renderLocalServers(){
     const stateAction=active?`${s.isConfigured&&s.profileId?`<button class="btn sm" type="button" data-local-server-restart="${esc(s.id)}" aria-label="Restart ${esc(title)} on port ${esc(port)}" ${blocked?"disabled":""}>Restart</button>`:""}
       <button class="btn sm danger" type="button" data-local-server-stop="${esc(s.id)}" aria-label="Stop ${esc(title)} on port ${esc(port)}" ${blocked?"disabled":""}>Stop</button>`:
       (s.isConfigured&&s.profileId?`<button class="btn sm primary" type="button" data-local-server-start="${esc(s.id)}" aria-label="Start ${esc(title)} on port ${esc(port)}" ${blocked?"disabled":""}>Start</button>`:`<span class="ls-scan-time">Stopped ${esc(localServerTime(s.stoppedAt))}</span>`);
-    const actionButtons=`${stateAction}<button class="btn sm ${s.isPinned?"on":""}" type="button" data-local-server-pin="${esc(s.id)}" aria-pressed="${Boolean(s.isPinned)}" ${blocked?"disabled":""}>${s.isPinned?"Pinned":"Pin"}</button>
+    const actionButtons=`${stateAction}<button class="btn sm ${s.isPinned?"on":""}" type="button" data-local-server-pin="${esc(s.id)}" aria-pressed="${Boolean(s.isPinned)}" ${blocked||(windows&&!s.cwd)?"disabled":""} ${windows&&!s.cwd?'title="Configure a working folder before pinning"':""}>${s.isPinned?"Pinned":"Pin"}</button>
       <button class="btn sm" type="button" data-local-server-config="${esc(s.id)}" ${blocked?"disabled":""}>${s.isConfigured&&s.profileId?"Replace command":"Configure"}</button>`;
     return `<div class="ls-row">
       <span class="ls-dot${active?"":" stopped"}" aria-hidden="true"></span>
@@ -2557,6 +2560,7 @@ function renderLocalServers(){
       <div class="ls-actions">${busy?`<span class="ls-busy" role="status">Working…</span>`:""}${actionButtons}</div>
     </div>${configureOpen?`<form class="ls-config" data-local-server-form="${esc(s.id)}">
       <div><strong>Launch settings</strong><span>Runs only when you choose Start or Restart. Uses ${esc(s.cwd||"this folder")} and waits for port ${esc(port)}.</span></div>
+      ${windows?`<label>Working folder<input name="cwd" data-local-server-folder="${esc(s.id)}" type="text" required maxlength="4096" autocomplete="off" spellcheck="false" placeholder="Full path, for example C:\\Projects\\my-app" value="${esc(LOCAL_SERVER_FOLDER_DRAFT[s.id]??s.cwd??"")}" ${LOCAL_SERVER_BUSY_ID?"disabled":""}></label><span>Windows cannot report another process’s working folder. Choose the folder this command should run in.</span>`:""}
       <label>Launch command<input name="command" data-local-server-command="${esc(s.id)}" type="text" required maxlength="4096" autocomplete="off" spellcheck="false" placeholder="For example: npm run dev" value="${esc(LOCAL_SERVER_COMMAND_DRAFT[s.id]||"")}" ${LOCAL_SERVER_BUSY_ID?"disabled":""}></label>
       <div class="ls-config-actions"><button class="btn sm primary" type="submit" ${LOCAL_SERVER_BUSY_ID?"disabled":""}>Save command</button><button class="btn sm" type="button" data-local-server-config-cancel ${LOCAL_SERVER_BUSY_ID?"disabled":""}>Cancel</button></div>
     </form>`:""}`;
@@ -2564,16 +2568,16 @@ function renderLocalServers(){
   if(LOCAL_SERVERS.supported===false){
     root.innerHTML=`<div class="eyebrow">LOCAL ACTIVITY</div>
       <div class="ls-heading"><div><h2>Local servers</h2><p>Recent project TCP listeners on this computer.</p></div></div>
-      <div class="ls-unavailable" role="status"><strong>Unavailable on this platform</strong><span>${esc(LOCAL_SERVERS.message||"Local server detection is supported on macOS only.")}</span></div>`;
+      <div class="ls-unavailable" role="status"><strong>Unavailable on this platform</strong><span>${esc(LOCAL_SERVERS.message||"Local server detection is supported on macOS and Windows.")}</span></div>`;
     return;
   }
   root.innerHTML=`<div class="eyebrow">LOCAL ACTIVITY</div>
-    <div class="ls-heading"><div><h2>Local servers</h2><p>See project TCP listeners on this Mac and revisit servers you ran recently.</p></div>
+    <div class="ls-heading"><div><h2>Local servers</h2><p>See project TCP listeners on this computer and revisit servers you ran recently.</p></div>
       <button class="btn" id="localServersRefresh" type="button"${LOCAL_SERVERS.loading?" disabled":""}>${LOCAL_SERVERS.loading?"Scanning…":LOCAL_SERVERS.unavailable?"Try again":LOCAL_SERVERS.loaded?"Scan again":"Scan"}</button></div>
     ${LOCAL_SERVERS.unavailable?`<div class="ls-error" role="alert">This dashboard server does not provide local server inventory.${LOCAL_SERVERS.loaded?" Showing the last successful scan; actions are disabled.":" Update or restart the dashboard, then try again."}</div>`:""}
     ${LOCAL_SERVERS.error?`<div class="ls-error" role="alert">${esc(LOCAL_SERVERS.error)}${LOCAL_SERVERS.loaded?" Showing the last successful scan; actions are disabled.":""}</div>`:""}
     ${LOCAL_SERVERS.actionError?`<div class="ls-error" role="alert">${esc(LOCAL_SERVERS.actionError)}</div>`:""}
-    <div class="ls-note">Start and Restart run your saved command as you; Stop sends SIGTERM to the listening process. Saved commands stay in local settings and are excluded from usage data and device sharing.</div>
+    <div class="ls-note">${windows?"Start and Restart run your saved command with cmd.exe. Stop ends the listening process immediately; unsaved work can be lost.":"Start and Restart run your saved command as you; Stop sends SIGTERM to the listening process."} Saved commands stay in local settings and are excluded from usage data and device sharing.</div>
     ${!LOCAL_SERVERS.loaded?`<div class="card ls-card"><div class="ls-empty">${LOCAL_SERVERS.loading?"Scanning local ports…":LOCAL_SERVERS.error||LOCAL_SERVERS.unavailable?"No successful scan yet. Try again.":"Scan local ports to see current listeners."}</div></div>`:`
     <div class="ls-stats">
       <div class="ls-stat"><div><label>Running now</label><strong>${all.filter(s=>s.state==="running").length}</strong></div><span class="ls-stat-ic"><svg class="ic"><use href="#i-servers"/></svg></span></div>
@@ -2584,11 +2588,11 @@ function renderLocalServers(){
       <label class="search"><svg class="ic sm"><use href="#i-search"/></svg><input type="search" id="localServerSearch" value="${esc(LOCAL_SERVER_SEARCH)}" placeholder="Search process, project, or port…" aria-label="Search local servers"></label>
       <div class="ls-list">${running.map(s=>row(s,true)).join("")||`<div class="ls-empty">${q?"No running servers match this search.":LOCAL_SERVERS.loading?"Scanning local ports…":"No local servers are listening right now."}</div>`}</div>
     </div>
-    <div class="card ls-card"><div class="card-h"><div><h3>Stopped history</h3><p class="card-sub">Recent servers and entries pinned in the menu bar</p></div></div>
+    <div class="card ls-card"><div class="card-h"><div><h3>Stopped history</h3><p class="card-sub">Recent servers and saved pins</p></div></div>
       <div class="ls-list">${stopped.map(s=>row(s,false)).join("")||`<div class="ls-empty">${q?"No stopped servers match this search.":"Stopped servers will appear here after they have been discovered."}</div>`}</div>
     </div>`}`;
   if(focusedCommand){
-    const input=[...root.querySelectorAll("[data-local-server-command]")].find(node=>node.dataset.localServerCommand===focusedCommand);
+    const input=[...root.querySelectorAll("[data-local-server-command], [data-local-server-folder]")].find(node=>node.name===focusedField&&(node.dataset.localServerCommand||node.dataset.localServerFolder)===focusedCommand);
     if(input&&!input.disabled){input.focus();if(selection) input.setSelectionRange(...selection);}
   }
 }
@@ -2753,6 +2757,7 @@ async function postLocalServerAction(action,body,serverID,confirmationIntent){
     if(action==="configure"){
       LOCAL_SERVER_CONFIG_ID=null;
       delete LOCAL_SERVER_COMMAND_DRAFT[body.id];
+      delete LOCAL_SERVER_FOLDER_DRAFT[body.id];
     }
   }catch(error){
     actionError=error.message||`Could not ${action} that server.`;
@@ -2769,11 +2774,13 @@ async function postLocalServerAction(action,body,serverID,confirmationIntent){
 function localServerActionConfirmation(action,server){
   const name=esc(server.project||server.process||"server"), cwd=esc(server.cwd||"the saved project folder");
   const port=esc(Number(server.port)||"?");
+  const windows=LOCAL_SERVERS.platform==="Windows";
+  const stopNotice=windows?"Windows ends this process immediately. Unsaved work can be lost.":"AgentTelemetry sends SIGTERM to this process.";
   if(action==="stop") return {title:"Stop this local server?",ok:"Stop server",danger:true,
     body:`<p>Stop <b>${name}</b> on port <b>${port}</b> (PID ${esc(server.pid||"unknown")})?</p>
-      <div class="modal-note bad">AgentTelemetry sends SIGTERM to this process. Other ports owned by the same process may also stop.</div>`};
+      <div class="modal-note bad">${stopNotice} Other ports owned by the same process may also stop.</div>`};
   const verb=action==="restart"?"restart":"start";
-  const step=action==="restart"?"AgentTelemetry first sends SIGTERM to the current process, then runs the saved launch command.":"AgentTelemetry runs the saved launch command.";
+  const step=action==="restart"?(windows?"Windows first ends the current process immediately (unsaved work can be lost), then runs the saved launch command.":"AgentTelemetry first sends SIGTERM to the current process, then runs the saved launch command."):"AgentTelemetry runs the saved launch command.";
   return {title:`${verb[0].toUpperCase()+verb.slice(1)} this local server?`,ok:action==="restart"?"Restart server":"Start server",
     body:`<p>${step} The command uses <code>${cwd}</code> and waits for port <b>${port}</b>.</p>
       <div class="modal-note bad">This runs with your account permissions and can execute code or access local files. Continue only if you saved this command and trust the project.</div>`};
@@ -2798,7 +2805,7 @@ document.addEventListener("click",async e=>{
     return;
   }
   if(e.target.closest("[data-local-server-config-cancel]")){
-    if(LOCAL_SERVER_CONFIG_ID) delete LOCAL_SERVER_COMMAND_DRAFT[LOCAL_SERVER_CONFIG_ID];
+    if(LOCAL_SERVER_CONFIG_ID){delete LOCAL_SERVER_COMMAND_DRAFT[LOCAL_SERVER_CONFIG_ID];delete LOCAL_SERVER_FOLDER_DRAFT[LOCAL_SERVER_CONFIG_ID];}
     LOCAL_SERVER_CONFIG_ID=null;
     renderLocalServers();
     return;
@@ -2808,7 +2815,7 @@ document.addEventListener("click",async e=>{
     LOCAL_SERVER_CONFIG_ID=LOCAL_SERVER_CONFIG_ID===configure.dataset.localServerConfig?null:configure.dataset.localServerConfig;
     LOCAL_SERVERS={...LOCAL_SERVERS,actionError:""};
     renderLocalServers();
-    document.querySelector(`[data-local-server-form="${CSS.escape(LOCAL_SERVER_CONFIG_ID||"")}"] input[name="command"]`)?.focus();
+    document.querySelector(`[data-local-server-form="${CSS.escape(LOCAL_SERVER_CONFIG_ID||"")}"] input`)?.focus();
     return;
   }
   const pin=e.target.closest("[data-local-server-pin]");
@@ -2847,7 +2854,9 @@ document.addEventListener("submit",async e=>{
   const command=new FormData(form).get("command");
   if(!server||LOCAL_SERVER_BUSY_ID||LOCAL_SERVERS.stale||LOCAL_SERVERS.unavailable||typeof command!=="string") return;
   LOCAL_SERVER_COMMAND_DRAFT[server.id]=command;
-  await postLocalServerAction("configure",{id:server.id,command},server.id);
+  const cwd=new FormData(form).get("cwd");
+  if(typeof cwd==="string") LOCAL_SERVER_FOLDER_DRAFT[server.id]=cwd;
+  await postLocalServerAction("configure",{id:server.id,command,...(typeof cwd==="string"?{cwd}:{})},server.id);
 });
 document.addEventListener("input",e=>{
   const command=e.target.closest("[data-local-server-command]");
@@ -2855,6 +2864,8 @@ document.addEventListener("input",e=>{
     LOCAL_SERVER_COMMAND_DRAFT[command.dataset.localServerCommand]=command.value;
     return;
   }
+  const folder=e.target.closest("[data-local-server-folder]");
+  if(folder){LOCAL_SERVER_FOLDER_DRAFT[folder.dataset.localServerFolder]=folder.value;return;}
   if(e.target.id!=="localServerSearch") return;
   LOCAL_SERVER_SEARCH=e.target.value;
   renderLocalServers();

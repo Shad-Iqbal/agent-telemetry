@@ -62,6 +62,7 @@ class PackagingTests(unittest.TestCase):
             self.assertEqual((payload / "session_names.py").read_bytes(), (ROOT / "session_names.py").read_bytes())
             self.assertEqual((payload / "accounts.py").read_bytes(), (ROOT / "accounts.py").read_bytes())
             self.assertEqual((payload / "local_servers.py").read_bytes(), (ROOT / "local_servers.py").read_bytes())
+            self.assertEqual((payload / "local_servers_windows.py").read_bytes(), (ROOT / "local_servers_windows.py").read_bytes())
             for icon in (ROOT / "static" / "tool-icons").glob("*.svg"):
                 self.assertEqual((payload / "static" / "tool-icons" / icon.name).read_bytes(), icon.read_bytes())
             self.assertFalse(any(

@@ -21,7 +21,7 @@ from datetime import datetime, timedelta, timezone
 
 try:
     import fcntl
-except ImportError:  # pragma: no cover - the feature is gated to macOS
+except ImportError:
     fcntl = None
 
 
@@ -67,7 +67,10 @@ def _server_id(pid, started_at, port):
 
 
 def _profile_id(cwd, port):
+    if not isinstance(cwd, str) or not cwd.strip():
+        raise ValueError("Choose a server folder before saving a profile.")
     directory = os.path.realpath(os.path.expanduser(str(cwd).strip()))
+    directory = os.path.normcase(directory)
     identity = f"{directory}:{int(port)}"
     return hashlib.sha256(identity.encode("utf-8")).hexdigest()[:20]
 
@@ -82,6 +85,10 @@ def _uses_running_port(server, port):
 def _is_local_server(item):
     """Keep project/service listeners; omit OS processes running from /."""
     cwd = item.get("cwd")
+    if platform.system() == "Windows":
+        # Win32 exposes ownership and creation time, but no supported foreign
+        # process working-directory API. Configuration asks the user for it.
+        return isinstance(cwd, str)
     if not isinstance(cwd, str) or not cwd.strip():
         return False
     cwd = os.path.normpath(os.path.expanduser(cwd.strip()))
@@ -141,7 +148,7 @@ def _inventory_lock(path):
                     yield
                 finally:
                     fcntl.lockf(lock_file.fileno(), fcntl.LOCK_UN)
-            elif os.name == "nt":  # pragma: no cover - feature is gated off on Windows
+            elif os.name == "nt":
                 import msvcrt
                 lock_file.seek(0, os.SEEK_END)
                 if lock_file.tell() == 0:
@@ -175,7 +182,7 @@ def _profile_start_lock(path):
 
 
 def _command_env():
-    env = {key: value for key, value in os.environ.items() if key != _CONTROL_TOKEN}
+    env = {key: value for key, value in os.environ.items() if key.upper() != _CONTROL_TOKEN}
     env["LC_ALL"] = "C"
     return env
 
@@ -210,6 +217,8 @@ def _lsof_result(arguments, description):
 
 
 def _process_details(pids):
+    if platform.system() == "Windows":
+        return _windows().process_details(pids)
     if not pids:
         return {}
     result = _run([
@@ -286,8 +295,10 @@ def _endpoint(line):
     return host, port
 
 
-def _listener_rows(uid):
+def _listener_rows(uid, known_servers=()):
     """Return complete listener records for the current user."""
+    if platform.system() == "Windows":
+        return _windows().listener_rows(uid, known_servers, _protected_pids())
     result = _lsof_result([
         _LSOF, "-a", "-u", str(uid), "-nP", "-iTCP", "-sTCP:LISTEN", "-Fpcn",
     ], "inspect local listening ports")
@@ -355,6 +366,8 @@ def _listener_rows(uid):
 
 def _listening_ports():
     """Read occupied ports for every user so filtered rows cannot hide conflicts."""
+    if platform.system() == "Windows":
+        return _windows().listening_ports()
     result = _lsof_result(
         [_LSOF, "-nP", "-iTCP", "-sTCP:LISTEN", "-Fn"],
         "check local port availability",
@@ -377,10 +390,14 @@ def _probe_port_available(port):
         probe = None
         try:
             probe = socket.socket(family, socket.SOCK_STREAM)
+            if platform.system() == "Windows":
+                probe.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
             if family == socket.AF_INET6:
                 probe.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
             probe.bind(address)
         except OSError as error:
+            if family == socket.AF_INET6 and error.errno in (errno.EAFNOSUPPORT, errno.EPROTONOSUPPORT):
+                continue
             if error.errno in (errno.EADDRINUSE, errno.EACCES, errno.EADDRNOTAVAIL):
                 return False
             raise RuntimeError(f"Could not safely check whether port {port} is available: {error}.")
@@ -392,8 +409,10 @@ def _probe_port_available(port):
 
 def _capability():
     system = platform.system()
+    if system == "Windows":
+        return True, system, ""
     if system != "Darwin":
-        return False, system, "Local server controls are supported on macOS only."
+        return False, system, "Local server controls are supported on macOS and Windows."
     missing = [name for name, path in (("lsof", _LSOF), ("ps", _PS))
                if not os.path.isfile(path) or not os.access(path, os.X_OK)]
     if missing:
@@ -402,7 +421,14 @@ def _capability():
 
 
 def _current_uid():
+    if platform.system() == "Windows":
+        return _windows().current_uid()
     return str(os.getuid()) if hasattr(os, "getuid") else getpass.getuser()
+
+
+def _windows():
+    import local_servers_windows
+    return local_servers_windows
 
 
 def _protected_pids():
@@ -420,6 +446,7 @@ def _protected_pids():
 def _reap_later(process):
     """Collect a launcher that may still finish after the bounded startup wait."""
     if process.poll() is not None:
+        process.wait()
         return
     threading.Thread(target=process.wait, name="local-server-launch-reaper", daemon=True).start()
 
@@ -487,6 +514,9 @@ class LocalServerInventory:
         expected_start = server.get("startedAt")
         if not isinstance(expected_start, str) or not expected_start.strip():
             raise ValueError("The process changed since this list was loaded. Refresh before stopping it.")
+        if platform.system() == "Windows":
+            _windows().stop(server)
+            return
         current = _process_details({pid}).get(pid, {})
         current_start = current.get("startedAt")
         if not current_start or current_start != expected_start or str(current.get("uid")) != _current_uid():
@@ -498,8 +528,8 @@ class LocalServerInventory:
         except PermissionError:
             raise ValueError("macOS denied permission to stop that process.")
 
-    def configure(self, server_id, command):
-        self._require_supported()
+    def configure(self, server_id, command, cwd=None):
+        system = self._require_supported()
         command = command.strip() if isinstance(command, str) else ""
         if not command or len(command) > 4096 or "\0" in command:
             raise ValueError("Enter a launch command of 1–4096 characters.")
@@ -511,7 +541,13 @@ class LocalServerInventory:
             server = next((item for item in payload["servers"] if item["id"] == server_id), None)
             if server is None:
                 raise ValueError("That server is no longer in the recent list. Refresh and try again.")
-            cwd = server.get("cwd")
+            if system == "Windows":
+                cwd = cwd.strip() if isinstance(cwd, str) else server.get("cwd", "")
+                if not cwd or len(cwd) > 4096 or "\0" in cwd or not os.path.isabs(os.path.expanduser(cwd)):
+                    raise ValueError("Enter the full path to the server's working folder.")
+                cwd = os.path.realpath(os.path.expanduser(cwd))
+            else:
+                cwd = server.get("cwd")
             if not isinstance(cwd, str) or not os.path.isdir(cwd):
                 raise ValueError("The server folder is no longer available. Configure it again from a running server.")
             try:
@@ -534,6 +570,13 @@ class LocalServerInventory:
                 "isPinned": bool(profile.get("isPinned")),
             }
             updated = {**stored, "profiles": list(profiles.values())}
+            if system == "Windows":
+                # Bind the chosen folder only to this exact PID + creation time
+                # + port, never to an unrelated replacement on the same port.
+                for item in updated["servers"]:
+                    if item["id"] == server_id:
+                        item["cwd"] = cwd
+                        item["project"] = os.path.basename(cwd.rstrip(os.sep))
             self._apply_profile_flags(updated)
             self._write(updated)
         return {"ok": True, "profileId": profile_id}
@@ -550,6 +593,8 @@ class LocalServerInventory:
             server = next((item for item in payload["servers"] if item["id"] == server_id), None)
             if server is None:
                 raise ValueError("That server is no longer in the recent list. Refresh and try again.")
+            if not server.get("cwd"):
+                raise ValueError("Configure this server's working folder before pinning it.")
             profile_id = _profile_id(server["cwd"], server["port"])
             stored = self._read_payload()
             profiles = {item["id"]: item for item in stored["profiles"]}
@@ -618,16 +663,19 @@ class LocalServerInventory:
             cwd = profile["cwd"]
             command = profile["command"]
             try:
-                process = subprocess.Popen(
-                    ["/bin/zsh", "-lc", command],
-                    cwd=cwd,
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    start_new_session=True,
-                    close_fds=True,
-                    env={key: value for key, value in os.environ.items() if key != _CONTROL_TOKEN},
-                )
+                if platform.system() == "Windows":
+                    process = _windows().launch(command, cwd, _command_env())
+                else:
+                    process = subprocess.Popen(
+                        ["/bin/zsh", "-lc", command],
+                        cwd=cwd,
+                        stdin=subprocess.DEVNULL,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        start_new_session=True,
+                        close_fds=True,
+                        env=_command_env(),
+                    )
             except OSError as error:
                 raise ValueError(f"Could not launch the saved command: {error.strerror or error}.")
 
@@ -638,6 +686,7 @@ class LocalServerInventory:
                     snapshot = self._scan_and_store(
                         launch_group=process.pid,
                         expected_profile_id=profile_id,
+                        **({"launch_process": process} if platform.system() == "Windows" else {}),
                     )
                     candidate_id = self._last_launch_server_id
                 server = next((item for item in snapshot["servers"]
@@ -691,7 +740,7 @@ class LocalServerInventory:
                 time.sleep(0.3)
             raise ValueError(f"The server did not stop within {_STOP_TIMEOUT} seconds, so it was not restarted.")
 
-    def _scan_and_store(self, launch_group=None, expected_profile_id=None):
+    def _scan_and_store(self, launch_group=None, expected_profile_id=None, launch_process=None):
         """Scan, merge, and persist inventory; return a snapshot object."""
         now = _now()
         stamp = _stamp(now)
@@ -717,7 +766,8 @@ class LocalServerInventory:
                 by_id[server_id] = item
 
         uid = _current_uid()
-        live_rows = _listener_rows(uid)
+        windows = platform.system() == "Windows"
+        live_rows = _listener_rows(uid, old) if windows else _listener_rows(uid)
         if not isinstance(live_rows, list):
             raise RuntimeError("The local listener scan returned invalid data.")
         live = []
@@ -737,7 +787,17 @@ class LocalServerInventory:
             server_id = _server_id(row["pid"], row["startedAt"], row["port"])
             seen.add(server_id)
             previous = by_id.get(server_id, {})
-            profile_id = _profile_id(row["cwd"], row["port"])
+            launched = False
+            if windows:
+                row = dict(row)
+                expected = profiles.get(expected_profile_id, {})
+                if (launch_process is not None and expected.get("port") == row["port"]
+                        and _windows().launched_listener(row, launch_process)):
+                    row["cwd"] = expected["cwd"]
+                    launched = True
+                elif previous.get("cwd"):
+                    row["cwd"] = previous["cwd"]
+            profile_id = _profile_id(row["cwd"], row["port"]) if row["cwd"] else None
             server = {
                 "id": server_id,
                 "pid": row["pid"],
@@ -756,7 +816,7 @@ class LocalServerInventory:
                 "isPinned": bool(profiles.get(profile_id, {}).get("isPinned")),
             }
             by_id[server_id] = server
-            if (launch_group is not None and row.get("processGroup") == launch_group
+            if ((launched or (not windows and launch_group is not None and row.get("processGroup") == launch_group))
                     and expected_profile_id == profile_id):
                 self._last_launch_server_id = server_id
 

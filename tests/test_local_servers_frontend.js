@@ -21,11 +21,11 @@ function makeUi(){
     get innerHTML(){return html;},
     set innerHTML(value){
       html=value;inputs=[];
-      const re=/data-local-server-command="([^"]+)"[^>]*value="([^"]*)"/g;
+      const re=/data-local-server-(command|folder)="([^"]+)"[^>]*value="([^"]*)"/g;
       let match;
       while((match=re.exec(html))){
         const end=html.indexOf('>',match.index),tag=html.slice(match.index,end<0?undefined:end+1);
-        const input={dataset:{localServerCommand:match[1]},value:match[2],disabled:/\sdisabled(?:\s|$)/.test(tag),selectionStart:0,selectionEnd:0,focused:false,
+        const input={name:match[1]==='folder'?'cwd':'command',dataset:{[match[1]==='folder'?'localServerFolder':'localServerCommand']:match[2]},value:match[3],disabled:/\sdisabled(?:\s|$)/.test(tag),selectionStart:0,selectionEnd:0,focused:false,
           focus(){this.focused=true;doc.activeElement=this;},setSelectionRange(a,b){this.selectionStart=a;this.selectionEnd=b;}};
         inputs.push(input);
       }
@@ -50,11 +50,11 @@ function makeContext({withLoad=false,withEvents=false,extra={}}={}){
     S:{view:'local-servers',live:true},RAW:{records:[]},VIEW_TITLES:{overview:'Overview','local-servers':'Local servers'},
     syncRangeUI(){},syncMetricUI(){},buildFilterPanels(){},renderPills(){},renderSidebarDevices(){},filtersToURL(){},slice(){throw Error('Local servers must not need analytics data');},
     ...extra});
-  vm.runInContext('let LOCAL_SERVERS={servers:[],updatedAt:"",supported:null,loading:false,loaded:false,stale:false,unavailable:false}; let LOCAL_SERVER_SEARCH=""; let LOCAL_SERVER_CONFIG_ID=null; let LOCAL_SERVER_BUSY_ID=null; let LOCAL_SERVER_CONFIRM_SEQUENCE=0; let LOCAL_SERVER_COMMAND_DRAFT={};',ctx);
+  vm.runInContext('let LOCAL_SERVERS={servers:[],updatedAt:"",supported:null,loading:false,loaded:false,stale:false,unavailable:false}; let LOCAL_SERVER_SEARCH=""; let LOCAL_SERVER_CONFIG_ID=null; let LOCAL_SERVER_BUSY_ID=null; let LOCAL_SERVER_CONFIRM_SEQUENCE=0; let LOCAL_SERVER_COMMAND_DRAFT={}; let LOCAL_SERVER_FOLDER_DRAFT={};',ctx);
   vm.runInContext(viewCode,ctx);
   if(withLoad) vm.runInContext(loadCode,ctx);
   if(withEvents){
-    ctx.FormData=function(form){return {get:()=>form.command};};
+    ctx.FormData=function(form){return {get:key=>form[key]??null};};
     vm.runInContext(eventCode,ctx);
   }
   return {ctx,ui};
@@ -156,13 +156,38 @@ async function main(){
   console.log('Superseded local server scans cannot overwrite newer results.');
 }
 
+// Windows asks for the working folder, retains its draft, and warns about immediate termination.
+{
+  const {ctx,ui}=makeContext({withLoad:true,withEvents:true});
+  setState(ctx,{servers:[row({cwd:'',project:'',isConfigured:false,profileId:null,host:'::1'})],platform:'Windows',loaded:true});
+  setDraft(ctx,'server-1','npm run dev');
+  vm.runInContext('LOCAL_SERVER_FOLDER_DRAFT["server-1"]="C:\\\\work\\\\draft";renderLocalServers()',ctx);
+  assert.match(ui.root.innerHTML,/Working folder/);
+  assert.match(ui.root.innerHTML,/\[::1\]:3000/);
+  assert.match(ui.root.innerHTML,/data-local-server-pin="server-1"[^>]*disabled/);
+  assert.match(ui.root.innerHTML,/Stop ends the listening process immediately/);
+  const input=ui.inputs().find(i=>i.name==='cwd');
+  input.focus(); input.setSelectionRange(3,7);
+  ctx.fetch=async()=>response({servers:[row({cwd:'',project:''})],platform:'Windows'});
+  await vm.runInContext('loadLocalServers(true,true)',ctx);
+  const refreshed=ui.inputs().find(i=>i.name==='cwd');
+  assert.equal(refreshed.value,input.value);
+  assert.equal(refreshed.focused,true);
+  assert.equal(refreshed.selectionStart,3);
+  ctx.__row=row();
+  const warning=vm.runInContext('localServerActionConfirmation("restart",__row)',ctx);
+  assert.match(warning.body,/ends the current process immediately/);
+  assert.match(warning.body,/unsaved work can be lost/);
+  console.log('Windows folder drafts survive refresh; IPv6 labels, pin prerequisites and immediate-stop consent are explicit.');
+}
+
 // An in-progress command draft survives a successful background refresh and keeps focus/caret.
 {
   const {ctx,ui}=makeContext({withLoad:true});
   setState(ctx,{servers:[row({state:'stopped',pid:0})],updatedAt:'2026-10-16T12:00:00Z',supported:true,loaded:true});
   const draft='npm run dev -- --port 3010';
   setDraft(ctx,'server-1',draft);
-  const previous={dataset:{localServerCommand:'server-1'},selectionStart:8,selectionEnd:12};
+  const previous={name:'command',dataset:{localServerCommand:'server-1'},selectionStart:8,selectionEnd:12};
   ui.document.activeElement=previous;
   ctx.fetch=async()=>response({servers:[row({state:'stopped',pid:0})],updatedAt:'2026-10-16T12:01:00Z'});
   await vm.runInContext('loadLocalServers(true,true)',ctx);
@@ -181,7 +206,7 @@ function clickEvent(action,id){
 function actionContext(server,confirmImpl=async()=>true){
   const {ctx,ui}=makeContext({withLoad:true});
   setState(ctx,{servers:[server],updatedAt:'2026-10-16T13:00:00Z',supported:true,loaded:true});
-  ctx.FormData=function(form){return {get:()=>form.command};};
+  ctx.FormData=function(form){return {get:key=>form[key]??null};};
   const requests=[];
   ctx.askConfirm=confirmImpl;
   ctx.fetch=async(url,options={})=>{
@@ -234,6 +259,10 @@ function postFor(action,requests){return requests.find(r=>r.options.method==='PO
   assert.ok(prevented);
   assert.deepEqual(JSON.parse(configurePost.options.body),{id:'configure-id',command:form.command});
   assert.equal(fixture.requests.some(r=>/\/(?:start|restart)$/.test(r.url)),false);
+  const windows=actionContext(row({id:'win-config'}));
+  const winForm={dataset:{localServerForm:'win-config'},command:'npm run dev',cwd:'C:\\work\\project'};
+  await windows.handlers.submit({target:{closest:selector=>selector==='[data-local-server-form]'?winForm:null},preventDefault(){}});
+  assert.deepEqual(JSON.parse(postFor('configure',windows.requests).options.body),{id:'win-config',command:winForm.command,cwd:winForm.cwd});
   console.log('Save command stores the text without executing it or requesting execution consent.');
 }
 
