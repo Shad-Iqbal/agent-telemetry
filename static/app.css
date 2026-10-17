@@ -514,6 +514,9 @@ code.cmd{display:block;background:var(--surface-2);border:1px solid var(--border
 .ls-config-actions{display:flex;gap:6px}
 .ls-empty{padding:28px 12px;text-align:center;color:var(--text-3);font-size:12.5px}
 .ls-error{margin:0 0 12px;padding:10px 12px;border:1px solid color-mix(in srgb,var(--bad) 30%,var(--border));border-radius:8px;color:var(--bad);font-size:12px}
+.ls-note,.ls-unavailable{margin:0 0 14px;padding:11px 13px;border:1px solid var(--border);border-left:3px solid var(--warn);border-radius:var(--r-xs);background:var(--surface);color:var(--text-2);font-size:12px;line-height:1.6}
+.ls-note b,.ls-unavailable strong{color:var(--text);font-weight:640}
+.ls-unavailable{display:flex;flex-direction:column;gap:3px;border-left-color:var(--border-2)}
 .ls-card .card-h{align-items:center}
 .ls-scan-time{color:var(--text-3);font-size:11px;white-space:nowrap}
 @media(max-width:900px){.ls-config{grid-template-columns:1fr}.ls-config-actions{justify-content:flex-start}}

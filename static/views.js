@@ -4,10 +4,11 @@
 
 const VIEW_TITLES = {overview:"Overview", cost:"Cost", models:"Models", tools:"Tools & agents",
   projects:"Projects", sessions:"Sessions", optimize:"Optimize", storage:"Storage", "local-servers":"Local servers"};
-let LOCAL_SERVERS={servers:[],updatedAt:""};
+let LOCAL_SERVERS={servers:[],updatedAt:"",supported:null,loading:false,loaded:false,stale:false,unavailable:false};
 let LOCAL_SERVER_SEARCH="";
 let LOCAL_SERVER_CONFIG_ID=null;
 let LOCAL_SERVER_BUSY_ID=null;
+let LOCAL_SERVER_CONFIRM_SEQUENCE=0;
 let LOCAL_SERVER_COMMAND_DRAFT={};
 
 /* ---------------- measure (one switch for every view) ---------------- */
@@ -1524,17 +1525,27 @@ async function setPollMs(v){
   const state=await r.json();
   if(!r.ok) throw new Error(state.error||"Could not change the refresh interval.");
   acceptRefreshSync(state);
-  if(S.live) syncNeedsLoad=!(await load());
+  if(S.live){
+    syncNeedsLoad=!(await load());
+    if(S.view==="local-servers"&&LOCAL_SERVERS.supported!==false&&!LOCAL_SERVERS.unavailable) await loadLocalServers(true);
+  }
 }
 async function pollRefreshSync(){
   if(syncBusy) return;
   syncBusy=true;
   try{
     const r=await fetch("/api/sync");
-    if(r.status===404){ if(S.live&&pollMs()&&Date.now()-lastFallbackLoad>=pollMs()){lastFallbackLoad=Date.now();await load();} return; }
+    if(r.status===404){
+      if(S.live&&pollMs()&&Date.now()-lastFallbackLoad>=pollMs()){
+        lastFallbackLoad=Date.now();await load();
+        if(S.view==="local-servers"&&LOCAL_SERVERS.supported!==false&&!LOCAL_SERVERS.unavailable) await loadLocalServers(true);
+      }
+      return;
+    }
     if(!r.ok){ syncNeedsLoad=true; return; }
     const changed=acceptRefreshSync(await r.json());
     if((changed||syncNeedsLoad)&&S.live) syncNeedsLoad=!(await load());
+    if(changed&&S.live&&S.view==="local-servers"&&LOCAL_SERVERS.supported!==false&&!LOCAL_SERVERS.unavailable) await loadLocalServers(true);
   }catch(e){ syncNeedsLoad=true; console.error("Refresh sync unavailable",e); }
   finally{ syncBusy=false; }
 }
@@ -2507,6 +2518,9 @@ function localServerTime(value){
 }
 function renderLocalServers(){
   const root=document.getElementById("localServersRoot"); if(!root) return;
+  const activeInput=document.activeElement;
+  const focusedCommand=activeInput&&activeInput.dataset&&activeInput.dataset.localServerCommand;
+  const selection=focusedCommand&&typeof activeInput.selectionStart==="number"?[activeInput.selectionStart,activeInput.selectionEnd]:null;
   const all=LOCAL_SERVERS.servers||[];
   const q=LOCAL_SERVER_SEARCH.trim().toLowerCase();
   const matches=s=>!q || [s.process,s.project,s.cwd,s.port].some(v=>String(v||"").toLowerCase().includes(q));
@@ -2514,52 +2528,69 @@ function renderLocalServers(){
   const running=all.filter(s=>s.state==="running"&&matches(s)).sort(byPriority);
   const stopped=all.filter(s=>s.state!=="running"&&matches(s)).sort(byPriority);
   const projects=new Set(all.map(s=>s.project).filter(Boolean));
-  document.getElementById("localServerCount").textContent=all.filter(s=>s.state==="running").length||"";
+  const count=document.getElementById("localServerCount");
+  if(count) count.textContent=!LOCAL_SERVERS.loaded||LOCAL_SERVERS.stale||LOCAL_SERVERS.unavailable||LOCAL_SERVERS.supported===false?"":all.filter(s=>s.state==="running").length||"";
   const scanTime=localServerTime(LOCAL_SERVERS.updatedAt);
   const row=(s,active)=>{
     const process=s.process||"Unknown process";
     const project=s.project||"";
     const title=project||process;
-    const address=s.host&&s.host!=="*"?s.host+":"+s.port:"localhost:"+s.port;
+    const port=Number(s.port)||"?";
+    const pid=Number(s.pid);
+    const pidLabel=Number.isFinite(pid)&&pid>0?` · PID ${pid}`:"";
+    const address=s.host&&s.host!=="*"?s.host+":"+port:"localhost:"+port;
     const detail=project?`${address} · ${process}`:address;
     const busy=LOCAL_SERVER_BUSY_ID===s.id;
+    const blocked=Boolean(LOCAL_SERVER_BUSY_ID)||LOCAL_SERVERS.loading||LOCAL_SERVERS.stale||LOCAL_SERVERS.unavailable||typeof s.id!=="string"||!s.id;
     const configureOpen=LOCAL_SERVER_CONFIG_ID===s.id;
-    const stateAction=active?`<a class="btn sm" href="http://localhost:${Number(s.port)}" target="_blank" rel="noopener">Open ↗</a>
-      ${s.isConfigured?`<button class="btn sm" data-local-server-restart="${esc(s.id)}" ${busy?"disabled":""}>Restart</button>`:""}
-      <button class="btn sm danger" data-local-server-stop="${esc(s.id)}" ${busy?"disabled":""}>Stop</button>`:
-      (s.isConfigured?`<button class="btn sm primary" data-local-server-start="${esc(s.id)}" ${busy?"disabled":""}>Start</button>`:`<span class="ls-scan-time">Stopped ${esc(localServerTime(s.stoppedAt))}</span>`)
-    const actionButtons=`${stateAction}<button class="btn sm ${s.isPinned?"on":""}" data-local-server-pin="${esc(s.id)}" aria-pressed="${Boolean(s.isPinned)}" ${busy?"disabled":""}>${s.isPinned?"Pinned":"Pin"}</button>
-      <button class="btn sm" data-local-server-config="${esc(s.id)}" ${busy?"disabled":""}>${s.isConfigured?"Replace command":"Configure"}</button>`;
+    const stateAction=active?`${s.isConfigured&&s.profileId?`<button class="btn sm" type="button" data-local-server-restart="${esc(s.id)}" aria-label="Restart ${esc(title)} on port ${esc(port)}" ${blocked?"disabled":""}>Restart</button>`:""}
+      <button class="btn sm danger" type="button" data-local-server-stop="${esc(s.id)}" aria-label="Stop ${esc(title)} on port ${esc(port)}" ${blocked?"disabled":""}>Stop</button>`:
+      (s.isConfigured&&s.profileId?`<button class="btn sm primary" type="button" data-local-server-start="${esc(s.id)}" aria-label="Start ${esc(title)} on port ${esc(port)}" ${blocked?"disabled":""}>Start</button>`:`<span class="ls-scan-time">Stopped ${esc(localServerTime(s.stoppedAt))}</span>`);
+    const actionButtons=`${stateAction}<button class="btn sm ${s.isPinned?"on":""}" type="button" data-local-server-pin="${esc(s.id)}" aria-pressed="${Boolean(s.isPinned)}" ${blocked?"disabled":""}>${s.isPinned?"Pinned":"Pin"}</button>
+      <button class="btn sm" type="button" data-local-server-config="${esc(s.id)}" ${blocked?"disabled":""}>${s.isConfigured&&s.profileId?"Replace command":"Configure"}</button>`;
     return `<div class="ls-row">
       <span class="ls-dot${active?"":" stopped"}" aria-hidden="true"></span>
-      <div class="ls-copy"><strong>${esc(title)} · PID ${Number(s.pid)||"?"}</strong>
+      <div class="ls-copy"><strong>${esc(title)}${pidLabel}</strong>
         <span>${esc(detail)}</span>
         ${s.cwd?`<code title="${esc(s.cwd)}">${esc(s.cwd)}</code>`:""}
       </div>
       <div class="ls-actions">${busy?`<span class="ls-busy" role="status">Working…</span>`:""}${actionButtons}</div>
     </div>${configureOpen?`<form class="ls-config" data-local-server-form="${esc(s.id)}">
-      <div><strong>Launch settings</strong><span>Runs only when you choose Start or Restart. Uses ${esc(s.cwd||"this folder")} and waits for port ${Number(s.port)}.</span></div>
-      <label>Launch command<input name="command" data-local-server-command="${esc(s.id)}" type="text" required maxlength="4096" autocomplete="off" spellcheck="false" placeholder="For example: npm run dev" value="${esc(LOCAL_SERVER_COMMAND_DRAFT[s.id]||"")}"></label>
-      <div class="ls-config-actions"><button class="btn sm primary" type="submit" ${busy?"disabled":""}>Save command</button><button class="btn sm" type="button" data-local-server-config-cancel ${busy?"disabled":""}>Cancel</button></div>
+      <div><strong>Launch settings</strong><span>Runs only when you choose Start or Restart. Uses ${esc(s.cwd||"this folder")} and waits for port ${esc(port)}.</span></div>
+      <label>Launch command<input name="command" data-local-server-command="${esc(s.id)}" type="text" required maxlength="4096" autocomplete="off" spellcheck="false" placeholder="For example: npm run dev" value="${esc(LOCAL_SERVER_COMMAND_DRAFT[s.id]||"")}" ${LOCAL_SERVER_BUSY_ID?"disabled":""}></label>
+      <div class="ls-config-actions"><button class="btn sm primary" type="submit" ${LOCAL_SERVER_BUSY_ID?"disabled":""}>Save command</button><button class="btn sm" type="button" data-local-server-config-cancel ${LOCAL_SERVER_BUSY_ID?"disabled":""}>Cancel</button></div>
     </form>`:""}`;
   };
+  if(LOCAL_SERVERS.supported===false){
+    root.innerHTML=`<div class="eyebrow">LOCAL ACTIVITY</div>
+      <div class="ls-heading"><div><h2>Local servers</h2><p>Recent project TCP listeners on this computer.</p></div></div>
+      <div class="ls-unavailable" role="status"><strong>Unavailable on this platform</strong><span>${esc(LOCAL_SERVERS.message||"Local server detection is supported on macOS only.")}</span></div>`;
+    return;
+  }
   root.innerHTML=`<div class="eyebrow">LOCAL ACTIVITY</div>
-    <div class="ls-heading"><div><h2>Local servers</h2><p>See what is listening on this Mac and revisit servers you ran recently.</p></div>
-      <button class="btn" id="localServersRefresh"${LOCAL_SERVERS.loading?" disabled":""}>${LOCAL_SERVERS.loading?"Scanning…":"Scan again"}</button></div>
-    ${LOCAL_SERVERS.error?`<div class="ls-error" role="alert">${esc(LOCAL_SERVERS.error)}</div>`:""}
+    <div class="ls-heading"><div><h2>Local servers</h2><p>See project TCP listeners on this Mac and revisit servers you ran recently.</p></div>
+      <button class="btn" id="localServersRefresh" type="button"${LOCAL_SERVERS.loading?" disabled":""}>${LOCAL_SERVERS.loading?"Scanning…":LOCAL_SERVERS.unavailable?"Try again":LOCAL_SERVERS.loaded?"Scan again":"Scan"}</button></div>
+    ${LOCAL_SERVERS.unavailable?`<div class="ls-error" role="alert">This dashboard server does not provide local server inventory.${LOCAL_SERVERS.loaded?" Showing the last successful scan; actions are disabled.":" Update or restart the dashboard, then try again."}</div>`:""}
+    ${LOCAL_SERVERS.error?`<div class="ls-error" role="alert">${esc(LOCAL_SERVERS.error)}${LOCAL_SERVERS.loaded?" Showing the last successful scan; actions are disabled.":""}</div>`:""}
     ${LOCAL_SERVERS.actionError?`<div class="ls-error" role="alert">${esc(LOCAL_SERVERS.actionError)}</div>`:""}
+    <div class="ls-note">Start and Restart run your saved command as you; Stop sends SIGTERM to the listening process. Saved commands stay in local settings and are excluded from usage data and device sharing.</div>
+    ${!LOCAL_SERVERS.loaded?`<div class="card ls-card"><div class="ls-empty">${LOCAL_SERVERS.loading?"Scanning local ports…":LOCAL_SERVERS.error||LOCAL_SERVERS.unavailable?"No successful scan yet. Try again.":"Scan local ports to see current listeners."}</div></div>`:`
     <div class="ls-stats">
       <div class="ls-stat"><div><label>Running now</label><strong>${all.filter(s=>s.state==="running").length}</strong></div><span class="ls-stat-ic"><svg class="ic"><use href="#i-servers"/></svg></span></div>
       <div class="ls-stat"><div><label>Stopped</label><strong>${all.filter(s=>s.state!=="running").length}</strong></div><span class="ls-stat-ic neutral"><svg class="ic"><use href="#i-sessions"/></svg></span></div>
       <div class="ls-stat"><div><label>Projects seen</label><strong>${projects.size}</strong></div><span class="ls-stat-ic neutral"><svg class="ic"><use href="#i-projects"/></svg></span></div>
     </div>
-    <div class="card ls-card"><div class="card-h"><div><h3>Listening now</h3><p class="card-sub">TCP ports owned by your user account</p></div><span class="ls-scan-time">Scanned ${esc(scanTime)}</span></div>
+    <div class="card ls-card"><div class="card-h"><div><h3>Listening now</h3><p class="card-sub">TCP ports owned by your user account</p></div><span class="ls-scan-time">Scanned ${esc(scanTime)}${LOCAL_SERVERS.stale?" · stale":""}</span></div>
       <label class="search"><svg class="ic sm"><use href="#i-search"/></svg><input type="search" id="localServerSearch" value="${esc(LOCAL_SERVER_SEARCH)}" placeholder="Search process, project, or port…" aria-label="Search local servers"></label>
       <div class="ls-list">${running.map(s=>row(s,true)).join("")||`<div class="ls-empty">${q?"No running servers match this search.":LOCAL_SERVERS.loading?"Scanning local ports…":"No local servers are listening right now."}</div>`}</div>
     </div>
     <div class="card ls-card"><div class="card-h"><div><h3>Stopped history</h3><p class="card-sub">Recent servers and entries pinned in the menu bar</p></div></div>
       <div class="ls-list">${stopped.map(s=>row(s,false)).join("")||`<div class="ls-empty">${q?"No stopped servers match this search.":"Stopped servers will appear here after they have been discovered."}</div>`}</div>
-    </div>`;
+    </div>`}`;
+  if(focusedCommand){
+    const input=[...root.querySelectorAll("[data-local-server-command]")].find(node=>node.dataset.localServerCommand===focusedCommand);
+    if(input&&!input.disabled){input.focus();if(selection) input.setSelectionRange(...selection);}
+  }
 }
 function renderAll(){
   if(!RAW) return;
@@ -2616,7 +2647,7 @@ function setView(v){
   S.view = v;
   if(location.hash.slice(1) !== v) history.replaceState(null, "", "#"+v);
   if(v==="storage" && !STORAGE) loadStorage();
-  if(v==="local-servers") loadLocalServers(true);
+  if(v==="local-servers"&&!LOCAL_SERVERS.unavailable&&LOCAL_SERVERS.supported!==false) loadLocalServers(true);
   renderAll();
   scrollTo({top:0});
 }
@@ -2668,30 +2699,50 @@ async function loadStorage(){
     if(S.view==="storage") renderAll(); }catch(e){ console.error(e); }
 }
 let localServerLoadSequence=0;
-async function loadLocalServers(render=true){
+async function loadLocalServers(render=true,manual=false){
+  if(!manual&&(LOCAL_SERVERS.unavailable||LOCAL_SERVERS.supported===false)) return false;
   const sequence=++localServerLoadSequence;
   LOCAL_SERVERS={...LOCAL_SERVERS,loading:true,error:""};
   if(render&&S.view==="local-servers") renderLocalServers();
+  const controller=new AbortController();
+  const timeoutId=setTimeout(()=>controller.abort(),20000);
   try{
-    const response=await fetch("/api/local-servers",{cache:"no-store"});
-    const payload=await response.json();
-    if(sequence!==localServerLoadSequence) return;
-    if(!response.ok) throw new Error(payload.error||"Could not scan local servers.");
-    LOCAL_SERVERS={...payload,loading:false,error:""};
+    const response=await fetch("/api/local-servers",{cache:"no-store",signal:controller.signal});
+    let payload={};
+    try{payload=await response.json();}catch(e){}
+    if(sequence!==localServerLoadSequence) return false;
+    if(response.status===404){
+      LOCAL_SERVERS={...LOCAL_SERVERS,loading:false,error:"",unavailable:true,stale:LOCAL_SERVERS.loaded};
+    }else{
+      if(!response.ok) throw new Error(payload.error||"Could not scan local servers.");
+      if(!payload||!Array.isArray(payload.servers)) throw new Error("The local server response was invalid.");
+      if(payload.supported===false){
+        LOCAL_SERVERS={...payload,servers:[],supported:false,loading:false,loaded:true,stale:false,unavailable:false,error:""};
+      }else{
+        LOCAL_SERVERS={...payload,supported:true,loading:false,loaded:true,stale:false,unavailable:false,error:""};
+      }
+    }
   }catch(error){
-    if(sequence!==localServerLoadSequence) return;
-    LOCAL_SERVERS={...LOCAL_SERVERS,loading:false,error:error.message||"Could not scan local servers."};
+    if(sequence!==localServerLoadSequence) return false;
+    LOCAL_SERVERS={...LOCAL_SERVERS,loading:false,error:error.name==="AbortError"?"The local server scan timed out. Try again.":error.message||"Could not scan local servers.",stale:LOCAL_SERVERS.loaded};
+  }finally{
+    clearTimeout(timeoutId);
   }
-  document.getElementById("localServerCount").textContent=(LOCAL_SERVERS.servers||[]).filter(s=>s.state==="running").length||"";
+  const count=document.getElementById("localServerCount");
+  if(count) count.textContent=LOCAL_SERVERS.stale||LOCAL_SERVERS.unavailable||LOCAL_SERVERS.supported===false?"":(LOCAL_SERVERS.servers||[]).filter(s=>s.state==="running").length||"";
   if(render&&S.view==="local-servers") renderLocalServers();
+  return !LOCAL_SERVERS.error&&!LOCAL_SERVERS.unavailable&&LOCAL_SERVERS.supported!==false;
 }
 
 /* ---------------- events ---------------- */
 document.getElementById("tabs").addEventListener("click",e=>{
   const b=e.target.closest("button[data-v]"); if(b) setView(b.dataset.v);
 });
-async function postLocalServerAction(action,body,serverID){
-  LOCAL_SERVER_BUSY_ID=serverID||null;
+async function postLocalServerAction(action,body,serverID,confirmationIntent){
+  if(LOCAL_SERVER_BUSY_ID) return false;
+  if(confirmationIntent===undefined) confirmationIntent=++LOCAL_SERVER_CONFIRM_SEQUENCE;
+  if(confirmationIntent!==LOCAL_SERVER_CONFIRM_SEQUENCE) return false;
+  LOCAL_SERVER_BUSY_ID=serverID||"__busy__";
   LOCAL_SERVERS={...LOCAL_SERVERS,actionError:""};
   renderLocalServers();
   let actionError="";
@@ -2706,16 +2757,44 @@ async function postLocalServerAction(action,body,serverID){
   }catch(error){
     actionError=error.message||`Could not ${action} that server.`;
   }
+  if(confirmationIntent!==LOCAL_SERVER_CONFIRM_SEQUENCE) return false;
   LOCAL_SERVER_BUSY_ID=null;
-  await loadLocalServers(true);
+  await loadLocalServers(true,true);
   if(actionError){
     LOCAL_SERVERS={...LOCAL_SERVERS,actionError};
     renderLocalServers();
   }
+  return !actionError;
+}
+function localServerActionConfirmation(action,server){
+  const name=esc(server.project||server.process||"server"), cwd=esc(server.cwd||"the saved project folder");
+  const port=esc(Number(server.port)||"?");
+  if(action==="stop") return {title:"Stop this local server?",ok:"Stop server",danger:true,
+    body:`<p>Stop <b>${name}</b> on port <b>${port}</b> (PID ${esc(server.pid||"unknown")})?</p>
+      <div class="modal-note bad">AgentTelemetry sends SIGTERM to this process. Other ports owned by the same process may also stop.</div>`};
+  const verb=action==="restart"?"restart":"start";
+  const step=action==="restart"?"AgentTelemetry first sends SIGTERM to the current process, then runs the saved launch command.":"AgentTelemetry runs the saved launch command.";
+  return {title:`${verb[0].toUpperCase()+verb.slice(1)} this local server?`,ok:action==="restart"?"Restart server":"Start server",
+    body:`<p>${step} The command uses <code>${cwd}</code> and waits for port <b>${port}</b>.</p>
+      <div class="modal-note bad">This runs with your account permissions and can execute code or access local files. Continue only if you saved this command and trust the project.</div>`};
+}
+async function confirmLocalServerAction(action,server){
+  const intent=++LOCAL_SERVER_CONFIRM_SEQUENCE;
+  const confirmed=await askConfirm(localServerActionConfirmation(action,server));
+  if(!confirmed||intent!==LOCAL_SERVER_CONFIRM_SEQUENCE||LOCAL_SERVER_BUSY_ID) return false;
+  const current=(LOCAL_SERVERS.servers||[]).find(s=>s.id===server.id);
+  if(!current||LOCAL_SERVERS.stale||LOCAL_SERVERS.unavailable||current.state!==server.state||String(current.pid)!==String(server.pid)||current.profileId!==server.profileId){
+    LOCAL_SERVERS={...LOCAL_SERVERS,actionError:"This server changed while you were confirming. Scan again before acting."};
+    renderLocalServers();
+    return false;
+  }
+  const body=action==="stop"?{id:server.id,confirmed:true}:
+    {profileId:server.profileId,confirmed:true,...(action==="restart"?{serverId:server.id}:{})};
+  return postLocalServerAction(action,body,server.id,intent);
 }
 document.addEventListener("click",async e=>{
   if(e.target.closest("#localServersRefresh")){
-    await loadLocalServers(true);
+    await loadLocalServers(true,true);
     return;
   }
   if(e.target.closest("[data-local-server-config-cancel]")){
@@ -2740,28 +2819,24 @@ document.addEventListener("click",async e=>{
   if(!target) return;
   const id=target.dataset.localServerPin||target.dataset.localServerStart||target.dataset.localServerStop||target.dataset.localServerRestart;
   const server=(LOCAL_SERVERS.servers||[]).find(s=>s.id===id);
-  if(!server) return;
+  if(!server||LOCAL_SERVER_BUSY_ID||LOCAL_SERVERS.loading||LOCAL_SERVERS.stale||LOCAL_SERVERS.unavailable) return;
   if(pin){
     await postLocalServerAction("pin",{id:server.id,pinned:!server.isPinned},server.id);
     return;
   }
   if(start){
-    if(!server.profileId) return;
-    await postLocalServerAction("start",{profileId:server.profileId},server.id);
+    if(server.state==="running"||!server.isConfigured||!server.profileId) return;
+    await confirmLocalServerAction("start",server);
     return;
   }
   if(stop){
     if(server.state!=="running") return;
-    const name=`${server.process||"server"} (PID ${server.pid})`;
-    if(!confirm(`Stop ${name}? AgentTelemetry will send SIGTERM to the process. This can stop every port it owns.`)) return;
-    await postLocalServerAction("stop",{id:server.id},server.id);
+    await confirmLocalServerAction("stop",server);
     return;
   }
   if(restart){
     if(server.state!=="running"||!server.profileId) return;
-    const name=`${server.process||"server"} (PID ${server.pid})`;
-    if(!confirm(`Restart ${name}? AgentTelemetry will send SIGTERM to this process, then run its saved launch command.`)) return;
-    await postLocalServerAction("restart",{profileId:server.profileId},server.id);
+    await confirmLocalServerAction("restart",server);
   }
 });
 document.addEventListener("submit",async e=>{
@@ -2770,7 +2845,7 @@ document.addEventListener("submit",async e=>{
   e.preventDefault();
   const server=(LOCAL_SERVERS.servers||[]).find(s=>s.id===form.dataset.localServerForm);
   const command=new FormData(form).get("command");
-  if(!server || typeof command!=="string") return;
+  if(!server||LOCAL_SERVER_BUSY_ID||LOCAL_SERVERS.stale||LOCAL_SERVERS.unavailable||typeof command!=="string") return;
   LOCAL_SERVER_COMMAND_DRAFT[server.id]=command;
   await postLocalServerAction("configure",{id:server.id,command},server.id);
 });
@@ -2865,11 +2940,18 @@ document.getElementById("themeBtn").addEventListener("click",cycleTheme);
 document.getElementById("settingsBtn").addEventListener("click",openSettings);
 document.getElementById("refreshBtn").addEventListener("click",async e=>{
   const b=e.currentTarget; b.style.opacity=".4";
-  try{ await fetch("/api/refresh",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"}); await load(); await loadStorage(); } finally { b.style.opacity=""; }
+  try{
+    await fetch("/api/refresh",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"});
+    await load(); await loadStorage();
+    if(S.view==="local-servers"&&LOCAL_SERVERS.supported!==false&&!LOCAL_SERVERS.unavailable) await loadLocalServers(true,true);
+  } finally { b.style.opacity=""; }
 });
 document.getElementById("liveBtn").addEventListener("click",e=>{
   S.live=!S.live;
-  if(S.live) load();
+  if(S.live){
+    load();
+    if(S.view==="local-servers"&&LOCAL_SERVERS.supported!==false&&!LOCAL_SERVERS.unavailable) loadLocalServers(true);
+  }
   document.getElementById("livedot").classList.toggle("off",!S.live);
   e.currentTarget.title = S.live ? "Auto-refresh on — click to pause" : "Auto-refresh paused — click to resume";
   const st=document.getElementById("statusText"); st.textContent = st.textContent.replace(/^(Live|Paused)/, S.live?"Live":"Paused");
@@ -2922,7 +3004,7 @@ const QP=new URLSearchParams(location.search);
   applyTheme(QP.get("theme")||saved); }
 filtersFromURL(); syncSearchBoxes();
 if(location.hash && VIEW_TITLES[location.hash.slice(1)]) S.view=location.hash.slice(1);
-load().then(()=>{ if(S.view==="storage") loadStorage(); loadLocalServers(S.view==="local-servers"); });
+load().then(()=>{ if(S.view==="storage") loadStorage(); if(S.view==="local-servers") loadLocalServers(true); });
 setTimeout(loadStorage, 1200);
 /* The tiny shared clock is sampled each second. Full figures load only on a
    changed tick; Manual still listens for another client's explicit refresh. */
@@ -2933,7 +3015,6 @@ function applyPollInterval(){
   if(NATIVE_APP_MODE && document.visibilityState==="hidden") return;
   pollTimers.push(setInterval(pollRefreshSync,1000));
   pollTimers.push(setInterval(()=>{ if(S.live&&pollMs()) loadStorage(); },120000));
-  pollTimers.push(setInterval(()=>loadLocalServers(S.view==="local-servers"),30000));
   pollRefreshSync();
 }
 applyPollInterval();
@@ -2942,5 +3023,6 @@ if(NATIVE_APP_MODE) document.addEventListener("visibilitychange",()=>{
   if(document.visibilityState==="visible"){
     load();
     loadStorage();
+    if(S.live&&S.view==="local-servers"&&LOCAL_SERVERS.supported!==false&&!LOCAL_SERVERS.unavailable) loadLocalServers(true);
   }
 });
