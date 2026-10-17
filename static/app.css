@@ -512,6 +512,11 @@ code.cmd{display:block;background:var(--surface-2);border:1px solid var(--border
 .ls-config input{width:100%;height:32px;padding:0 9px;border:1px solid var(--border-2);border-radius:6px;background:var(--surface);color:var(--text);font:12px var(--mono)}
 .ls-config input:focus{outline:2px solid color-mix(in srgb,var(--accent) 45%,transparent);outline-offset:1px}
 .ls-config-actions{display:flex;gap:6px}
+.ls-config.windows{grid-template-columns:repeat(2,minmax(0,1fr));align-items:start}
+.ls-config.windows>div:first-child,.ls-config.windows>.ls-config-actions{grid-column:1/-1}
+.ls-config.windows label{min-width:0}
+.ls-config small{font-size:11px;color:var(--text-3);line-height:1.45}
+.ls-card .search input{min-width:0;width:100%;border:0;outline:0;background:transparent;color:var(--text);font:inherit}
 .ls-empty{padding:28px 12px;text-align:center;color:var(--text-3);font-size:12.5px}
 .ls-error{margin:0 0 12px;padding:10px 12px;border:1px solid color-mix(in srgb,var(--bad) 30%,var(--border));border-radius:8px;color:var(--bad);font-size:12px}
 .ls-note,.ls-unavailable{margin:0 0 14px;padding:11px 13px;border:1px solid var(--border);border-left:3px solid var(--warn);border-radius:var(--r-xs);background:var(--surface);color:var(--text-2);font-size:12px;line-height:1.6}
@@ -519,7 +524,7 @@ code.cmd{display:block;background:var(--surface-2);border:1px solid var(--border
 .ls-unavailable{display:flex;flex-direction:column;gap:3px;border-left-color:var(--border-2)}
 .ls-card .card-h{align-items:center}
 .ls-scan-time{color:var(--text-3);font-size:11px;white-space:nowrap}
-@media(max-width:900px){.ls-config{grid-template-columns:1fr}.ls-config-actions{justify-content:flex-start}}
+@media(max-width:900px){.ls-config,.ls-config.windows{grid-template-columns:1fr}.ls-config-actions{justify-content:flex-start}}
 @media(max-width:700px){.ls-stats{grid-template-columns:1fr}.ls-heading{flex-direction:column}.ls-row{grid-template-columns:10px minmax(0,1fr)}.ls-actions{grid-column:2;justify-content:flex-start;max-width:none}.ls-config{margin-left:0}}
 .compaction-table{overflow-x:auto;margin:10px 0}
 .compaction-table table{font-size:11.5px}

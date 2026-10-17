@@ -2558,9 +2558,9 @@ function renderLocalServers(){
         ${s.cwd?`<code title="${esc(s.cwd)}">${esc(s.cwd)}</code>`:""}
       </div>
       <div class="ls-actions">${busy?`<span class="ls-busy" role="status">Working…</span>`:""}${actionButtons}</div>
-    </div>${configureOpen?`<form class="ls-config" data-local-server-form="${esc(s.id)}">
+    </div>${configureOpen?`<form class="ls-config${windows?" windows":""}" data-local-server-form="${esc(s.id)}">
       <div><strong>Launch settings</strong><span>Runs only when you choose Start or Restart. Uses ${esc(s.cwd||"this folder")} and waits for port ${esc(port)}.</span></div>
-      ${windows?`<label>Working folder<input name="cwd" data-local-server-folder="${esc(s.id)}" type="text" required maxlength="4096" autocomplete="off" spellcheck="false" placeholder="Full path, for example C:\\Projects\\my-app" value="${esc(LOCAL_SERVER_FOLDER_DRAFT[s.id]??s.cwd??"")}" ${LOCAL_SERVER_BUSY_ID?"disabled":""}></label><span>Windows cannot report another process’s working folder. Choose the folder this command should run in.</span>`:""}
+      ${windows?`<label>Working folder<input name="cwd" data-local-server-folder="${esc(s.id)}" type="text" required maxlength="4096" autocomplete="off" spellcheck="false" placeholder="Full path, for example C:\\Projects\\my-app" value="${esc(LOCAL_SERVER_FOLDER_DRAFT[s.id]??s.cwd??"")}" ${LOCAL_SERVER_BUSY_ID?"disabled":""}><small>Choose the folder this command should run in. Windows cannot report another process’s working folder.</small></label>`:""}
       <label>Launch command<input name="command" data-local-server-command="${esc(s.id)}" type="text" required maxlength="4096" autocomplete="off" spellcheck="false" placeholder="For example: npm run dev" value="${esc(LOCAL_SERVER_COMMAND_DRAFT[s.id]||"")}" ${LOCAL_SERVER_BUSY_ID?"disabled":""}></label>
       <div class="ls-config-actions"><button class="btn sm primary" type="submit" ${LOCAL_SERVER_BUSY_ID?"disabled":""}>Save command</button><button class="btn sm" type="button" data-local-server-config-cancel ${LOCAL_SERVER_BUSY_ID?"disabled":""}>Cancel</button></div>
     </form>`:""}`;

@@ -25,8 +25,15 @@ private enum LocalServerAction: Equatable {
 }
 
 @MainActor
-private final class DisclosureState: ObservableObject {
+private final class StatusMenuState: ObservableObject {
     @Published var expanded = false
+    @Published var recentServersExpanded = false
+    @Published var pendingServer: LocalServer?
+    @Published var pendingAction: LocalServerAction?
+    @Published var showServerActionConfirmation = false
+    @Published var actionError: String?
+    @Published var showActionError = false
+    @Published var busyServerID: String?
 }
 
 struct StatusMenu: View {
@@ -38,14 +45,7 @@ struct StatusMenu: View {
     let quit: () -> Void
     let onDisclosureChange: (Bool) -> Void
 
-    @StateObject private var disclosure = DisclosureState()
-    @State private var recentServersExpanded = false
-    @State private var pendingServer: LocalServer?
-    @State private var pendingAction: LocalServerAction?
-    @State private var showServerActionConfirmation = false
-    @State private var actionError: String?
-    @State private var showActionError = false
-    @State private var busyServerID: String?
+    @StateObject private var disclosure = StatusMenuState()
     private var detailsExpanded: Bool {
         get { disclosure.expanded }
         nonmutating set { disclosure.expanded = newValue }
@@ -152,17 +152,17 @@ struct StatusMenu: View {
             backend.refreshIntervalDidChange()
         }
         .confirmationDialog(
-            pendingAction?.title(for: pendingServer) ?? "Manage server?",
-            isPresented: $showServerActionConfirmation,
+            disclosure.pendingAction?.title(for: disclosure.pendingServer) ?? "Manage server?",
+            isPresented: $disclosure.showServerActionConfirmation,
             titleVisibility: .visible
         ) {
-            Button(pendingAction?.buttonTitle ?? "Stop server",
-                   role: pendingAction == .start ? nil : .destructive) {
+            Button(disclosure.pendingAction?.buttonTitle ?? "Stop server",
+                   role: disclosure.pendingAction == .start ? nil : .destructive) {
                 performPendingAction()
             }
             Button("Cancel", role: .cancel) { clearPendingAction() }
         } message: {
-            if let server = pendingServer, let action = pendingAction {
+            if let server = disclosure.pendingServer, let action = disclosure.pendingAction {
                 if action == .start {
                     Text("AgentTelemetry will run the saved launch command in \(server.project.isEmpty ? server.cwd : server.project). This executes the command you saved for this server.")
                 } else if action == .restart {
@@ -172,10 +172,10 @@ struct StatusMenu: View {
                 }
             }
         }
-        .alert("Server action failed", isPresented: $showActionError) {
+        .alert("Server action failed", isPresented: $disclosure.showActionError) {
             Button("OK", role: .cancel) { }
         } message: {
-            Text(actionError ?? "Please refresh and try again.")
+            Text(disclosure.actionError ?? "Please refresh and try again.")
         }
     }
 
@@ -230,19 +230,19 @@ struct StatusMenu: View {
 
             if !recentServers.isEmpty {
                 Button {
-                    recentServersExpanded.toggle()
+                    disclosure.recentServersExpanded.toggle()
                 } label: {
                     HStack {
                         Text("\(recentServers.count) stopped recently")
                         Spacer()
-                        Image(systemName: recentServersExpanded ? "chevron.down" : "chevron.right")
+                        Image(systemName: disclosure.recentServersExpanded ? "chevron.down" : "chevron.right")
                     }
                     .font(.system(size: 9, weight: .medium))
                     .foregroundStyle(.secondary)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                if recentServersExpanded {
+                if disclosure.recentServersExpanded {
                     ForEach(recentServers.prefix(2)) { server in
                         HStack {
                             Text("\(server.location) · \(server.displayDetails)")
@@ -260,7 +260,7 @@ struct StatusMenu: View {
                                 .foregroundStyle(Color.accentColor)
                                 .help("Start \(server.location)")
                                 .accessibilityLabel("Start \(server.location)")
-                                .disabled(busyServerID != nil || !localServers.isAvailable)
+                                .disabled(disclosure.busyServerID != nil || !localServers.isAvailable)
                             }
                             Button {
                                 Task { await togglePin(server) }
@@ -270,7 +270,7 @@ struct StatusMenu: View {
                             .buttonStyle(.plain)
                             .help("Pin \(server.location) to this menu")
                             .accessibilityLabel("Pin \(server.location) to menu bar popover")
-                            .disabled(busyServerID != nil || !localServers.isAvailable)
+                            .disabled(disclosure.busyServerID != nil || !localServers.isAvailable)
                         }
                         .font(.system(size: 9))
                         .foregroundStyle(.secondary)
@@ -328,7 +328,7 @@ struct StatusMenu: View {
             }
             Spacer(minLength: 1)
 
-            if busyServerID == server.id {
+            if disclosure.busyServerID == server.id {
                 ProgressView().controlSize(.small)
             } else if server.isRunning {
                 if server.isConfigured {
@@ -374,36 +374,36 @@ struct StatusMenu: View {
             .accessibilityLabel(server.isPinned ? "Unpin \(server.location)" : "Pin \(server.location) to menu bar popover")
             .buttonStyle(.plain)
             .foregroundStyle(server.isPinned ? Color.accentColor : Color.secondary)
-            .disabled(busyServerID != nil)
+            .disabled(disclosure.busyServerID != nil)
         }
         .buttonStyle(.plain)
         .font(.system(size: 9, weight: .medium))
         .foregroundStyle(.secondary)
         .padding(.vertical, 3)
-        .disabled(busyServerID != nil || !localServers.isAvailable)
+        .disabled(disclosure.busyServerID != nil || !localServers.isAvailable)
     }
 
     private func confirmAction(_ action: LocalServerAction, for server: LocalServer) {
-        pendingAction = action
-        pendingServer = server
-        showServerActionConfirmation = true
+        disclosure.pendingAction = action
+        disclosure.pendingServer = server
+        disclosure.showServerActionConfirmation = true
     }
 
     private func performPendingAction() {
-        guard let action = pendingAction, let server = pendingServer else { return }
+        guard let action = disclosure.pendingAction, let server = disclosure.pendingServer else { return }
         Task { await runAction(action, for: server) }
         clearPendingAction()
     }
 
     private func clearPendingAction() {
-        pendingAction = nil
-        pendingServer = nil
+        disclosure.pendingAction = nil
+        disclosure.pendingServer = nil
     }
 
     private func runAction(_ action: LocalServerAction, for server: LocalServer) async {
-        guard busyServerID == nil else { return }
-        busyServerID = server.id
-        defer { busyServerID = nil }
+        guard disclosure.busyServerID == nil else { return }
+        disclosure.busyServerID = server.id
+        defer { disclosure.busyServerID = nil }
         do {
             switch action {
             case .start: try await localServers.start(server)
@@ -411,20 +411,20 @@ struct StatusMenu: View {
             case .restart: try await localServers.restart(server)
             }
         } catch {
-            actionError = error.localizedDescription
-            showActionError = true
+            disclosure.actionError = error.localizedDescription
+            disclosure.showActionError = true
         }
     }
 
     private func togglePin(_ server: LocalServer) async {
-        guard busyServerID == nil else { return }
-        busyServerID = server.id
-        defer { busyServerID = nil }
+        guard disclosure.busyServerID == nil else { return }
+        disclosure.busyServerID = server.id
+        defer { disclosure.busyServerID = nil }
         do {
             try await localServers.setPinned(server, pinned: !server.isPinned)
         } catch {
-            actionError = error.localizedDescription
-            showActionError = true
+            disclosure.actionError = error.localizedDescription
+            disclosure.showActionError = true
         }
     }
 
