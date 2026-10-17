@@ -2196,7 +2196,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(500, json.dumps({"error": str(e)}))
         elif route == "/api/local-servers":
             if not self._loopback_client():
-                self._send(403, json.dumps({"error": "local server details are available only on this Mac"}))
+                self._send(403, json.dumps({"error": "local server details are available only on this machine"}))
                 return
             try:
                 self._send(200, json.dumps(LocalServerInventory(DATA_DIR).snapshot()))
@@ -2279,12 +2279,18 @@ class Handler(BaseHTTPRequestHandler):
         }
         if route in ("/api/settings", "/api/cache", "/api/update", "/api/devices", "/api/refresh", "/api/native", "/api/shutdown", "/api/sync", "/api/session-name", "/api/accounts") or route in local_server_routes:
             if route in local_server_routes and not self._loopback_client():
-                self._send(403, json.dumps({"error": "local servers can be managed only on this Mac"}))
+                self._send(403, json.dumps({"error": "local servers can be managed only on this machine"}))
                 return
             if not self._csrf_ok():
                 self._send(403, json.dumps({"error": "cross-site request refused"}))
                 return
-            length = int(self.headers.get("Content-Length", 0) or 0)
+            try:
+                length = int(self.headers.get("Content-Length", 0) or 0)
+                if length < 0 or (route in local_server_routes and length > 16384):
+                    raise ValueError("invalid body length")
+            except ValueError:
+                self._send(400, json.dumps({"error": "invalid request body length"}))
+                return
             raw = self.rfile.read(length) if length else b"{}"
             try:
                 body = json.loads(raw or b"{}")
@@ -2325,6 +2331,8 @@ class Handler(BaseHTTPRequestHandler):
                     result = devices_action(body)
                     notify_refresh()
                 elif route.startswith("/api/local-servers/"):
+                    if route in ("/api/local-servers/start", "/api/local-servers/stop", "/api/local-servers/restart") and body.get("confirmed") is not True:
+                        raise ValueError("Confirm this server action before continuing.")
                     inventory = LocalServerInventory(DATA_DIR)
                     if route == "/api/local-servers/stop":
                         result = inventory.stop(body.get("id"))
@@ -2335,7 +2343,7 @@ class Handler(BaseHTTPRequestHandler):
                     elif route == "/api/local-servers/start":
                         result = inventory.start(body.get("profileId"))
                     else:
-                        result = inventory.restart(body.get("profileId"))
+                        result = inventory.restart(body.get("profileId"), body.get("serverId"))
                 else:
                     result = save_claude_cleanup_days(body.get("cleanupPeriodDays"))
                 self._send(200, json.dumps(result))

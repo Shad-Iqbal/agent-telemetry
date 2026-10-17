@@ -275,6 +275,19 @@ so that file stops being a cache and becomes the sole record. Two consequences:
 - Payload construction and cache actions share `_refresh_lock` with parsing. Aggregates
   mutate in place, so copying only the outer file list is not a consistent snapshot.
 
+## Local server controls
+
+`local_servers.py` owns macOS listener discovery and the private `.local_servers.json`
+inventory beside `--data-dir`. Windows/Linux return `supported:false`; they must still
+import and run the dashboard and installed clients. Both macOS UI surfaces use the
+Python API; do not reintroduce a separate native scanner/writer when the backend is
+unavailable. Saved commands never belong in the ledger, health, summary or peer exports.
+All endpoints are loopback-only; writes use `_csrf_ok()`. Start/Stop/Restart require
+`confirmed:true`, and Restart also supplies the confirmed `serverId`. Keep process
+identity checks, per-profile lifecycle serialization, inventory thread/file locks,
+and failure preservation. No command inference, environment capture, auto-start,
+force-kill on timeout or ledger rebuild. See docs/local-servers.md.
+
 ## Account snapshots
 
 Cost's bottom subscription-limit card appears only for Codex/Claude sessions active

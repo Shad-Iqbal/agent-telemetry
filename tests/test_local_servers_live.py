@@ -1,0 +1,87 @@
+"""macOS smoke test against disposable test-owned listeners, never user servers."""
+import os
+from pathlib import Path
+import shlex
+import shutil
+import socket
+import subprocess
+import sys
+import tempfile
+import time
+import unittest
+from unittest.mock import patch
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import local_servers as L
+
+
+@unittest.skipUnless(sys.platform == "darwin" and shutil.which("lsof"), "Requires macOS listener discovery")
+class LocalServerLiveTests(unittest.TestCase):
+    def test_disposable_server_configure_stop_start_and_restart(self):
+        with tempfile.TemporaryDirectory(prefix="telemetry-owned-server-") as temporary:
+            root = Path(temporary)
+            project = root / "project"
+            project.mkdir()
+            inventory = L.LocalServerInventory(str(root / "inventory"))
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as reservation:
+                reservation.bind(("127.0.0.1", 0))
+                port = reservation.getsockname()[1]
+            arguments = [sys.executable, "-I", "-m", "http.server", str(port), "--bind", "127.0.0.1"]
+            launch = subprocess.Popen
+            children = []
+
+            def owned_launch(*args, **kwargs):
+                child = launch(*args, **kwargs)
+                children.append(child)
+                return child
+
+            # Track only explicit test launches. Discovery's subprocess.run uses
+            # Popen too; the wrapper deliberately captures those short-lived
+            # children as well so every process we clean up was created here.
+            with patch.object(L.subprocess, "Popen", side_effect=owned_launch):
+                try:
+                    first = subprocess.Popen(arguments, cwd=project, stdin=subprocess.DEVNULL,
+                                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                             start_new_session=True)
+                    deadline = time.monotonic() + 15
+                    server = None
+                    while time.monotonic() < deadline:
+                        snapshot = inventory.snapshot()
+                        server = next((row for row in snapshot["servers"]
+                                       if row["pid"] == first.pid and row["port"] == port
+                                       and row["cwd"] == os.path.realpath(project)), None)
+                        if server:
+                            break
+                        if first.poll() is not None:
+                            self.fail("Disposable test server exited before discovery")
+                        time.sleep(0.1)
+                    self.assertIsNotNone(server, "Disposable listener was not discovered")
+                    command = " ".join(shlex.quote(argument) for argument in arguments)
+                    profile_id = inventory.configure(server["id"], command)["profileId"]
+                    inventory.set_pinned(server["id"], True)
+                    inventory.stop(server["id"])
+                    first.wait(timeout=5)
+                    started = inventory.start(profile_id)["server"]
+                    self.assertEqual(started["cwd"], os.path.realpath(project))
+                    self.assertTrue(started["isPinned"])
+                    restarted = inventory.restart(profile_id, started["id"])["server"]
+                    self.assertNotEqual(restarted["id"], started["id"])
+                    self.assertEqual(restarted["profileId"], profile_id)
+                    self.assertTrue(restarted["isPinned"])
+                    inventory.stop(restarted["id"])
+                finally:
+                    for child in children:
+                        if child.poll() is None:
+                            child.terminate()
+                    for child in children:
+                        try:
+                            child.wait(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            # These are test-created subprocesses, never a
+                            # discovered process or an existing dashboard.
+                            child.kill()
+                            child.wait(timeout=5)
+
+
+if __name__ == "__main__":
+    unittest.main()
