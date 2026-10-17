@@ -45,24 +45,35 @@ class LocalServerLiveTests(unittest.TestCase):
                                              start_new_session=True)
                     deadline = time.monotonic() + 15
                     server = None
+                    observed = []
                     while time.monotonic() < deadline:
                         snapshot = inventory.snapshot()
+                        observed = [row for row in snapshot["servers"]
+                                    if row["pid"] == first.pid or row["port"] == port]
                         server = next((row for row in snapshot["servers"]
                                        if row["pid"] == first.pid and row["port"] == port
-                                       and row["cwd"] == os.path.realpath(project)), None)
+                                       and os.path.samefile(row["cwd"], project)), None)
                         if server:
                             break
                         if first.poll() is not None:
                             self.fail("Disposable test server exited before discovery")
                         time.sleep(0.1)
-                    self.assertIsNotNone(server, "Disposable listener was not discovered")
+                    if server is None:
+                        # Only fixture-owned PID/port metadata enters this error.
+                        listener = L._run([L._LSOF, "-a", "-p", str(first.pid), "-nP",
+                                           "-iTCP", "-sTCP:LISTEN", "-Fpcn"])
+                        self.fail("Disposable listener was not discovered: " + repr({
+                            "pid": first.pid, "port": port, "project": str(project),
+                            "supported": snapshot.get("supported"), "rows": observed,
+                            "listener": listener.stdout if listener else None,
+                        }))
                     command = " ".join(shlex.quote(argument) for argument in arguments)
                     profile_id = inventory.configure(server["id"], command)["profileId"]
                     inventory.set_pinned(server["id"], True)
                     inventory.stop(server["id"])
                     first.wait(timeout=5)
                     started = inventory.start(profile_id)["server"]
-                    self.assertEqual(started["cwd"], os.path.realpath(project))
+                    self.assertTrue(os.path.samefile(started["cwd"], project))
                     self.assertTrue(started["isPinned"])
                     restarted = inventory.restart(profile_id, started["id"])["server"]
                     self.assertNotEqual(restarted["id"], started["id"])
