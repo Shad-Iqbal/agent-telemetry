@@ -96,6 +96,10 @@ final class MenuBarPopoverController: NSObject, ObservableObject, NSPopoverDeleg
         statusItem?.button?.highlight(false)
     }
 
+    func popoverDidShow(_ notification: Notification) {
+        Task { await localServers?.refresh() }
+    }
+
     private func resizePopoverFromContent() {
         DispatchQueue.main.async { [weak self] in
             guard let self, self.popover.isShown else { return }

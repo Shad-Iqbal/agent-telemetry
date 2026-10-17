@@ -2270,7 +2270,13 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         route = self.path.split("?")[0]
-        local_server_routes = {"/api/local-servers/stop"}
+        local_server_routes = {
+            "/api/local-servers/stop",
+            "/api/local-servers/configure",
+            "/api/local-servers/pin",
+            "/api/local-servers/start",
+            "/api/local-servers/restart",
+        }
         if route in ("/api/settings", "/api/cache", "/api/update", "/api/devices", "/api/refresh", "/api/native", "/api/shutdown", "/api/sync", "/api/session-name", "/api/accounts") or route in local_server_routes:
             if route in local_server_routes and not self._loopback_client():
                 self._send(403, json.dumps({"error": "local servers can be managed only on this Mac"}))
@@ -2318,8 +2324,18 @@ class Handler(BaseHTTPRequestHandler):
                 elif route == "/api/devices":
                     result = devices_action(body)
                     notify_refresh()
-                elif route == "/api/local-servers/stop":
-                    result = LocalServerInventory(DATA_DIR).stop(body.get("id"))
+                elif route.startswith("/api/local-servers/"):
+                    inventory = LocalServerInventory(DATA_DIR)
+                    if route == "/api/local-servers/stop":
+                        result = inventory.stop(body.get("id"))
+                    elif route == "/api/local-servers/configure":
+                        result = inventory.configure(body.get("id"), body.get("command"))
+                    elif route == "/api/local-servers/pin":
+                        result = inventory.set_pinned(body.get("id"), body.get("pinned"))
+                    elif route == "/api/local-servers/start":
+                        result = inventory.start(body.get("profileId"))
+                    else:
+                        result = inventory.restart(body.get("profileId"))
                 else:
                     result = save_claude_cleanup_days(body.get("cleanupPeriodDays"))
                 self._send(200, json.dumps(result))

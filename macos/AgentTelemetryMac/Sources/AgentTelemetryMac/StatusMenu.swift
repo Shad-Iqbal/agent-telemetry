@@ -1,6 +1,29 @@
 import AppKit
 import SwiftUI
 
+private enum LocalServerAction: Equatable {
+    case start
+    case stop
+    case restart
+
+    func title(for server: LocalServer?) -> String {
+        let process = server?.process ?? "server"
+        switch self {
+        case .start: return "Start \(process)?"
+        case .stop: return "Stop \(process)?"
+        case .restart: return "Restart \(process)?"
+        }
+    }
+
+    var buttonTitle: String {
+        switch self {
+        case .start: return "Start server"
+        case .stop: return "Stop server"
+        case .restart: return "Restart server"
+        }
+    }
+}
+
 @MainActor
 private final class DisclosureState: ObservableObject {
     @Published var expanded = false
@@ -17,11 +40,12 @@ struct StatusMenu: View {
 
     @StateObject private var disclosure = DisclosureState()
     @State private var recentServersExpanded = false
-    @State private var pendingStop: LocalServer?
-    @State private var showStopConfirmation = false
-    @State private var stopError: String?
-    @State private var showStopError = false
-    @State private var stoppingServerID: String?
+    @State private var pendingServer: LocalServer?
+    @State private var pendingAction: LocalServerAction?
+    @State private var showServerActionConfirmation = false
+    @State private var actionError: String?
+    @State private var showActionError = false
+    @State private var busyServerID: String?
     private var detailsExpanded: Bool {
         get { disclosure.expanded }
         nonmutating set { disclosure.expanded = newValue }
@@ -128,33 +152,27 @@ struct StatusMenu: View {
             backend.refreshIntervalDidChange()
         }
         .confirmationDialog(
-            "Stop \(pendingStop?.process ?? "server")?",
-            isPresented: $showStopConfirmation,
+            pendingAction?.title(for: pendingServer) ?? "Manage server?",
+            isPresented: $showServerActionConfirmation,
             titleVisibility: .visible
         ) {
-            Button("Stop server", role: .destructive) {
-                guard let server = pendingStop else { return }
-                stoppingServerID = server.id
-                Task {
-                    defer { stoppingServerID = nil; pendingStop = nil }
-                    do {
-                        try await localServers.stop(server)
-                    } catch {
-                        stopError = error.localizedDescription
-                        showStopError = true
-                    }
+            Button(pendingAction?.buttonTitle ?? "Stop server", role: .destructive) {
+                performPendingAction()
+            }
+            Button("Cancel", role: .cancel) { clearPendingAction() }
+        } message: {
+            if let server = pendingServer, let action = pendingAction {
+                if action == .restart {
+                    Text("AgentTelemetry will stop \(server.process) (PID \(server.pid)), then run its saved launch command.")
+                } else {
+                    Text("AgentTelemetry will send SIGTERM to \(server.process) (PID \(server.pid)). This may stop every port owned by that process.")
                 }
             }
-            Button("Cancel", role: .cancel) { pendingStop = nil }
-        } message: {
-            if let server = pendingStop {
-                Text("AgentTelemetry will send a graceful termination signal to \(server.process) (PID \(server.pid)). This may stop every port owned by that process.")
-            }
         }
-        .alert("Couldn’t stop server", isPresented: $showStopError) {
+        .alert("Server action failed", isPresented: $showActionError) {
             Button("OK", role: .cancel) { }
         } message: {
-            Text(stopError ?? "Please refresh and try again.")
+            Text(actionError ?? "Please refresh and try again.")
         }
     }
 
@@ -179,50 +197,23 @@ struct StatusMenu: View {
                 .accessibilityLabel("Scan local servers")
             }
 
-            if localServers.runningServers.isEmpty {
+            if localServers.runningServers.isEmpty && featuredServers.isEmpty {
                 Text(localServers.isRefreshing ? "Scanning local ports…" : (localServers.errorMessage ?? "No local servers are running."))
                     .font(.system(size: 9))
                     .foregroundStyle(localServers.errorMessage == nil ? Color.secondary : Color.orange)
                     .padding(.vertical, 3)
-            } else {
-                ForEach(localServers.runningServers.prefix(3)) { server in
-                    HStack(spacing: 8) {
-                        Circle()
-                            .fill(Color.green)
-                            .frame(width: 6, height: 6)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(server.location)
-                                .font(.system(size: 10, weight: .semibold))
-                                .lineLimit(1)
-                            Text(server.displayDetails)
-                                .font(.system(size: 9))
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                        }
-                        Spacer(minLength: 2)
-                        if stoppingServerID == server.id {
-                            ProgressView().controlSize(.small)
-                        } else {
-                            Button("Stop") {
-                                pendingStop = server
-                                showStopConfirmation = true
-                            }
-                            .font(.system(size: 9, weight: .medium))
-                            .buttonStyle(.plain)
-                            .foregroundStyle(.secondary)
-                            .disabled(!server.isRunning)
-                        }
-                    }
-                    .padding(.vertical, 3)
-                }
             }
 
-            if !localServers.recentlyStopped.isEmpty {
+            ForEach(featuredServers) { server in
+                serverRow(server)
+            }
+
+            if !recentServers.isEmpty {
                 Button {
                     recentServersExpanded.toggle()
                 } label: {
                     HStack {
-                        Text("\(localServers.recentlyStopped.count) stopped recently")
+                        Text("\(recentServers.count) stopped recently")
                         Spacer()
                         Image(systemName: recentServersExpanded ? "chevron.down" : "chevron.right")
                     }
@@ -232,13 +223,34 @@ struct StatusMenu: View {
                 }
                 .buttonStyle(.plain)
                 if recentServersExpanded {
-                    ForEach(localServers.recentlyStopped.prefix(2)) { server in
+                    ForEach(recentServers.prefix(2)) { server in
                         HStack {
                             Text("\(server.location) · \(server.displayDetails)")
                                 .lineLimit(1)
                             Spacer(minLength: 4)
                             Text(server.stoppedAt.map(shortTime) ?? "Stopped")
                                 .lineLimit(1)
+                            if server.isConfigured {
+                                Button {
+                                    Task { await runAction(.start, for: server) }
+                                } label: {
+                                    Image(systemName: "play.fill")
+                                }
+                                .buttonStyle(.plain)
+                                .foregroundStyle(Color.accentColor)
+                                .help("Start \(server.location)")
+                                .accessibilityLabel("Start \(server.location)")
+                                .disabled(busyServerID != nil)
+                            }
+                            Button {
+                                Task { await togglePin(server) }
+                            } label: {
+                                Image(systemName: "pin")
+                            }
+                            .buttonStyle(.plain)
+                            .help("Pin \(server.location) to this menu")
+                            .accessibilityLabel("Pin \(server.location) to menu bar popover")
+                            .disabled(busyServerID != nil)
                         }
                         .font(.system(size: 9))
                         .foregroundStyle(.secondary)
@@ -262,6 +274,138 @@ struct StatusMenu: View {
         .padding(10)
         .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 9))
         .overlay(RoundedRectangle(cornerRadius: 9).stroke(Color.primary.opacity(0.07)))
+    }
+
+    private var featuredServers: [LocalServer] {
+        let sorted = localServers.servers.sorted {
+            if $0.isPinned != $1.isPinned { return $0.isPinned }
+            if $0.isRunning != $1.isRunning { return $0.isRunning }
+            return $0.lastSeen > $1.lastSeen
+        }
+        let pinned = sorted.filter(\.isPinned)
+        let live = sorted.filter { $0.isRunning && !$0.isPinned }
+        return pinned + Array(live.prefix(max(0, 3 - pinned.count)))
+    }
+
+    private var recentServers: [LocalServer] {
+        localServers.recentlyStopped.filter { !$0.isPinned }
+    }
+
+    @ViewBuilder
+    private func serverRow(_ server: LocalServer) -> some View {
+        HStack(spacing: 7) {
+            Circle()
+                .fill(server.isRunning ? Color.green : Color.secondary.opacity(0.65))
+                .frame(width: 6, height: 6)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(server.location)
+                    .font(.system(size: 10, weight: .semibold))
+                    .lineLimit(1)
+                Text(server.displayDetails)
+                    .font(.system(size: 9))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 1)
+
+            if busyServerID == server.id {
+                ProgressView().controlSize(.small)
+            } else if server.isRunning {
+                if server.isConfigured {
+                    Button {
+                        confirmAction(.restart, for: server)
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                    .help("Restart \(server.location)")
+                    .accessibilityLabel("Restart \(server.location)")
+                } else {
+                    Button("Configure") { openLocalServers() }
+                        .font(.system(size: 9, weight: .medium))
+                        .help("Save a launch command in Local servers")
+                }
+                Button {
+                    confirmAction(.stop, for: server)
+                } label: {
+                    Image(systemName: "stop.fill")
+                }
+                .help("Stop \(server.location)")
+                .accessibilityLabel("Stop \(server.location)")
+            } else if server.isConfigured {
+                Button {
+                    Task { await runAction(.start, for: server) }
+                } label: {
+                    Image(systemName: "play.fill")
+                }
+                .help("Start \(server.location)")
+                .accessibilityLabel("Start \(server.location)")
+            } else {
+                Button("Configure") { openLocalServers() }
+                    .font(.system(size: 9, weight: .medium))
+                    .help("Save a launch command in Local servers")
+            }
+
+            Button {
+                Task { await togglePin(server) }
+            } label: {
+                Image(systemName: server.isPinned ? "pin.fill" : "pin")
+            }
+            .help(server.isPinned ? "Unpin \(server.location)" : "Pin \(server.location) to this menu")
+            .accessibilityLabel(server.isPinned ? "Unpin \(server.location)" : "Pin \(server.location) to menu bar popover")
+            .buttonStyle(.plain)
+            .foregroundStyle(server.isPinned ? Color.accentColor : Color.secondary)
+            .disabled(busyServerID != nil)
+        }
+        .buttonStyle(.plain)
+        .font(.system(size: 9, weight: .medium))
+        .foregroundStyle(.secondary)
+        .padding(.vertical, 3)
+        .disabled(busyServerID != nil)
+    }
+
+    private func confirmAction(_ action: LocalServerAction, for server: LocalServer) {
+        pendingAction = action
+        pendingServer = server
+        showServerActionConfirmation = true
+    }
+
+    private func performPendingAction() {
+        guard let action = pendingAction, let server = pendingServer else { return }
+        Task { await runAction(action, for: server) }
+        clearPendingAction()
+    }
+
+    private func clearPendingAction() {
+        pendingAction = nil
+        pendingServer = nil
+    }
+
+    private func runAction(_ action: LocalServerAction, for server: LocalServer) async {
+        guard busyServerID == nil else { return }
+        busyServerID = server.id
+        defer { busyServerID = nil }
+        do {
+            switch action {
+            case .start: try await localServers.start(server)
+            case .stop: try await localServers.stop(server)
+            case .restart: try await localServers.restart(server)
+            }
+        } catch {
+            actionError = error.localizedDescription
+            showActionError = true
+        }
+    }
+
+    private func togglePin(_ server: LocalServer) async {
+        guard busyServerID == nil else { return }
+        busyServerID = server.id
+        defer { busyServerID = nil }
+        do {
+            try await localServers.setPinned(server, pinned: !server.isPinned)
+        } catch {
+            actionError = error.localizedDescription
+            showActionError = true
+        }
     }
 
     private func shortTime(_ stamp: String) -> String {

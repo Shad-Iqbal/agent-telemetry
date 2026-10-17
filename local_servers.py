@@ -12,6 +12,8 @@ import shutil
 import subprocess
 import tempfile
 import getpass
+import threading
+import time
 from datetime import datetime, timedelta, timezone
 
 try:
@@ -25,6 +27,8 @@ _PS = shutil.which("ps") or "/bin/ps"
 _HISTORY_DAYS = 30
 _MAX_SERVERS = 100
 _PORT_RE = re.compile(r"^(.*):(\d+)$")
+_PROFILE_START_LOCKS = {}
+_PROFILE_START_LOCKS_GUARD = threading.Lock()
 
 
 def _now():
@@ -47,6 +51,19 @@ def _server_id(pid, started_at, port):
     return hashlib.sha256(identity.encode("utf-8")).hexdigest()[:20]
 
 
+def _profile_id(cwd, port):
+    directory = os.path.realpath(os.path.expanduser(str(cwd).strip()))
+    identity = f"{directory}:{int(port)}"
+    return hashlib.sha256(identity.encode("utf-8")).hexdigest()[:20]
+
+
+def _uses_running_port(server, port):
+    try:
+        return server.get("state") == "running" and int(server.get("port")) == port
+    except (AttributeError, TypeError, ValueError):
+        return False
+
+
 def _is_local_server(item):
     """Keep project/service listeners; omit OS processes running from /."""
     cwd = item.get("cwd")
@@ -61,6 +78,10 @@ def _is_local_server(item):
 @contextlib.contextmanager
 def _inventory_lock(path):
     with open(path, "a+b") as lock:
+        try:
+            os.fchmod(lock.fileno(), 0o600)
+        except (AttributeError, OSError):
+            pass
         if fcntl is not None:
             fcntl.lockf(lock.fileno(), fcntl.LOCK_EX)
             try:
@@ -81,6 +102,15 @@ def _inventory_lock(path):
                 lock.seek(0)
                 msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
         else:
+            yield
+
+
+@contextlib.contextmanager
+def _profile_start_lock(path):
+    with _PROFILE_START_LOCKS_GUARD:
+        lock = _PROFILE_START_LOCKS.setdefault(path, threading.Lock())
+    with lock:
+        with _inventory_lock(path):
             yield
 
 
@@ -179,7 +209,7 @@ def _listener_rows(uid):
 
 
 class LocalServerInventory:
-    """Persist up to 100 listeners last observed in the past 30 days."""
+    """Persist recent listeners and user-configured server profiles."""
 
     def __init__(self, data_dir):
         self.path = os.path.join(data_dir, ".local_servers.json")
@@ -211,10 +241,148 @@ class LocalServerInventory:
                 raise ValueError("macOS denied permission to stop that process.")
             return {"ok": True, "server": server}
 
+    def configure(self, server_id, command):
+        command = command.strip() if isinstance(command, str) else ""
+        if not command or len(command) > 4096 or "\0" in command:
+            raise ValueError("Enter a launch command of 1–4096 characters.")
+        os.makedirs(os.path.dirname(self.path), mode=0o700, exist_ok=True)
+        with _inventory_lock(self.lock_path):
+            servers = self._scan_and_store()
+            server = next((item for item in servers if item["id"] == server_id), None)
+            if server is None:
+                raise ValueError("That server is no longer in the recent list. Refresh and try again.")
+            cwd = server.get("cwd")
+            if not isinstance(cwd, str) or not os.path.isdir(cwd):
+                raise ValueError("The server folder is no longer available. Configure it again from a running server.")
+            try:
+                port = int(server.get("port"))
+            except (TypeError, ValueError):
+                raise ValueError("The server port is invalid. Configure it again from a running server.")
+            if not 1 <= port <= 65535:
+                raise ValueError("The server port is invalid. Configure it again from a running server.")
+            profile_id = _profile_id(cwd, port)
+            payload = self._read_payload()
+            profiles = {item["id"]: item for item in payload["profiles"] if isinstance(item, dict) and item.get("id")}
+            profile = profiles.get(profile_id, {})
+            profiles[profile_id] = {
+                "id": profile_id,
+                "cwd": os.path.realpath(os.path.expanduser(cwd)),
+                "port": port,
+                "command": command,
+                "isPinned": bool(profile.get("isPinned")),
+            }
+            self._write({**payload, "profiles": list(profiles.values())})
+        return {"ok": True, "profileId": profile_id}
+
+    def set_pinned(self, server_id, pinned):
+        if type(pinned) is not bool:
+            raise ValueError("Choose whether to pin or unpin this server.")
+        os.makedirs(os.path.dirname(self.path), mode=0o700, exist_ok=True)
+        with _inventory_lock(self.lock_path):
+            servers = self._scan_and_store()
+            server = next((item for item in servers if item["id"] == server_id), None)
+            if server is None:
+                raise ValueError("That server is no longer in the recent list. Refresh and try again.")
+            profile_id = _profile_id(server["cwd"], server["port"])
+            payload = self._read_payload()
+            profiles = {item["id"]: item for item in payload["profiles"] if isinstance(item, dict) and item.get("id")}
+            profile = profiles.get(profile_id, {
+                "id": profile_id,
+                "cwd": os.path.realpath(os.path.expanduser(server["cwd"])),
+                "port": int(server["port"]),
+                "command": "",
+            })
+            if pinned:
+                profile["isPinned"] = True
+                profiles[profile_id] = profile
+            elif profile.get("command"):
+                profile["isPinned"] = False
+                profiles[profile_id] = profile
+            else:
+                profiles.pop(profile_id, None)
+            self._write({**payload, "profiles": list(profiles.values())})
+        return {"ok": True, "profileId": profile_id, "isPinned": pinned}
+
+    def start(self, profile_id):
+        if not isinstance(profile_id, str) or not re.fullmatch(r"[0-9a-f]{20}", profile_id):
+            raise ValueError("Choose a valid configured server to start.")
+        os.makedirs(os.path.dirname(self.path), mode=0o700, exist_ok=True)
+        with _profile_start_lock(f"{self.lock_path}.start.{profile_id}"):
+            with _inventory_lock(self.lock_path):
+                servers = self._scan_and_store()
+                payload = self._read_payload()
+                profile = next((item for item in payload["profiles"] if item.get("id") == profile_id), None)
+                command = profile.get("command") if profile else None
+                if not isinstance(command, str) or not command.strip() or "\0" in command or len(command) > 4096:
+                    raise ValueError("Save a launch command for this server before starting it.")
+                if any(item.get("profileId") == profile_id and item.get("state") == "running" for item in servers):
+                    raise ValueError("That server is already running.")
+                cwd = profile.get("cwd")
+                if not isinstance(cwd, str) or not os.path.isdir(cwd):
+                    raise ValueError("The saved server folder no longer exists. Configure the launch command again.")
+                try:
+                    port = int(profile.get("port"))
+                except (TypeError, ValueError):
+                    raise ValueError("The saved server port is invalid. Configure the launch command again.")
+                if not 1 <= port <= 65535:
+                    raise ValueError("The saved server port is invalid. Configure the launch command again.")
+                if _profile_id(cwd, port) != profile_id:
+                    raise ValueError("The saved server profile is invalid. Configure the launch command again.")
+                if any(_uses_running_port(item, port) for item in servers):
+                    raise ValueError(f"Port {port} is already used by another local server.")
+                try:
+                    process = subprocess.Popen(
+                        ["/bin/zsh", "-lc", command],
+                        cwd=cwd,
+                        stdin=subprocess.DEVNULL,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        start_new_session=True,
+                        close_fds=True,
+                    )
+                except OSError as error:
+                    raise ValueError(f"Could not launch the saved command: {error.strerror or error}.")
+
+            deadline = time.monotonic() + 15
+            while time.monotonic() < deadline:
+                snapshot = self.snapshot()
+                server = next((item for item in snapshot["servers"]
+                               if item.get("profileId") == profile_id and item.get("state") == "running"), None)
+                if server:
+                    return {"ok": True, "server": server}
+                exit_status = process.poll()
+                if exit_status is not None:
+                    raise ValueError(f"The launch command exited with status {exit_status} before port {port} opened.")
+                time.sleep(0.4)
+            raise ValueError(f"The launch command did not open port {port} within 15 seconds.")
+
+    def restart(self, profile_id):
+        if not isinstance(profile_id, str) or not profile_id:
+            raise ValueError("Choose a server to restart.")
+        snapshot = self.snapshot()
+        server = next((item for item in snapshot["servers"]
+                       if item.get("profileId") == profile_id and item.get("state") == "running"), None)
+        if server is None:
+            raise ValueError("That server is no longer running. Refresh the list and try again.")
+        self.stop(server["id"])
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            snapshot = self.snapshot()
+            if not any(item.get("profileId") == profile_id and item.get("state") == "running"
+                       for item in snapshot["servers"]):
+                return self.start(profile_id)
+            time.sleep(0.3)
+        raise ValueError("The server did not stop in time, so it was not restarted.")
+
     def _scan_and_store(self):
         now = _now()
         stamp = _stamp(now)
-        old = self._read()
+        payload = self._read_payload()
+        profiles = {
+            item["id"]: item for item in payload["profiles"]
+            if isinstance(item, dict) and isinstance(item.get("id"), str)
+        }
+        old = payload["servers"]
         by_id = {}
         for item in old:
             if not isinstance(item, dict) or not item.get("id"):
@@ -260,26 +428,47 @@ class LocalServerInventory:
                 item["state"] = "stopped"
                 item["stoppedAt"] = stamp
 
+        for item in by_id.values():
+            try:
+                profile_id = _profile_id(item.get("cwd", ""), item.get("port"))
+            except (TypeError, ValueError):
+                profile_id = ""
+            profile = profiles.get(profile_id, {})
+            item["profileId"] = profile_id or None
+            item["isConfigured"] = bool(profile.get("command"))
+            item["isPinned"] = bool(profile.get("isPinned"))
+
         cutoff = now - timedelta(days=_HISTORY_DAYS)
         kept = []
         for item in by_id.values():
             last_seen = _parse_stamp(item.get("lastSeen"))
-            if last_seen and last_seen >= cutoff:
+            if item.get("isPinned") or (last_seen and last_seen >= cutoff):
                 kept.append(item)
-        kept.sort(key=lambda item: (item.get("state") == "running", item.get("lastSeen", "")), reverse=True)
+        kept.sort(key=lambda item: (
+            item.get("isPinned", False), item.get("state") == "running", item.get("lastSeen", "")
+        ), reverse=True)
         kept = kept[:_MAX_SERVERS]
-        payload = {"updatedAt": stamp, "servers": kept}
+        payload = {"updatedAt": stamp, "servers": kept, "profiles": list(profiles.values())}
         self._write(payload)
         return {"updatedAt": stamp, "servers": [item for item in kept if _is_local_server(item)]}
 
     def _read(self):
+        return self._read_payload()["servers"]
+
+    def _read_payload(self):
         try:
             with open(self.path, "r", encoding="utf-8") as file:
                 payload = json.load(file)
             servers = payload.get("servers", [])
-            return servers if isinstance(servers, list) else []
+            profiles = payload.get("profiles", [])
+            return {
+                "updatedAt": payload.get("updatedAt", ""),
+                "servers": servers if isinstance(servers, list) else [],
+                "profiles": [item for item in profiles if isinstance(item, dict) and isinstance(item.get("id"), str)]
+                    if isinstance(profiles, list) else [],
+            }
         except (OSError, ValueError, TypeError):
-            return []
+            return {"updatedAt": "", "servers": [], "profiles": []}
 
     def _write(self, payload):
         directory = os.path.dirname(self.path)
@@ -290,6 +479,7 @@ class LocalServerInventory:
                 file.flush()
                 os.fsync(file.fileno())
             os.replace(temporary, self.path)
+            os.chmod(self.path, 0o600)
         finally:
             try:
                 os.unlink(temporary)

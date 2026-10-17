@@ -6,6 +6,9 @@ const VIEW_TITLES = {overview:"Overview", cost:"Cost", models:"Models", tools:"T
   projects:"Projects", sessions:"Sessions", optimize:"Optimize", storage:"Storage", "local-servers":"Local servers"};
 let LOCAL_SERVERS={servers:[],updatedAt:""};
 let LOCAL_SERVER_SEARCH="";
+let LOCAL_SERVER_CONFIG_ID=null;
+let LOCAL_SERVER_BUSY_ID=null;
+let LOCAL_SERVER_COMMAND_DRAFT={};
 
 /* ---------------- measure (one switch for every view) ---------------- */
 function metricOf(kind){
@@ -2507,8 +2510,9 @@ function renderLocalServers(){
   const all=LOCAL_SERVERS.servers||[];
   const q=LOCAL_SERVER_SEARCH.trim().toLowerCase();
   const matches=s=>!q || [s.process,s.project,s.cwd,s.port].some(v=>String(v||"").toLowerCase().includes(q));
-  const running=all.filter(s=>s.state==="running"&&matches(s));
-  const stopped=all.filter(s=>s.state!=="running"&&matches(s));
+  const byPriority=(a,b)=>Number(Boolean(b.isPinned))-Number(Boolean(a.isPinned))||String(b.lastSeen||"").localeCompare(String(a.lastSeen||""));
+  const running=all.filter(s=>s.state==="running"&&matches(s)).sort(byPriority);
+  const stopped=all.filter(s=>s.state!=="running"&&matches(s)).sort(byPriority);
   const projects=new Set(all.map(s=>s.project).filter(Boolean));
   document.getElementById("localServerCount").textContent=all.filter(s=>s.state==="running").length||"";
   const scanTime=localServerTime(LOCAL_SERVERS.updatedAt);
@@ -2518,30 +2522,42 @@ function renderLocalServers(){
     const title=project||process;
     const address=s.host&&s.host!=="*"?s.host+":"+s.port:"localhost:"+s.port;
     const detail=project?`${address} · ${process}`:address;
+    const busy=LOCAL_SERVER_BUSY_ID===s.id;
+    const configureOpen=LOCAL_SERVER_CONFIG_ID===s.id;
+    const stateAction=active?`<a class="btn sm" href="http://localhost:${Number(s.port)}" target="_blank" rel="noopener">Open ↗</a>
+      ${s.isConfigured?`<button class="btn sm" data-local-server-restart="${esc(s.id)}" ${busy?"disabled":""}>Restart</button>`:""}
+      <button class="btn sm danger" data-local-server-stop="${esc(s.id)}" ${busy?"disabled":""}>Stop</button>`:
+      (s.isConfigured?`<button class="btn sm primary" data-local-server-start="${esc(s.id)}" ${busy?"disabled":""}>Start</button>`:`<span class="ls-scan-time">Stopped ${esc(localServerTime(s.stoppedAt))}</span>`)
+    const actionButtons=`${stateAction}<button class="btn sm ${s.isPinned?"on":""}" data-local-server-pin="${esc(s.id)}" aria-pressed="${Boolean(s.isPinned)}" ${busy?"disabled":""}>${s.isPinned?"Pinned":"Pin"}</button>
+      <button class="btn sm" data-local-server-config="${esc(s.id)}" ${busy?"disabled":""}>${s.isConfigured?"Replace command":"Configure"}</button>`;
     return `<div class="ls-row">
       <span class="ls-dot${active?"":" stopped"}" aria-hidden="true"></span>
       <div class="ls-copy"><strong>${esc(title)} · PID ${Number(s.pid)||"?"}</strong>
         <span>${esc(detail)}</span>
         ${s.cwd?`<code title="${esc(s.cwd)}">${esc(s.cwd)}</code>`:""}
       </div>
-      <div class="ls-actions">${active?`<a class="btn sm" href="http://localhost:${Number(s.port)}" target="_blank" rel="noopener">Open ↗</a>
-        <button class="btn sm danger" data-local-server-stop="${esc(s.id)}">Stop</button>`:`<span class="ls-scan-time">Stopped ${esc(localServerTime(s.stoppedAt))}</span>`}</div>
-    </div>`;
+      <div class="ls-actions">${busy?`<span class="ls-busy" role="status">Working…</span>`:""}${actionButtons}</div>
+    </div>${configureOpen?`<form class="ls-config" data-local-server-form="${esc(s.id)}">
+      <div><strong>Launch settings</strong><span>Runs only when you choose Start or Restart. Uses ${esc(s.cwd||"this folder")} and waits for port ${Number(s.port)}.</span></div>
+      <label>Launch command<input name="command" data-local-server-command="${esc(s.id)}" type="text" required maxlength="4096" autocomplete="off" spellcheck="false" placeholder="For example: npm run dev" value="${esc(LOCAL_SERVER_COMMAND_DRAFT[s.id]||"")}"></label>
+      <div class="ls-config-actions"><button class="btn sm primary" type="submit" ${busy?"disabled":""}>Save command</button><button class="btn sm" type="button" data-local-server-config-cancel ${busy?"disabled":""}>Cancel</button></div>
+    </form>`:""}`;
   };
   root.innerHTML=`<div class="eyebrow">LOCAL ACTIVITY</div>
     <div class="ls-heading"><div><h2>Local servers</h2><p>See what is listening on this Mac and revisit servers you ran recently.</p></div>
       <button class="btn" id="localServersRefresh"${LOCAL_SERVERS.loading?" disabled":""}>${LOCAL_SERVERS.loading?"Scanning…":"Scan again"}</button></div>
     ${LOCAL_SERVERS.error?`<div class="ls-error" role="alert">${esc(LOCAL_SERVERS.error)}</div>`:""}
+    ${LOCAL_SERVERS.actionError?`<div class="ls-error" role="alert">${esc(LOCAL_SERVERS.actionError)}</div>`:""}
     <div class="ls-stats">
       <div class="ls-stat"><div><label>Running now</label><strong>${all.filter(s=>s.state==="running").length}</strong></div><span class="ls-stat-ic"><svg class="ic"><use href="#i-servers"/></svg></span></div>
-      <div class="ls-stat"><div><label>Stopped recently</label><strong>${all.filter(s=>s.state!=="running").length}</strong></div><span class="ls-stat-ic neutral"><svg class="ic"><use href="#i-sessions"/></svg></span></div>
+      <div class="ls-stat"><div><label>Stopped</label><strong>${all.filter(s=>s.state!=="running").length}</strong></div><span class="ls-stat-ic neutral"><svg class="ic"><use href="#i-sessions"/></svg></span></div>
       <div class="ls-stat"><div><label>Projects seen</label><strong>${projects.size}</strong></div><span class="ls-stat-ic neutral"><svg class="ic"><use href="#i-projects"/></svg></span></div>
     </div>
     <div class="card ls-card"><div class="card-h"><div><h3>Listening now</h3><p class="card-sub">TCP ports owned by your user account</p></div><span class="ls-scan-time">Scanned ${esc(scanTime)}</span></div>
       <label class="search"><svg class="ic sm"><use href="#i-search"/></svg><input type="search" id="localServerSearch" value="${esc(LOCAL_SERVER_SEARCH)}" placeholder="Search process, project, or port…" aria-label="Search local servers"></label>
       <div class="ls-list">${running.map(s=>row(s,true)).join("")||`<div class="ls-empty">${q?"No running servers match this search.":LOCAL_SERVERS.loading?"Scanning local ports…":"No local servers are listening right now."}</div>`}</div>
     </div>
-    <div class="card ls-card"><div class="card-h"><div><h3>Stopped recently</h3><p class="card-sub">Servers seen in the last 30 days</p></div></div>
+    <div class="card ls-card"><div class="card-h"><div><h3>Stopped history</h3><p class="card-sub">Recent servers and entries pinned in the menu bar</p></div></div>
       <div class="ls-list">${stopped.map(s=>row(s,false)).join("")||`<div class="ls-empty">${q?"No stopped servers match this search.":"Stopped servers will appear here after they have been discovered."}</div>`}</div>
     </div>`;
 }
@@ -2674,29 +2690,96 @@ async function loadLocalServers(render=true){
 document.getElementById("tabs").addEventListener("click",e=>{
   const b=e.target.closest("button[data-v]"); if(b) setView(b.dataset.v);
 });
+async function postLocalServerAction(action,body,serverID){
+  LOCAL_SERVER_BUSY_ID=serverID||null;
+  LOCAL_SERVERS={...LOCAL_SERVERS,actionError:""};
+  renderLocalServers();
+  let actionError="";
+  try{
+    const response=await fetch(`/api/local-servers/${action}`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+    const payload=await response.json();
+    if(!response.ok) throw new Error(payload.error||`Could not ${action} that server.`);
+    if(action==="configure"){
+      LOCAL_SERVER_CONFIG_ID=null;
+      delete LOCAL_SERVER_COMMAND_DRAFT[body.id];
+    }
+  }catch(error){
+    actionError=error.message||`Could not ${action} that server.`;
+  }
+  LOCAL_SERVER_BUSY_ID=null;
+  await loadLocalServers(true);
+  if(actionError){
+    LOCAL_SERVERS={...LOCAL_SERVERS,actionError};
+    renderLocalServers();
+  }
+}
 document.addEventListener("click",async e=>{
   if(e.target.closest("#localServersRefresh")){
     await loadLocalServers(true);
     return;
   }
+  if(e.target.closest("[data-local-server-config-cancel]")){
+    if(LOCAL_SERVER_CONFIG_ID) delete LOCAL_SERVER_COMMAND_DRAFT[LOCAL_SERVER_CONFIG_ID];
+    LOCAL_SERVER_CONFIG_ID=null;
+    renderLocalServers();
+    return;
+  }
+  const configure=e.target.closest("[data-local-server-config]");
+  if(configure){
+    LOCAL_SERVER_CONFIG_ID=LOCAL_SERVER_CONFIG_ID===configure.dataset.localServerConfig?null:configure.dataset.localServerConfig;
+    LOCAL_SERVERS={...LOCAL_SERVERS,actionError:""};
+    renderLocalServers();
+    document.querySelector(`[data-local-server-form="${CSS.escape(LOCAL_SERVER_CONFIG_ID||"")}"] input[name="command"]`)?.focus();
+    return;
+  }
+  const pin=e.target.closest("[data-local-server-pin]");
+  const start=e.target.closest("[data-local-server-start]");
   const stop=e.target.closest("[data-local-server-stop]");
-  if(!stop) return;
-  const server=(LOCAL_SERVERS.servers||[]).find(s=>s.id===stop.dataset.localServerStop);
-  if(!server || server.state!=="running") return;
-  const name=`${server.process||"server"} (PID ${server.pid})`;
-  if(!confirm(`Stop ${name}? AgentTelemetry will send SIGTERM to the process. This can stop every port it owns.`)) return;
-  stop.disabled=true;
-  try{
-    const response=await fetch("/api/local-servers/stop",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id:server.id})});
-    const payload=await response.json();
-    if(!response.ok) throw new Error(payload.error||"Could not stop that server.");
-    await loadLocalServers(true);
-  }catch(error){
-    alert(error.message||"Could not stop that server.");
-    stop.disabled=false;
+  const restart=e.target.closest("[data-local-server-restart]");
+  const target=pin||start||stop||restart;
+  if(!target) return;
+  const id=target.dataset.localServerPin||target.dataset.localServerStart||target.dataset.localServerStop||target.dataset.localServerRestart;
+  const server=(LOCAL_SERVERS.servers||[]).find(s=>s.id===id);
+  if(!server) return;
+  if(pin){
+    await postLocalServerAction("pin",{id:server.id,pinned:!server.isPinned},server.id);
+    return;
+  }
+  if(start){
+    if(!server.profileId) return;
+    await postLocalServerAction("start",{profileId:server.profileId},server.id);
+    return;
+  }
+  if(stop){
+    if(server.state!=="running") return;
+    const name=`${server.process||"server"} (PID ${server.pid})`;
+    if(!confirm(`Stop ${name}? AgentTelemetry will send SIGTERM to the process. This can stop every port it owns.`)) return;
+    await postLocalServerAction("stop",{id:server.id},server.id);
+    return;
+  }
+  if(restart){
+    if(server.state!=="running"||!server.profileId) return;
+    const name=`${server.process||"server"} (PID ${server.pid})`;
+    if(!confirm(`Restart ${name}? AgentTelemetry will send SIGTERM to this process, then run its saved launch command.`)) return;
+    await postLocalServerAction("restart",{profileId:server.profileId},server.id);
   }
 });
+document.addEventListener("submit",async e=>{
+  const form=e.target.closest("[data-local-server-form]");
+  if(!form) return;
+  e.preventDefault();
+  const server=(LOCAL_SERVERS.servers||[]).find(s=>s.id===form.dataset.localServerForm);
+  const command=new FormData(form).get("command");
+  if(!server || typeof command!=="string") return;
+  LOCAL_SERVER_COMMAND_DRAFT[server.id]=command;
+  await postLocalServerAction("configure",{id:server.id,command},server.id);
+});
 document.addEventListener("input",e=>{
+  const command=e.target.closest("[data-local-server-command]");
+  if(command){
+    LOCAL_SERVER_COMMAND_DRAFT[command.dataset.localServerCommand]=command.value;
+    return;
+  }
   if(e.target.id!=="localServerSearch") return;
   LOCAL_SERVER_SEARCH=e.target.value;
   renderLocalServers();
