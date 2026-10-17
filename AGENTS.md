@@ -2,8 +2,10 @@
 
 **AgentTelemetry** — a local, **stdlib-only** dashboard that reads the logs your AI coding tools already write
 to this machine and shows tokens, estimated cost, and breakdowns by model / day / tool /
-project / hour. Nothing leaves the machine unless the user turns on sharing (see "Your
-devices") or explicitly requests a one-time account lookup (see "Account snapshots"). Nothing to install.
+project / hour. Inventory and telemetry stay local unless the user turns on sharing (see
+"Your devices") or explicitly requests a one-time account lookup (see "Account snapshots").
+An explicitly started saved server command can access the network with the user's permissions.
+Nothing to install.
 
 ```bash
 python3 dashboard.py            # http://127.0.0.1:7878

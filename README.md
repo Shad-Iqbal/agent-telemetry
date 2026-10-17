@@ -91,6 +91,7 @@ The **Local servers** tab and menu bar can list local project listeners, pin the
 and save an explicit launch command for Start and Restart. Process actions ask for
 confirmation. They require a ready macOS backend; Windows and Linux show the support
 limitation. Commands stay on this machine and are never included in device sharing.
+Running a saved command gives it your account's file and network access.
 See [behavior, privacy and limitations](docs/local-servers.md).
 
 ## Install the menu bar / system tray app

@@ -27,6 +27,8 @@ explicit confirmation and execute the saved command through `/bin/zsh -lc` in th
 directory. Shell startup files may run as part of that execution. The command inherits
 the backend's normal environment, excluding AgentTelemetry's backend control token;
 it does not recover the original server's environment or terminal setup.
+The inventory scan makes no network requests. A command you explicitly run can access
+files and the network with your account's permissions.
 
 Stop sends SIGTERM to the selected listener process after checking its identity
 again. Other ports owned by that process can stop too. Restart validates the saved
