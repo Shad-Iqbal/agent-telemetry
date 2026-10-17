@@ -26,7 +26,22 @@ class LocalServerLiveTests(unittest.TestCase):
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as reservation:
                 reservation.bind(("127.0.0.1", 0))
                 port = reservation.getsockname()[1]
-            arguments = [sys.executable, "-I", "-m", "http.server", str(port), "--bind", "127.0.0.1"]
+            script = project / "listener.py"
+            state = root / "listener-state.txt"
+            # HTTPServer performs reverse DNS during bind. This fixture tests
+            # TCP lifecycle only and deliberately has no hostname lookup.
+            script.write_text(
+                "import socket, sys, time\n"
+                "from pathlib import Path\n"
+                "state = Path(sys.argv[2])\n"
+                "state.write_text('starting')\n"
+                "with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:\n"
+                "    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)\n"
+                "    listener.bind(('127.0.0.1', int(sys.argv[1])))\n"
+                "    listener.listen(8)\n"
+                "    state.write_text('listening')\n"
+                "    while True: time.sleep(1)\n", encoding="utf-8")
+            arguments = [sys.executable, "-I", str(script), str(port), str(state)]
             launch = subprocess.Popen
             children = []
 
@@ -73,6 +88,7 @@ class LocalServerLiveTests(unittest.TestCase):
                             "listener": (listener.returncode, listener.stdout, listener.stderr) if listener else None,
                             "identity": identity.stdout if identity else None, "cwd": cwd,
                             "connect_status": connect_status,
+                            "fixture_state": state.read_text() if state.exists() else "not started",
                         }))
                     command = " ".join(shlex.quote(argument) for argument in arguments)
                     profile_id = inventory.configure(server["id"], command)["profileId"]
