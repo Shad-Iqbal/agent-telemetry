@@ -44,7 +44,7 @@ class WindowsServerLiveTests(unittest.TestCase):
                 "import os,socket,sys,time\n"
                 "from pathlib import Path\n"
                 "assert 'AGENT_TELEMETRY_CONTROL_TOKEN' not in os.environ\n"
-                "assert Path.cwd() == Path(sys.argv[2]).parent\n"
+                "assert os.path.samefile(Path.cwd(), Path(sys.argv[2]).parent)\n"
                 "with socket.socket(socket.AF_INET,socket.SOCK_STREAM) as s:\n"
                 " s.bind(('127.0.0.1',int(sys.argv[1])))\n"
                 " s.listen(8)\n"
