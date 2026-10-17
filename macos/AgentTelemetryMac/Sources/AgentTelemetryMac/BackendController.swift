@@ -109,6 +109,7 @@ final class BackendController: ObservableObject {
     @Published private(set) var summary = DailySummary.empty
     @Published private(set) var summaryStale = false
     @Published private(set) var lastSummaryUpdate: Date?
+    @Published private(set) var refreshGeneration = 0
     // Owned restarts can recreate the WebView; retain its current filters and tab.
     var lastDashboardURL: URL?
 
@@ -504,6 +505,7 @@ final class BackendController: ObservableObject {
             }
             summaryStale = false
             lastSummaryUpdate = Date()
+            refreshGeneration += 1
             status = ownsProcess ? .running : .connectedToExisting
         } catch {
             guard !Task.isCancelled, lifecycle == attempt, summaryRequest == requestID else { return }

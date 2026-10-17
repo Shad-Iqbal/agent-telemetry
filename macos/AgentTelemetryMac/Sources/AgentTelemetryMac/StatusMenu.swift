@@ -156,13 +156,16 @@ struct StatusMenu: View {
             isPresented: $showServerActionConfirmation,
             titleVisibility: .visible
         ) {
-            Button(pendingAction?.buttonTitle ?? "Stop server", role: .destructive) {
+            Button(pendingAction?.buttonTitle ?? "Stop server",
+                   role: pendingAction == .start ? nil : .destructive) {
                 performPendingAction()
             }
             Button("Cancel", role: .cancel) { clearPendingAction() }
         } message: {
             if let server = pendingServer, let action = pendingAction {
-                if action == .restart {
+                if action == .start {
+                    Text("AgentTelemetry will run the saved launch command in \(server.project.isEmpty ? server.cwd : server.project). This executes the command you saved for this server.")
+                } else if action == .restart {
                     Text("AgentTelemetry will stop \(server.process) (PID \(server.pid)), then run its saved launch command.")
                 } else {
                     Text("AgentTelemetry will send SIGTERM to \(server.process) (PID \(server.pid)). This may stop every port owned by that process.")
@@ -182,7 +185,9 @@ struct StatusMenu: View {
                 Text("Local servers")
                     .font(.system(size: 10, weight: .semibold))
                 Spacer(minLength: 4)
-                Text("\(localServers.runningServers.count) running")
+                Text(localServers.isAvailable
+                     ? "\(localServers.runningServers.count) running"
+                     : (localServers.servers.isEmpty ? "Unavailable" : "Last known state"))
                     .font(.system(size: 9, weight: .medium).monospacedDigit())
                     .foregroundStyle(.secondary)
                 Button {
@@ -193,15 +198,30 @@ struct StatusMenu: View {
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(.secondary)
-                .help("Scan local servers")
+                .help("Refresh local servers")
                 .accessibilityLabel("Scan local servers")
+                .disabled(!backend.isReady || localServers.isRefreshing)
+            }
+
+            if let message = localServers.errorMessage {
+                Text(message)
+                    .font(.system(size: 9))
+                    .foregroundStyle(localServers.isStale ? Color.orange : Color.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             if localServers.runningServers.isEmpty && featuredServers.isEmpty {
-                Text(localServers.isRefreshing ? "Scanning local ports…" : (localServers.errorMessage ?? "No local servers are running."))
-                    .font(.system(size: 9))
-                    .foregroundStyle(localServers.errorMessage == nil ? Color.secondary : Color.orange)
-                    .padding(.vertical, 3)
+                if localServers.isRefreshing {
+                    Text("Loading local servers…")
+                        .font(.system(size: 9))
+                        .foregroundStyle(.secondary)
+                        .padding(.vertical, 3)
+                } else if localServers.errorMessage == nil {
+                    Text("No local servers are running.")
+                        .font(.system(size: 9))
+                        .foregroundStyle(.secondary)
+                        .padding(.vertical, 3)
+                }
             }
 
             ForEach(featuredServers) { server in
@@ -232,7 +252,7 @@ struct StatusMenu: View {
                                 .lineLimit(1)
                             if server.isConfigured {
                                 Button {
-                                    Task { await runAction(.start, for: server) }
+                                    confirmAction(.start, for: server)
                                 } label: {
                                     Image(systemName: "play.fill")
                                 }
@@ -240,7 +260,7 @@ struct StatusMenu: View {
                                 .foregroundStyle(Color.accentColor)
                                 .help("Start \(server.location)")
                                 .accessibilityLabel("Start \(server.location)")
-                                .disabled(busyServerID != nil)
+                                .disabled(busyServerID != nil || !localServers.isAvailable)
                             }
                             Button {
                                 Task { await togglePin(server) }
@@ -250,7 +270,7 @@ struct StatusMenu: View {
                             .buttonStyle(.plain)
                             .help("Pin \(server.location) to this menu")
                             .accessibilityLabel("Pin \(server.location) to menu bar popover")
-                            .disabled(busyServerID != nil)
+                            .disabled(busyServerID != nil || !localServers.isAvailable)
                         }
                         .font(.system(size: 9))
                         .foregroundStyle(.secondary)
@@ -333,7 +353,7 @@ struct StatusMenu: View {
                 .accessibilityLabel("Stop \(server.location)")
             } else if server.isConfigured {
                 Button {
-                    Task { await runAction(.start, for: server) }
+                    confirmAction(.start, for: server)
                 } label: {
                     Image(systemName: "play.fill")
                 }
@@ -360,7 +380,7 @@ struct StatusMenu: View {
         .font(.system(size: 9, weight: .medium))
         .foregroundStyle(.secondary)
         .padding(.vertical, 3)
-        .disabled(busyServerID != nil)
+        .disabled(busyServerID != nil || !localServers.isAvailable)
     }
 
     private func confirmAction(_ action: LocalServerAction, for server: LocalServer) {

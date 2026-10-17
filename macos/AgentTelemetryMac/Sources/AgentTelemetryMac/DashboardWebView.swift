@@ -69,21 +69,6 @@ struct DashboardWebView: NSViewRepresentable {
         }
 
         func webView(_ webView: WKWebView,
-                     runJavaScriptConfirmPanelWithMessage message: String,
-                     initiatedByFrame frame: WKFrameInfo,
-                     completionHandler: @escaping (Bool) -> Void) {
-            let alert = NSAlert()
-            alert.messageText = "Stop this local server?"
-            alert.informativeText = message
-            alert.alertStyle = .warning
-            alert.addButton(withTitle: "Cancel")
-            alert.addButton(withTitle: "Stop server")
-            present(alert, in: webView.window) { response in
-                completionHandler(response == .alertSecondButtonReturn)
-            }
-        }
-
-        func webView(_ webView: WKWebView,
                      runJavaScriptAlertPanelWithMessage message: String,
                      initiatedByFrame frame: WKFrameInfo,
                      completionHandler: @escaping () -> Void) {
