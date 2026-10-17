@@ -62,10 +62,17 @@ class LocalServerLiveTests(unittest.TestCase):
                         # Only fixture-owned PID/port metadata enters this error.
                         listener = L._run([L._LSOF, "-a", "-p", str(first.pid), "-nP",
                                            "-iTCP", "-sTCP:LISTEN", "-Fpcn"])
+                        identity = L._run([L._PS, "-p", str(first.pid), "-o", "pid=,ppid=,stat=,comm="])
+                        cwd = L._working_directories(L._current_uid(), {first.pid})
+                        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+                            probe.settimeout(1)
+                            connect_status = probe.connect_ex(("127.0.0.1", port))
                         self.fail("Disposable listener was not discovered: " + repr({
                             "pid": first.pid, "port": port, "project": str(project),
                             "supported": snapshot.get("supported"), "rows": observed,
-                            "listener": listener.stdout if listener else None,
+                            "listener": (listener.returncode, listener.stdout, listener.stderr) if listener else None,
+                            "identity": identity.stdout if identity else None, "cwd": cwd,
+                            "connect_status": connect_status,
                         }))
                     command = " ".join(shlex.quote(argument) for argument in arguments)
                     profile_id = inventory.configure(server["id"], command)["profileId"]
