@@ -19,9 +19,9 @@ Covers **Claude Code · Claude Desktop · Codex · GitHub Copilot · Cursor · O
 
 | Platform | Download |
 | --- | --- |
-| macOS 13+ · Apple Silicon | **[Download DMG](https://github.com/uttamdeb/agent-telemetry/releases/download/v2.1.0/AgentTelemetry-2.1.0-macos-arm64.dmg)** |
-| macOS 13+ · Intel | **[Download DMG](https://github.com/uttamdeb/agent-telemetry/releases/download/v2.1.0/AgentTelemetry-2.1.0-macos-x86_64.dmg)** |
-| Windows 10/11 · x64 | **[Download EXE installer](https://github.com/uttamdeb/agent-telemetry/releases/download/v2.1.0/AgentTelemetry-2.1.0-windows-x64-setup.exe)** |
+| macOS 13+ · Apple Silicon | **[Download DMG](https://github.com/uttamdeb/agent-telemetry/releases/download/v2.0.0/AgentTelemetry-2.0.0-macos-arm64.dmg)** |
+| macOS 13+ · Intel | **[Download DMG](https://github.com/uttamdeb/agent-telemetry/releases/download/v2.0.0/AgentTelemetry-2.0.0-macos-x86_64.dmg)** |
+| Windows 10/11 · x64 | **[Download EXE installer](https://github.com/uttamdeb/agent-telemetry/releases/download/v2.0.0/AgentTelemetry-2.0.0-windows-x64-setup.exe)** |
 
 **Python is bundled — no terminal setup needed.** macOS: open the DMG, drag the app to
 Applications and open it. Windows: run the installer and open AgentTelemetry from Start.
@@ -35,7 +35,7 @@ starting monitoring. On macOS, opening the app manually also lets you import fir
 These builds are unsigned/unnotarized. macOS may require **System Settings → Privacy &
 Security → Open Anyway**; Windows SmartScreen may require **More info → Run anyway**.
 [All releases](https://github.com/uttamdeb/agent-telemetry/releases) ·
-[SHA-256 checksums](https://github.com/uttamdeb/agent-telemetry/releases/download/v2.1.0/SHA256SUMS.txt)
+[SHA-256 checksums](https://github.com/uttamdeb/agent-telemetry/releases/download/v2.0.0/SHA256SUMS.txt)
 
 ---
 
@@ -70,14 +70,6 @@ Options: `python3 dashboard.py --port 9000` · `--rebuild` (ignore cache, full r
 `--interval 20` (background refresh seconds) · `--data-dir /path/to/state` (store the
 cache and optional device-sharing files outside the checkout). Without `--data-dir`, current
 checkout behavior is unchanged. Or `./run.sh [flags]`.
-
-## Local server controls
-
-Use **Local servers** to discover TCP listeners owned by your account and configure,
-pin, start, stop or restart them on macOS and Windows. The macOS menu includes
-pinned controls; the Windows tray opens the shared browser controls. Windows asks
-for a working folder and warns before its immediate process stop. Saved commands
-stay private. See [local server controls](docs/local-servers.md) for behavior and limits.
 
 ## Subscription limits and account details
 

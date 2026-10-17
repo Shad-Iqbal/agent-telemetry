@@ -7,7 +7,7 @@ on:
       tag:
         description: Existing release tag (application code is built from this tag)
         required: true
-        default: v2.1.0
+        default: v2.0.0
 permissions:
   contents: read
 jobs:
@@ -19,7 +19,7 @@ jobs:
           path: packaging
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.tag || 'v2.1.0' }}
+          ref: ${{ inputs.tag || 'v2.0.0' }}
           path: application
           fetch-depth: 0
       - uses: actions/setup-python@v5
@@ -28,7 +28,7 @@ jobs:
       - name: Build offline EXE
         shell: pwsh
         env:
-          RELEASE_TAG: ${{ inputs.tag || 'v2.1.0' }}
+          RELEASE_TAG: ${{ inputs.tag || 'v2.0.0' }}
         run: |
           $compiler = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
           python packaging/windows/installer/build.py --source application --output artifacts --tag $env:RELEASE_TAG --compiler $compiler
@@ -54,7 +54,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.tag || 'v2.1.0' }}
+          ref: ${{ inputs.tag || 'v2.0.0' }}
           fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
